@@ -6,6 +6,8 @@ namespace Opscope;
 
 internal static class Reporter
 {
+    private static readonly string[] BundleFiles = ["snapshot.json", "findings.json", "README.txt", "manifest.json"];
+    private static readonly IReadOnlyList<string> RedactedAddresses = ["[redacted-addresses]"];
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
@@ -43,34 +45,75 @@ internal static class Reporter
 
     public static async Task WriteJsonAsync(string path, Snapshot snapshot, bool redact, CancellationToken cancellationToken)
     {
+        await WriteTextAtomicallyAsync(path, ToJson(snapshot, redact), cancellationToken);
+    }
+
+    public static async Task WriteTextAtomicallyAsync(string path, string content, CancellationToken cancellationToken)
+    {
         EnsureParent(path);
-        await File.WriteAllTextAsync(path, ToJson(snapshot, redact), Encoding.UTF8, cancellationToken);
+        var fullPath = Path.GetFullPath(path);
+        var temporaryPath = $"{fullPath}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            await File.WriteAllTextAsync(temporaryPath, content, Encoding.UTF8, cancellationToken);
+            File.Move(temporaryPath, fullPath, overwrite: true);
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+            }
+            catch
+            {
+                // Cleanup is best effort; the primary write result is already known.
+            }
+        }
     }
 
     public static async Task<string> WriteBundleAsync(string path, Snapshot snapshot, CancellationToken cancellationToken)
     {
         EnsureParent(path);
-        await using var file = File.Create(path);
-        using var archive = new ZipArchive(file, ZipArchiveMode.Create);
-        await WriteEntryAsync(archive, "snapshot.json", ToJson(snapshot, redact: true), cancellationToken);
-        await WriteEntryAsync(archive, "findings.json", JsonSerializer.Serialize(snapshot.Findings, JsonOptions), cancellationToken);
-        await WriteEntryAsync(archive, "README.txt", BuildBundleReadme(snapshot), cancellationToken);
-        await WriteEntryAsync(archive, "manifest.json", JsonSerializer.Serialize(new
+        var fullPath = Path.GetFullPath(path);
+        var temporaryPath = $"{fullPath}.{Guid.NewGuid():N}.tmp";
+        try
         {
-            format = "opscope-support-bundle/v1",
-            generatedAtUtc = DateTimeOffset.UtcNow,
-            redacted = true,
-            files = new[] { "snapshot.json", "findings.json", "README.txt", "manifest.json" }
-        }, JsonOptions), cancellationToken);
-        return Path.GetFullPath(path);
+            await using (var file = File.Create(temporaryPath))
+            using (var archive = new ZipArchive(file, ZipArchiveMode.Create))
+            {
+                await WriteEntryAsync(archive, "snapshot.json", ToJson(snapshot, redact: true), cancellationToken);
+                await WriteEntryAsync(archive, "findings.json", JsonSerializer.Serialize(snapshot.Findings, JsonOptions), cancellationToken);
+                await WriteEntryAsync(archive, "README.txt", BuildBundleReadme(snapshot), cancellationToken);
+                await WriteEntryAsync(archive, "manifest.json", JsonSerializer.Serialize(new
+                {
+                    format = "opscope-support-bundle/v1",
+                    generatedAtUtc = DateTimeOffset.UtcNow,
+                    redacted = true,
+                    files = BundleFiles
+                }, JsonOptions), cancellationToken);
+            }
+            File.Move(temporaryPath, fullPath, overwrite: true);
+            return fullPath;
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+            }
+            catch
+            {
+                // Cleanup is best effort.
+            }
+        }
     }
 
     public static void PrintSnapshot(Snapshot snapshot, bool includeDetails = true)
     {
         Console.WriteLine($"opscope snapshot  {snapshot.CollectedAtUtc:yyyy-MM-dd HH:mm:ss} UTC");
-        Console.WriteLine($"Host       {snapshot.Host.Hostname} ({snapshot.Host.Platform}, {snapshot.Host.Architecture})");
-        Console.WriteLine($"OS         {snapshot.Host.OsDescription}");
-        Console.WriteLine($"Runtime    {snapshot.Host.Runtime} | kernel {snapshot.Host.Kernel}");
+        Console.WriteLine($"Host       {Clean(snapshot.Host.Hostname)} ({Clean(snapshot.Host.Platform)}, {Clean(snapshot.Host.Architecture)})");
+        Console.WriteLine($"OS         {Clean(snapshot.Host.OsDescription)}");
+        Console.WriteLine($"Runtime    {Clean(snapshot.Host.Runtime)} | kernel {Clean(snapshot.Host.Kernel)}");
         Console.WriteLine($"Uptime     {FormatDuration(snapshot.Host.Uptime)} | boot {snapshot.Host.BootTimeUtc:yyyy-MM-dd HH:mm:ss} UTC");
         Console.WriteLine($"Privilege  {(snapshot.Host.IsElevated ? "elevated" : "standard")} | CPUs {snapshot.Host.ProcessorCount}");
         Console.WriteLine();
@@ -89,7 +132,7 @@ internal static class Reporter
             Console.WriteLine("Disks");
             foreach (var disk in snapshot.Disks)
             {
-                Console.WriteLine($"  {disk.Root,-18} {disk.UsedPercent,6:F1}% used  {FormatBytes(disk.AvailableBytes),12} free  {disk.FileSystem}");
+                Console.WriteLine($"  {Clean(disk.Root),-18} {disk.UsedPercent,6:F1}% used  {FormatBytes(disk.AvailableBytes),12} free  {Clean(disk.FileSystem)}");
             }
         }
 
@@ -109,19 +152,19 @@ internal static class Reporter
 
     public static void PrintDiff(DiffReport report)
     {
-        Console.WriteLine($"opscope diff | {report.BaselineHost} -> {report.CurrentHost}");
+        Console.WriteLine($"opscope diff | {Clean(report.BaselineHost)} -> {Clean(report.CurrentHost)}");
         Console.WriteLine($"Baseline   {report.BaselineCollectedAtUtc:yyyy-MM-dd HH:mm:ss} UTC");
         Console.WriteLine($"Current    {report.CurrentCollectedAtUtc:yyyy-MM-dd HH:mm:ss} UTC");
         Console.WriteLine($"Status     {(report.Significant ? "CHANGED" : "NO SIGNIFICANT CHANGE")}");
         Console.WriteLine();
         Console.WriteLine("Metrics");
         foreach (var metric in report.Metrics)
-            Console.WriteLine($"  {metric.Name,-32} {metric.Baseline,8:F2} -> {metric.Current,8:F2}  ({metric.Delta:+0.00;-0.00;0.00} {metric.Unit})");
+            Console.WriteLine($"  {Clean(metric.Name),-32} {metric.Baseline,8:F2} -> {metric.Current,8:F2}  ({metric.Delta:+0.00;-0.00;0.00} {Clean(metric.Unit)})");
         Console.WriteLine();
         Console.WriteLine("Changes");
         if (report.Changes.Count == 0) Console.WriteLine("  none");
         foreach (var change in report.Changes.Take(100))
-            Console.WriteLine($"  [{change.Change.ToUpperInvariant(),-7}] {change.Category,-9} {Trim(change.Identity, 44)} — {change.Details}");
+            Console.WriteLine($"  [{Clean(change.Change).ToUpperInvariant(),-7}] {Clean(change.Category),-9} {Trim(change.Identity, 44)} — {Clean(change.Details)}");
         if (report.Changes.Count > 100) Console.WriteLine($"  ... {report.Changes.Count - 100} more changes");
     }
 
@@ -137,14 +180,14 @@ internal static class Reporter
         Console.WriteLine();
         Console.WriteLine("Findings");
         foreach (var finding in findings)
-            Console.WriteLine($"  [{finding.Severity.ToString().ToUpperInvariant(),-8}] {finding.Code}: {finding.Title} — {finding.Detail}");
+            Console.WriteLine($"  [{finding.Severity.ToString().ToUpperInvariant(),-8}] {Clean(finding.Code)}: {Clean(finding.Title)} — {Clean(finding.Detail)}");
         foreach (var warning in warnings)
-            Console.WriteLine($"  [COLLECT ] {warning}");
+            Console.WriteLine($"  [COLLECT ] {Clean(warning)}");
     }
 
     public static void PrintDashboard(Snapshot snapshot)
     {
-        Console.WriteLine($"opscope watch | {snapshot.Host.Hostname} | {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}");
+        Console.WriteLine($"opscope watch | {Clean(snapshot.Host.Hostname)} | {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}");
         Console.WriteLine(new string('─', 76));
         Console.WriteLine($"CPU {snapshot.CpuUsedPercent,6:F1}%   MEM {snapshot.Memory.UsedPercent,6:F1}%   " +
                           $"DISKS {snapshot.Disks.Count(d => d.IsReady && d.UsedPercent >= 85),2} hot   " +
@@ -152,7 +195,7 @@ internal static class Reporter
                           $"LISTENERS {snapshot.Listeners.Count,2}");
         Console.WriteLine();
         foreach (var finding in snapshot.Findings.Take(8))
-            Console.WriteLine($"{finding.Severity.ToString().ToUpperInvariant(),-8} {finding.Code,-22} {Trim(finding.Title, 42)}");
+            Console.WriteLine($"{finding.Severity.ToString().ToUpperInvariant(),-8} {Clean(finding.Code),-22} {Trim(finding.Title, 42)}");
         if (snapshot.Findings.Count == 0) Console.WriteLine("OK       no actionable findings");
         Console.WriteLine();
         Console.WriteLine("Top memory consumers");
@@ -182,28 +225,28 @@ internal static class Reporter
         "Host: redacted\n" +
         $"Collection duration: {snapshot.CollectionDuration.TotalMilliseconds:F0} ms\n\n" +
         "The bundle is redacted for handoff. It contains a host snapshot, findings, and\n" +
-        "collection metadata. Command lines and user/host identifiers may still contain\n" +
-        "operationally sensitive data from platform-specific tools; handle it accordingly.\n\n" +
+        "collection metadata. Command lines are omitted; user, host, network and path\n" +
+        "identifiers are redacted where possible. Handle the bundle as sensitive evidence.\n\n" +
         "The collector is read-only and does not modify services, processes, firewall\n" +
         "rules, files or network configuration.\n";
 
     private static Snapshot Redact(Snapshot snapshot)
     {
         var host = snapshot.Host with { Hostname = "[redacted-host]", CurrentUser = "[redacted-user]" };
+        var disks = snapshot.Disks.Select(disk => disk with { Name = "[redacted-disk]", Root = "[redacted-root]" }).ToArray();
+        var network = snapshot.Network.Select(adapter => adapter with
+        {
+            Name = "[redacted-adapter]",
+            Description = "[redacted-adapter]",
+            Addresses = RedactedAddresses
+        }).ToArray();
         var processes = snapshot.Processes.Select(process => process with
         {
             User = "[redacted-user]",
-            CommandLine = process.CommandLine is null ? null : RedactText(process.CommandLine)
+            CommandLine = null
         }).ToArray();
-        return snapshot with { Host = host, Processes = processes };
-    }
-
-    private static string RedactText(string value)
-    {
-        var replacements = new[] { Environment.UserName, Environment.MachineName };
-        foreach (var replacement in replacements.Where(text => !string.IsNullOrWhiteSpace(text)))
-            value = value.Replace(replacement, "[redacted]", StringComparison.OrdinalIgnoreCase);
-        return value;
+        var listeners = snapshot.Listeners.Select(listener => listener with { LocalAddress = "[redacted-address]" }).ToArray();
+        return snapshot with { Host = host, Disks = disks, Network = network, Processes = processes, Listeners = listeners };
     }
 
     private static async Task WriteEntryAsync(ZipArchive archive, string name, string content, CancellationToken cancellationToken)
@@ -232,7 +275,12 @@ internal static class Reporter
 
     private static string FormatDuration(TimeSpan value) => value.TotalDays >= 1 ? $"{value.TotalDays:F1}d" : value.TotalHours >= 1 ? $"{value.TotalHours:F1}h" : value.TotalMinutes >= 1 ? $"{value.TotalMinutes:F0}m" : $"{value.TotalSeconds:F1}s";
 
-    private static string Trim(string? value, int length) => string.IsNullOrWhiteSpace(value) ? "-" : value.Length <= length ? value : value[..(length - 1)] + "…";
-}
+    private static string Clean(string? value) => new((value ?? string.Empty).Select(character => char.IsControl(character) ? ' ' : character).ToArray());
 
+    private static string Trim(string? value, int length)
+    {
+        var clean = Clean(value);
+        return string.IsNullOrWhiteSpace(clean) ? "-" : clean.Length <= length ? clean : clean[..(length - 1)] + "…";
+    }
+}
 

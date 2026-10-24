@@ -10,8 +10,31 @@ internal static class Program
         Assert(SystemProbe.ParseUfwState("Estado: inactivo\n").State == "INACTIVE", "Spanish UFW inactive state");
         Assert(SystemProbe.ParseUfwState("Status: pending\n").State == "UNKNOWN", "Unknown UFW state");
 
-        var nft = SystemProbe.ParseNftablesState("table inet filter { chain input { type filter hook input priority filter; policy drop; } }");
+        var nft = SystemProbe.ParseNftablesState("""
+            table inet filter {
+                chain input {
+                    type filter hook input priority filter; policy drop;
+                }
+            }
+            """);
         Assert(nft.State == "ACTIVE" && nft.RulesPresent && nft.FilteringVerified, "nftables filtering verification");
+        var outputOnlyNft = SystemProbe.ParseNftablesState("""
+            table inet filter {
+                chain output {
+                    type filter hook output priority filter; policy drop;
+                }
+            }
+            """);
+        Assert(outputOnlyNft.State == "UNVERIFIED" && !outputOnlyNft.FilteringVerified, "nftables output-only rules are not inbound protection");
+        var loopbackOnlyNft = SystemProbe.ParseNftablesState("""
+            table inet filter {
+                chain input {
+                    type filter hook input priority filter; policy accept;
+                    iifname "lo" drop;
+                }
+            }
+            """);
+        Assert(loopbackOnlyNft.State == "UNVERIFIED" && !loopbackOnlyNft.FilteringVerified, "nftables loopback-only rules are not inbound protection");
 
         var unsafePath = Path.GetTempFileName();
         try
@@ -49,10 +72,16 @@ internal static class Program
         var diff = DiffEngine.Compare(baseline, current);
         var safeDiff = Reporter.RedactForOutput(diff);
         Assert(diff.Significant && safeDiff.Significant, "redaction preserves diff significance");
+        var safeDiffJson = Reporter.ToJson(safeDiff);
+        Assert(!safeDiffJson.Contains("host-b", StringComparison.Ordinal), "diff redaction removes prior hostnames");
+        Assert(!safeDiffJson.Contains("10.20.30.41", StringComparison.Ordinal), "diff redaction removes listener addresses");
+        Assert(!safeDiffJson.Contains("customer-backend", StringComparison.Ordinal), "diff redaction removes service identities");
         var safeJson = Reporter.ToJson(Reporter.RedactForOutput(current));
         Assert(!safeJson.Contains("10.20.30.41", StringComparison.Ordinal), "redaction removes IP addresses");
         Assert(!safeJson.Contains("/srv/clientes/acme", StringComparison.Ordinal), "redaction removes Unix paths");
         Assert(!safeJson.Contains("customer-backend", StringComparison.Ordinal), "redaction removes free-text service identifiers");
+        Assert(safeJson.Contains("ss timed out", StringComparison.Ordinal), "redaction preserves collection warnings");
+        Assert(Reporter.ToDoctorJson(current, redact: true).Contains("\"status\": \"incomplete\"", StringComparison.Ordinal), "redacted doctor preserves incomplete state");
 
         Console.WriteLine("Opscope regression tests passed");
         return 0;
@@ -72,7 +101,7 @@ internal static class Program
             new SecurityPosture(Array.Empty<FirewallProfile>(), false, false, 0),
             new ToolingPosture(Array.Empty<ToolInfo>()),
             [new Finding(FindingSeverity.Warning, "TEST", "Backend 10.20.30.41", description, "password=secret")],
-            Array.Empty<string>(),
+            [$"ss timed out on {hostName} while reading /data/clientes/acme"],
             TimeSpan.Zero);
 
     private static void Assert(bool condition, string name)

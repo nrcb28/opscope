@@ -88,7 +88,8 @@ public sealed record CommandResult(
     int ExitCode,
     string StandardOutput,
     string StandardError,
-    bool TimedOut);
+    bool TimedOut,
+    bool OutputTruncated = false);
 
 public sealed record Snapshot(
     DateTimeOffset CollectedAtUtc,
@@ -136,5 +137,4 @@ public sealed record CollectorOptions(
 {
     public TimeSpan EffectiveCommandTimeout => CommandTimeout == default ? TimeSpan.FromSeconds(3) : CommandTimeout;
 }
-
 

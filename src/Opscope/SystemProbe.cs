@@ -15,6 +15,8 @@ internal sealed class SystemProbe
 
     public static async Task<Snapshot> CollectAsync(CollectorOptions options, CancellationToken cancellationToken = default)
     {
+        // Collection is best effort: one unavailable platform enrichment should not discard the whole snapshot.
+        // La recopilación es tolerante a fallos: una mejora de plataforma ausente no descarta toda la instantánea.
         var started = Stopwatch.GetTimestamp();
         var warnings = new List<string>();
 
@@ -45,12 +47,16 @@ internal sealed class SystemProbe
         {
             if (OperatingSystem.IsWindows())
             {
+                // Ask Windows for the token's actual group membership; do not infer elevation from the username.
+                // Consultamos la pertenencia real del token; no inferimos elevación a partir del nombre de usuario.
                 using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
                 elevated = new System.Security.Principal.WindowsPrincipal(identity)
                     .IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
             }
             else if (OperatingSystem.IsLinux())
             {
+                // Read the effective UID from procfs so an environment variable cannot spoof root detection.
+                // Leemos el UID efectivo de procfs para que una variable de entorno no pueda falsificar root.
                 var uidLine = File.ReadLines("/proc/self/status")
                     .FirstOrDefault(line => line.StartsWith("Uid:", StringComparison.Ordinal));
                 var effectiveUid = uidLine?.Split(' ', StringSplitOptions.RemoveEmptyEntries).ElementAtOrDefault(2);
@@ -84,6 +90,8 @@ internal sealed class SystemProbe
     {
         if (OperatingSystem.IsLinux())
         {
+            // Linux exposes aggregate CPU counters in /proc/stat; sample two points to calculate utilization.
+            // Linux expone contadores agregados en /proc/stat; tomamos dos muestras para calcular el uso.
             try
             {
                 var first = ReadProcStat();
@@ -105,6 +113,8 @@ internal sealed class SystemProbe
 
         if (OperatingSystem.IsWindows())
         {
+            // GetSystemTimes measures host-wide CPU use, unlike Process.TotalProcessorTime which measures only us.
+            // GetSystemTimes mide el uso del host, no solo el tiempo de CPU de opscope.
             try
             {
                 if (GetSystemTimes(out var firstIdle, out var firstKernel, out var firstUser))
@@ -417,6 +427,8 @@ internal sealed class SystemProbe
 
     private static async Task<SecurityPosture> ReadSecurityAsync(IReadOnlyList<ListenerInfo> listeners, TimeSpan timeout, List<string> warnings, CancellationToken cancellationToken)
     {
+        // These commands only query firewall state; opscope never changes firewall policy.
+        // Estos comandos solo consultan el estado; opscope nunca modifica la política del firewall.
         var firewalls = new List<FirewallProfile>();
         if (OperatingSystem.IsWindows())
         {
@@ -487,6 +499,8 @@ internal sealed class SystemProbe
 
     private static string ParseWindowsServiceState(string value)
     {
+        // Service state numbers are stable across Windows locales, so prefer them over translated text.
+        // Los códigos numéricos son estables entre idiomas de Windows, así que preferimos esos códigos al texto.
         foreach (var token in value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
         {
             if (!int.TryParse(token, NumberStyles.Integer, CultureInfo.InvariantCulture, out var code)) continue;
@@ -507,6 +521,8 @@ internal sealed class SystemProbe
         return stateMatch.Success ? stateMatch.Value.ToUpperInvariant() : value;
     }
 
+    // Normalize common localized netsh values into the stable schema used by findings and automation.
+    // Normalizamos valores localizados de netsh al esquema estable usado por hallazgos y automatización.
     private static string NormalizeFirewallState(string value) => value.Trim().ToUpperInvariant() switch
     {
         "ON" or "ACTIVE" or "RUNNING" or "ACTIVATED" or "ACTIVADO" or "ACTIVAR" or "ENABLED" or "HABILITADO" or "1" => "ACTIVE",

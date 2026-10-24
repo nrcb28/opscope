@@ -29,14 +29,10 @@ internal static class Reporter
 
     public static DiffReport RedactForOutput(DiffReport report) => report with
     {
-        BaselineHost = RedactText(report.BaselineHost),
-        CurrentHost = RedactText(report.CurrentHost),
-        Metrics = report.Metrics.Select(metric => metric with { Name = RedactText(metric.Name) }).ToArray(),
-        Changes = report.Changes.Select(change => change with
-        {
-            Identity = RedactText(change.Identity),
-            Details = RedactText(change.Details)
-        }).ToArray()
+        BaselineHost = "[redacted-host]",
+        CurrentHost = "[redacted-host]",
+        Metrics = report.Metrics.Select(metric => metric with { Name = RedactMetricName(metric.Name) }).ToArray(),
+        Changes = report.Changes.Select(change => RedactChange(change, [report.BaselineHost, report.CurrentHost])).ToArray()
     };
 
     public static ToolingPosture RedactForOutput(ToolingPosture tooling) =>
@@ -62,9 +58,11 @@ internal static class Reporter
         var view = redact ? Redact(snapshot) : snapshot;
         var result = new
         {
-            status = view.Findings.Count == 0 && view.CollectionWarnings.Count == 0
-                ? "ok"
-                : HighestSeverity(view.Findings).ToString().ToLowerInvariant(),
+            status = view.CollectionWarnings.Count > 0
+                ? "incomplete"
+                : view.Findings.Count == 0
+                    ? "ok"
+                    : HighestSeverity(view.Findings).ToString().ToLowerInvariant(),
             collectedAtUtc = view.CollectedAtUtc,
             host = view.Host.Hostname,
             findings = view.Findings,
@@ -286,12 +284,13 @@ internal static class Reporter
 
     private static Snapshot Redact(Snapshot snapshot)
     {
+        var sensitiveIdentifiers = new[] { snapshot.Host.Hostname, snapshot.Host.CurrentUser };
         var host = snapshot.Host with
         {
             Hostname = "[redacted-host]",
-            OsDescription = RedactText(snapshot.Host.OsDescription),
-            Runtime = RedactText(snapshot.Host.Runtime),
-            Kernel = RedactText(snapshot.Host.Kernel),
+            OsDescription = RedactText(snapshot.Host.OsDescription, sensitiveIdentifiers),
+            Runtime = RedactText(snapshot.Host.Runtime, sensitiveIdentifiers),
+            Kernel = RedactText(snapshot.Host.Kernel, sensitiveIdentifiers),
             CurrentUser = "[redacted-user]"
         };
         var disks = snapshot.Disks.Select(disk => disk with { Name = "[redacted-disk]", Root = "[redacted-root]" }).ToArray();
@@ -309,7 +308,7 @@ internal static class Reporter
         var listeners = snapshot.Listeners.Select(listener => listener with
         {
             LocalAddress = "[redacted-address]",
-            Process = RedactText(listener.Process)
+            Process = RedactText(listener.Process, sensitiveIdentifiers)
         }).ToArray();
         var services = snapshot.Services.Select(service => service with
         {
@@ -318,9 +317,9 @@ internal static class Reporter
         }).ToArray();
         var findings = snapshot.Findings.Select(finding => finding with
         {
-            Title = RedactText(finding.Title),
-            Detail = RedactText(finding.Detail),
-            Recommendation = RedactText(finding.Recommendation)
+            Title = RedactText(finding.Title, sensitiveIdentifiers),
+            Detail = RedactText(finding.Detail, sensitiveIdentifiers),
+            Recommendation = RedactText(finding.Recommendation, sensitiveIdentifiers)
         }).ToArray();
         var tooling = snapshot.Tooling is null ? null : snapshot.Tooling with
         {
@@ -336,22 +335,63 @@ internal static class Reporter
             Services = services,
             Tooling = tooling,
             Findings = findings,
-            CollectionWarnings = Array.Empty<string>()
+            CollectionWarnings = snapshot.CollectionWarnings.Select(warning => RedactText(warning, sensitiveIdentifiers)).ToArray()
         };
     }
 
-    private static string RedactText(string value)
+    private static string RedactMetricName(string name) =>
+        name.StartsWith("diskUsedPercent:", StringComparison.OrdinalIgnoreCase)
+            ? "diskUsedPercent:[redacted-root]"
+            : RedactText(name);
+
+    private static EntityDelta RedactChange(EntityDelta change, IEnumerable<string> sensitiveIdentifiers)
     {
-        foreach (var replacement in new[] { Environment.UserName, Environment.MachineName }.Where(text => !string.IsNullOrWhiteSpace(text)))
+        var identity = change.Category.ToLowerInvariant() switch
+        {
+            "host" => "[redacted-host]",
+            "listener" => RedactListenerIdentity(change.Identity),
+            "service" => "[redacted-service]",
+            "process" => "[redacted-process]",
+            _ => RedactText(change.Identity, sensitiveIdentifiers)
+        };
+        return change with { Identity = identity, Details = RedactText(change.Details, sensitiveIdentifiers) };
+    }
+
+    private static string RedactListenerIdentity(string identity)
+    {
+        var separator = identity.IndexOf('|');
+        if (separator < 0) return "[redacted-listener]";
+        var protocol = identity[..separator];
+        var address = identity[(separator + 1)..];
+        var portSeparator = address.LastIndexOf(':');
+        if (portSeparator > 0 && address[(portSeparator + 1)..].All(char.IsDigit))
+            return $"{RedactText(protocol)}|[redacted-address]:[redacted-port]";
+        return $"{RedactText(protocol)}|[redacted-address]";
+    }
+
+    private static string RedactText(string value, IEnumerable<string>? sensitiveIdentifiers = null)
+    {
+        var identifiers = new[] { Environment.UserName, Environment.MachineName }
+            .Concat(sensitiveIdentifiers ?? Array.Empty<string>());
+        foreach (var replacement in identifiers.Where(text => !string.IsNullOrWhiteSpace(text)).Distinct(StringComparer.OrdinalIgnoreCase))
             value = value.Replace(replacement, "[redacted]", StringComparison.OrdinalIgnoreCase);
         value = Regex.Replace(value, @"(?i)([A-Z]:\\Users\\)[^\\\s]+", "$1[redacted]");
-        value = Regex.Replace(value, @"(?i)(?<![\w])/(?:home|srv|opt|var|etc|tmp|mnt|run|root|usr)/[^\s,;]+", "[redacted-path]");
+        value = Regex.Replace(value, @"(?i)(?<![\w:])/(?:[^/\s,;]+/)*[^/\s,;]+", "[redacted-path]");
         value = Regex.Replace(value, @"(?i)(?<![\w])(?:[A-Z]:\\|\\\\)[^\s,;]+", "[redacted-path]");
         value = Regex.Replace(value, @"(?i)\b(password|passwd|pwd|token|secret|api[_-]?key)\s*[=:]\s*[^\s,;]+", "$1=[redacted-secret]");
+        value = Regex.Replace(value, @"(?<![\w])(?<address>\[?[0-9A-Fa-f:.%]+\]?):(?<port>\d{1,5})(?![\w])", match =>
+        {
+            var token = match.Groups["address"].Value.Trim('[', ']');
+            return token.Contains(':') || token.Contains('.') && IPAddress.TryParse(token, out _)
+                ? "[redacted-address]:[redacted-port]"
+                : match.Value;
+        });
         value = Regex.Replace(value, @"(?<![\w])(?:\[?[0-9A-Fa-f:.%]+\]?)(?![\w])", match =>
         {
             var token = match.Value.Trim('[', ']');
-            return IPAddress.TryParse(token.Split('%')[0], out _) ? "[redacted-address]" : match.Value;
+            return (token.Contains(':') || token.Contains('.')) && IPAddress.TryParse(token.Split('%')[0], out _)
+                ? "[redacted-address]"
+                : match.Value;
         });
         return value;
     }

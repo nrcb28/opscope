@@ -21,4 +21,3 @@ test -s "$bundle"
 
 echo 'opscope smoke test passed'
 
-

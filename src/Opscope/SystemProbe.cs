@@ -24,7 +24,7 @@ internal sealed class SystemProbe
         var memory = ReadMemory(warnings);
         var disks = ReadDisks(warnings);
         IReadOnlyList<NetworkAdapter> network = options.IncludeNetwork ? ReadNetwork(warnings) : Array.Empty<NetworkAdapter>();
-        var processes = options.IncludeProcesses ? ReadProcesses(options.TopProcesses, warnings) : Array.Empty<ProcessInfo>();
+        var processes = options.IncludeProcesses ? ReadProcesses(options.TopProcesses, warnings, cancellationToken) : Array.Empty<ProcessInfo>();
         var listeners = options.IncludeNetwork ? await ReadListenersAsync(options.EffectiveCommandTimeout, warnings, cancellationToken) : Array.Empty<ListenerInfo>();
         var services = options.IncludeServices ? await ReadServicesAsync(options.EffectiveCommandTimeout, warnings, cancellationToken) : Array.Empty<ServiceInfo>();
         var security = options.IncludeNetwork ? await ReadSecurityAsync(listeners, options.EffectiveCommandTimeout, warnings, cancellationToken) : new SecurityPosture(Array.Empty<FirewallProfile>(), false, false, 0);
@@ -49,9 +49,16 @@ internal sealed class SystemProbe
                 elevated = new System.Security.Principal.WindowsPrincipal(identity)
                     .IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
             }
+            else if (OperatingSystem.IsLinux())
+            {
+                var uidLine = File.ReadLines("/proc/self/status")
+                    .FirstOrDefault(line => line.StartsWith("Uid:", StringComparison.Ordinal));
+                var effectiveUid = uidLine?.Split(' ', StringSplitOptions.RemoveEmptyEntries).ElementAtOrDefault(2);
+                elevated = effectiveUid == "0";
+            }
             else
             {
-                elevated = Environment.UserName == "root" || Environment.GetEnvironmentVariable("EUID") == "0";
+                elevated = Environment.UserName.Equals("root", StringComparison.OrdinalIgnoreCase);
             }
         }
         catch (Exception ex)
@@ -86,6 +93,10 @@ internal sealed class SystemProbe
                 var total = second.Total - first.Total;
                 return total <= 0 ? 0 : Math.Clamp((1 - (double)idle / total) * 100, 0, 100);
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 warnings.Add($"CPU sampling via /proc/stat failed: {ex.Message}");
@@ -102,6 +113,10 @@ internal sealed class SystemProbe
             var elapsed = Stopwatch.GetElapsedTime(started);
             var delta = process.TotalProcessorTime - before;
             return Math.Clamp(delta.TotalMilliseconds / (elapsed.TotalMilliseconds * Environment.ProcessorCount) * 100, 0, 100);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -216,13 +231,14 @@ internal sealed class SystemProbe
         return result;
     }
 
-    private static ProcessInfo[] ReadProcesses(int top, List<string> warnings)
+    private static ProcessInfo[] ReadProcesses(int top, List<string> warnings, CancellationToken cancellationToken)
     {
         var rows = new List<ProcessInfo>();
         try
         {
             foreach (var process in Process.GetProcesses())
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 using (process)
                 {
                     try
@@ -238,6 +254,10 @@ internal sealed class SystemProbe
                     }
                 }
             }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -296,6 +316,7 @@ internal sealed class SystemProbe
         if (OperatingSystem.IsLinux())
         {
             var command = await CommandRunner.RunAsync("ss", ["-lntupH"], timeout, cancellationToken);
+            AddCommandDiagnostics("ss", command, warnings);
             if (command.ExitCode == 0)
             {
                 foreach (var line in command.StandardOutput.SplitLines())
@@ -304,11 +325,11 @@ internal sealed class SystemProbe
                     if (fields.Length >= 5) result.Add(new ListenerInfo(fields[0], fields[4], fields.Length >= 7 ? string.Join(' ', fields.Skip(6)) : "-", "ss"));
                 }
             }
-            else if (!string.IsNullOrWhiteSpace(command.StandardError)) warnings.Add($"ss unavailable: {command.StandardError.Trim()}");
         }
         else if (OperatingSystem.IsWindows())
         {
             var command = await CommandRunner.RunAsync("netstat", ["-ano"], timeout, cancellationToken);
+            AddCommandDiagnostics("netstat", command, warnings);
             if (command.ExitCode == 0)
             {
                 foreach (var line in command.StandardOutput.SplitLines())
@@ -320,7 +341,6 @@ internal sealed class SystemProbe
                         result.Add(new ListenerInfo(fields[0], fields[1], $"pid={fields[^1]}", "netstat"));
                 }
             }
-            else if (!string.IsNullOrWhiteSpace(command.StandardError)) warnings.Add($"netstat unavailable: {command.StandardError.Trim()}");
         }
         return result;
     }
@@ -330,6 +350,7 @@ internal sealed class SystemProbe
         if (OperatingSystem.IsLinux())
         {
             var command = await CommandRunner.RunAsync("systemctl", ["list-units", "--type=service", "--state=running", "--no-legend", "--plain"], timeout, cancellationToken);
+            AddCommandDiagnostics("systemctl", command, warnings);
             if (command.ExitCode == 0)
             {
                 return command.StandardOutput.SplitLines()
@@ -338,11 +359,11 @@ internal sealed class SystemProbe
                     .Select(fields => new ServiceInfo(fields[0], $"{fields[2]}/{fields[3]}", fields.Length > 4 ? string.Join(' ', fields.Skip(4)) : null, "systemctl"))
                     .ToArray();
             }
-            if (!string.IsNullOrWhiteSpace(command.StandardError)) warnings.Add($"systemctl unavailable: {command.StandardError.Trim()}");
         }
         else if (OperatingSystem.IsWindows())
         {
             var command = await CommandRunner.RunAsync("sc.exe", ["query", "state=", "all"], timeout, cancellationToken);
+            AddCommandDiagnostics("sc.exe", command, warnings);
             if (command.ExitCode == 0)
             {
                 var services = new List<ServiceInfo>();
@@ -365,7 +386,6 @@ internal sealed class SystemProbe
                 }
                 return services;
             }
-            if (!string.IsNullOrWhiteSpace(command.StandardError)) warnings.Add($"sc.exe unavailable: {command.StandardError.Trim()}");
         }
         return Array.Empty<ServiceInfo>();
     }
@@ -376,6 +396,7 @@ internal sealed class SystemProbe
         if (OperatingSystem.IsWindows())
         {
             var command = await CommandRunner.RunAsync("netsh", ["advfirewall", "show", "allprofiles", "state"], timeout, cancellationToken);
+            AddCommandDiagnostics("netsh", command, warnings);
             if (command.ExitCode == 0)
             {
                 string? profile = null;
@@ -397,29 +418,29 @@ internal sealed class SystemProbe
                     }
                 }
             }
-            else if (!string.IsNullOrWhiteSpace(command.StandardError)) warnings.Add($"Firewall inspection unavailable: {command.StandardError.Trim()}");
         }
         else if (OperatingSystem.IsLinux())
         {
             var candidates = new (string Name, string[] Arguments)[]
             {
                 ("ufw", ["status"]),
-                ("firewalld", ["--state"]),
+                ("firewall-cmd", ["--state"]),
                 ("nft", ["list", "ruleset"])
             };
             foreach (var candidate in candidates)
             {
                 var command = await CommandRunner.RunAsync(candidate.Name, candidate.Arguments, timeout, cancellationToken);
+                AddCommandDiagnostics(candidate.Name, command, warnings);
                 if (command.ExitCode != 0) continue;
+                if (command.OutputTruncated) continue;
                 var output = command.StandardOutput.Trim();
                 var state = candidate.Name switch
                 {
                     "ufw" => output.Contains("active", StringComparison.OrdinalIgnoreCase) || output.Contains("activo", StringComparison.OrdinalIgnoreCase) ? "ACTIVE" : "INACTIVE",
-                    "firewalld" => output.Contains("running", StringComparison.OrdinalIgnoreCase) ? "ACTIVE" : "INACTIVE",
+                    "firewall-cmd" => output.Contains("running", StringComparison.OrdinalIgnoreCase) ? "ACTIVE" : "INACTIVE",
                     _ => string.IsNullOrWhiteSpace(output) ? "INACTIVE" : "ACTIVE"
                 };
                 firewalls.Add(new FirewallProfile(candidate.Name, state, candidate.Name));
-                break;
             }
         }
 
@@ -429,14 +450,39 @@ internal sealed class SystemProbe
         return new SecurityPosture(firewalls, known, active, exposed);
     }
 
+    private static void AddCommandDiagnostics(string name, CommandResult command, List<string> warnings)
+    {
+        if (command.TimedOut)
+            warnings.Add($"{name} timed out before completing.");
+        if (command.OutputTruncated)
+            warnings.Add($"{name} output exceeded the safety limit and was truncated.");
+        if (command.ExitCode != 0 && !string.IsNullOrWhiteSpace(command.StandardError))
+            warnings.Add($"{name} unavailable: {command.StandardError.Trim()}");
+    }
+
     private static bool IsExposedListener(ListenerInfo listener)
     {
-        var address = listener.LocalAddress;
-        return address.Contains("0.0.0.0", StringComparison.OrdinalIgnoreCase) ||
-               address.Contains("[::]", StringComparison.OrdinalIgnoreCase) ||
-               address.StartsWith(":::", StringComparison.OrdinalIgnoreCase) ||
-               address.StartsWith("*:", StringComparison.OrdinalIgnoreCase) ||
-               address.Equals("*", StringComparison.OrdinalIgnoreCase);
+        var address = listener.LocalAddress.Trim();
+        if (address.Equals("*", StringComparison.OrdinalIgnoreCase) ||
+            address.StartsWith("*:", StringComparison.OrdinalIgnoreCase) ||
+            address.StartsWith(":::", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        string host;
+        if (address.StartsWith('['))
+        {
+            var closingBracket = address.IndexOf(']');
+            host = closingBracket > 1 ? address[1..closingBracket] : address;
+        }
+        else
+        {
+            var lastColon = address.LastIndexOf(':');
+            host = lastColon > 0 ? address[..lastColon] : address;
+        }
+
+        return host.Equals("0.0.0.0", StringComparison.OrdinalIgnoreCase) ||
+               host.Equals("::", StringComparison.OrdinalIgnoreCase) ||
+               host.Equals("*", StringComparison.OrdinalIgnoreCase);
     }
 
     private static List<Finding> Evaluate(HostInfo host, double cpu, MemoryInfo memory, IReadOnlyList<DiskInfo> disks,
@@ -472,7 +518,7 @@ internal sealed class SystemProbe
         if (insecureTools.Length > 0)
         {
             var names = string.Join(", ", insecureTools.Select(tool => tool.Name));
-            var severe = insecureTools.Any(tool => tool.Security is "world-writable" or "untrusted-path");
+            var severe = insecureTools.Any(tool => tool.Security is "writable-by-non-owner" or "untrusted-path" or "reparse-point" or "not-executable");
             findings.Add(new(severe ? FindingSeverity.Critical : FindingSeverity.Warning, "TOOL_SECURITY", "System tool trust check failed", $"Tool(s) failed the trusted-path or file-permission check: {names}.", "Do not run diagnostics with modified system utilities; restore trusted ownership and permissions before collecting evidence."));
         }
 
@@ -513,6 +559,7 @@ internal sealed class SystemProbe
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
+
 }
 
 internal static class StringExtensions

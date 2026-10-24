@@ -19,7 +19,11 @@ $bundle = Join-Path $temp 'smoke.zip'
 dotnet run --project $project -c Release --no-build -- bundle --out $bundle --no-services --no-network --top 1 | Out-Host
 if (-not (Test-Path $bundle)) { throw 'bundle was not created' }
 if ((Get-Item $bundle).Length -lt 100) { throw 'bundle is unexpectedly small' }
+$bundleDir = Join-Path $temp 'bundle-inspect'
+Expand-Archive -LiteralPath $bundle -DestinationPath $bundleDir -Force
+$bundleSnapshot = Get-Content -Raw (Join-Path $bundleDir 'snapshot.json') | ConvertFrom-Json
+if ($bundleSnapshot.host.hostname -ne '[redacted-host]') { throw 'bundle host was not redacted' }
+if ($bundleSnapshot.processes | Where-Object { $_.PSObject.Properties.Name -contains 'commandLine' -and $_.commandLine }) { throw 'bundle contains a process command line' }
 
 Write-Host 'opscope smoke test passed'
-
 

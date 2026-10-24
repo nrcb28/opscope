@@ -1,4 +1,5 @@
 using System.IO.Compression;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -25,6 +26,18 @@ internal static class Reporter
     }
 
     public static Snapshot RedactForOutput(Snapshot snapshot) => Redact(snapshot);
+
+    public static DiffReport RedactForOutput(DiffReport report) => report with
+    {
+        BaselineHost = RedactText(report.BaselineHost),
+        CurrentHost = RedactText(report.CurrentHost),
+        Metrics = report.Metrics.Select(metric => metric with { Name = RedactText(metric.Name) }).ToArray(),
+        Changes = report.Changes.Select(change => change with
+        {
+            Identity = RedactText(change.Identity),
+            Details = RedactText(change.Details)
+        }).ToArray()
+    };
 
     public static ToolingPosture RedactForOutput(ToolingPosture tooling) =>
         tooling with { Tools = tooling.Tools.Select(tool => tool with { Path = null }).ToArray() };
@@ -74,7 +87,11 @@ internal static class Reporter
         var temporaryPath = $"{fullPath}.{Guid.NewGuid():N}.tmp";
         try
         {
-            await File.WriteAllTextAsync(temporaryPath, content, Encoding.UTF8, cancellationToken);
+            await using (var stream = CommandRunner.CreatePrivateFile(temporaryPath))
+            await using (var writer = new StreamWriter(stream, new UTF8Encoding(false), 8192, leaveOpen: false))
+            {
+                await writer.WriteAsync(content.AsMemory(), cancellationToken);
+            }
             File.Move(temporaryPath, fullPath, overwrite: true);
         }
         finally
@@ -100,7 +117,7 @@ internal static class Reporter
         var redactedSnapshot = Redact(snapshot);
         try
         {
-            await using (var file = File.Create(temporaryPath))
+            await using (var file = CommandRunner.CreatePrivateFile(temporaryPath))
             using (var archive = new ZipArchive(file, ZipArchiveMode.Create))
             {
                 await WriteEntryAsync(archive, "snapshot.json", ToJson(redactedSnapshot), cancellationToken);
@@ -269,7 +286,14 @@ internal static class Reporter
 
     private static Snapshot Redact(Snapshot snapshot)
     {
-        var host = snapshot.Host with { Hostname = "[redacted-host]", CurrentUser = "[redacted-user]" };
+        var host = snapshot.Host with
+        {
+            Hostname = "[redacted-host]",
+            OsDescription = RedactText(snapshot.Host.OsDescription),
+            Runtime = RedactText(snapshot.Host.Runtime),
+            Kernel = RedactText(snapshot.Host.Kernel),
+            CurrentUser = "[redacted-user]"
+        };
         var disks = snapshot.Disks.Select(disk => disk with { Name = "[redacted-disk]", Root = "[redacted-root]" }).ToArray();
         var network = snapshot.Network.Select(adapter => adapter with
         {
@@ -289,7 +313,8 @@ internal static class Reporter
         }).ToArray();
         var services = snapshot.Services.Select(service => service with
         {
-            Description = service.Description is null ? null : RedactText(service.Description)
+            Name = "[redacted-service]",
+            Description = null
         }).ToArray();
         var findings = snapshot.Findings.Select(finding => finding with
         {
@@ -320,7 +345,15 @@ internal static class Reporter
         foreach (var replacement in new[] { Environment.UserName, Environment.MachineName }.Where(text => !string.IsNullOrWhiteSpace(text)))
             value = value.Replace(replacement, "[redacted]", StringComparison.OrdinalIgnoreCase);
         value = Regex.Replace(value, @"(?i)([A-Z]:\\Users\\)[^\\\s]+", "$1[redacted]");
-        return Regex.Replace(value, @"(?i)(/home/)[^/\s]+", "$1[redacted]");
+        value = Regex.Replace(value, @"(?i)(?<![\w])/(?:home|srv|opt|var|etc|tmp|mnt|run|root|usr)/[^\s,;]+", "[redacted-path]");
+        value = Regex.Replace(value, @"(?i)(?<![\w])(?:[A-Z]:\\|\\\\)[^\s,;]+", "[redacted-path]");
+        value = Regex.Replace(value, @"(?i)\b(password|passwd|pwd|token|secret|api[_-]?key)\s*[=:]\s*[^\s,;]+", "$1=[redacted-secret]");
+        value = Regex.Replace(value, @"(?<![\w])(?:\[?[0-9A-Fa-f:.%]+\]?)(?![\w])", match =>
+        {
+            var token = match.Value.Trim('[', ']');
+            return IPAddress.TryParse(token.Split('%')[0], out _) ? "[redacted-address]" : match.Value;
+        });
+        return value;
     }
 
     private static void ValidateSnapshot(Snapshot snapshot)

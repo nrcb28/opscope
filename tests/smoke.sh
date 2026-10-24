@@ -18,6 +18,11 @@ printf '%s' "$diff_json" | grep -q '"metrics"'
 bundle="$temp/smoke.zip"
 dotnet run --project "$project" -c Release --no-build -- bundle --out "$bundle" --no-services --no-network --top 1
 test -s "$bundle"
+bundle_dir="$temp/bundle-inspect"
+mkdir -p "$bundle_dir"
+unzip -q -o "$bundle" -d "$bundle_dir"
+grep -q '"hostname": "\[redacted-host\]"' "$bundle_dir/snapshot.json"
+! grep -q 'commandLine' "$bundle_dir/snapshot.json"
 
 echo 'opscope smoke test passed'
 

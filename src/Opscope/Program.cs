@@ -22,6 +22,14 @@ internal static class Program
                 return 0;
             }
 
+            if (options.Command.Equals("tools", StringComparison.OrdinalIgnoreCase))
+            {
+                var tooling = ToolInventory.Collect();
+                if (options.Json) Console.WriteLine(Reporter.ToJson(tooling, options.Redact));
+                else Reporter.PrintTools(options.Redact ? Reporter.RedactForOutput(tooling) : tooling);
+                return tooling.Tools.Any(tool => tool.Security is "world-writable" or "untrusted-path") ? 1 : 0;
+            }
+
             using var cancellation = new CancellationTokenSource();
             Console.CancelKeyPress += (_, eventArgs) =>
             {
@@ -37,7 +45,9 @@ internal static class Program
                 var baselineJson = await ReadSnapshotTextAsync(options.BaselinePath!, cancellation.Token);
                 var baseline = Reporter.ParseSnapshot(baselineJson);
                 var current = await SystemProbe.CollectAsync(options.ToCollectorOptions(), cancellation.Token);
-                var report = DiffEngine.Compare(baseline, current);
+                var report = DiffEngine.Compare(
+                    options.Redact ? Reporter.RedactForOutput(baseline) : baseline,
+                    options.Redact ? Reporter.RedactForOutput(current) : current);
                 if (options.OutputPath is not null)
                 {
                     var fullPath = Path.GetFullPath(options.OutputPath);
@@ -91,13 +101,14 @@ internal static class Program
 
     private static Task<int> DoctorAsync(Snapshot snapshot, CliOptions options, CancellationToken cancellationToken)
     {
+        var outputSnapshot = options.Redact ? Reporter.RedactForOutput(snapshot) : snapshot;
         if (options.OutputPath is not null)
-            return WriteDoctorOutputAsync(snapshot, options.OutputPath, options.Json, cancellationToken);
-        if (options.Json) Console.WriteLine(Reporter.ToDoctorJson(snapshot));
+            return WriteDoctorOutputAsync(outputSnapshot, options.OutputPath, options.Json, cancellationToken);
+        if (options.Json) Console.WriteLine(Reporter.ToDoctorJson(outputSnapshot));
         else
         {
-            Console.WriteLine($"opscope doctor | {Reporter.SafeDisplay(snapshot.Host.Hostname)} | {DateTimeOffset.UtcNow:O}");
-            Reporter.PrintFindings(snapshot.Findings, snapshot.CollectionWarnings);
+            Console.WriteLine($"opscope doctor | {Reporter.SafeDisplay(outputSnapshot.Host.Hostname)} | {DateTimeOffset.UtcNow:O}");
+            Reporter.PrintFindings(outputSnapshot.Findings, outputSnapshot.CollectionWarnings);
         }
         return Task.FromResult(Reporter.ExitCode(snapshot));
     }
@@ -133,7 +144,7 @@ internal static class Program
         {
             var snapshot = await SystemProbe.CollectAsync(options.ToCollectorOptions(), cancellationToken);
             if (!Console.IsOutputRedirected) Console.Clear();
-            Reporter.PrintDashboard(snapshot);
+            Reporter.PrintDashboard(options.Redact ? Reporter.RedactForOutput(snapshot) : snapshot);
             try { await Task.Delay(options.Interval, cancellationToken); }
             catch (OperationCanceledException) { break; }
         }
@@ -181,6 +192,7 @@ Usage:
   opscope bundle [options]         Redacted ZIP support bundle
   opscope watch [options]          Live health dashboard
   opscope diff <snapshot.json>     Compare a baseline against the current host
+  opscope tools [options]          Inspect diagnostic tools and trust status
   opscope version                  Build/runtime information
 
 Options:
@@ -236,7 +248,7 @@ Exit codes: 0 healthy, 1 warning/critical finding, 2 CLI/collection error.
                 default: throw new CliException($"Unknown option '{args[index - 1]}'.");
             }
         }
-        if (result.Command is not ("snapshot" or "doctor" or "bundle" or "watch" or "diff" or "version"))
+        if (result.Command is not ("snapshot" or "doctor" or "bundle" or "watch" or "diff" or "tools" or "version"))
             throw new CliException($"Unknown command '{result.Command}'.");
         if (!result.ShowHelp && result.Command.Equals("diff", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(result.BaselinePath))
             throw new CliException("diff requires a baseline snapshot path.");

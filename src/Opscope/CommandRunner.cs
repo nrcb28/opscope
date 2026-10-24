@@ -102,7 +102,7 @@ internal static class CommandRunner
         return (output.ToString(), truncated);
     }
 
-    private static string ResolveExecutable(string fileName)
+    internal static string ResolveExecutable(string fileName)
     {
         if (Path.IsPathFullyQualified(fileName)) return fileName;
 
@@ -115,6 +115,7 @@ internal static class CommandRunner
             {
                 "ss" => new[] { "/usr/bin/ss", "/usr/sbin/ss", "/bin/ss" },
                 "systemctl" => new[] { "/usr/bin/systemctl", "/bin/systemctl" },
+                "ip" => new[] { "/usr/bin/ip", "/usr/sbin/ip", "/bin/ip" },
                 "ufw" => new[] { "/usr/sbin/ufw", "/usr/bin/ufw" },
                 "firewall-cmd" => new[] { "/usr/bin/firewall-cmd", "/bin/firewall-cmd" },
                 "nft" => new[] { "/usr/sbin/nft", "/usr/bin/nft" },
@@ -126,6 +127,33 @@ internal static class CommandRunner
         }
 
         return fileName;
+    }
+
+    internal static bool IsTrustedExecutablePath(string fileName, string resolvedPath)
+    {
+        if (!Path.IsPathFullyQualified(resolvedPath)) return false;
+        if (OperatingSystem.IsWindows())
+        {
+            var systemDirectory = Path.GetFullPath(Environment.SystemDirectory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            return resolvedPath.StartsWith(systemDirectory, StringComparison.OrdinalIgnoreCase);
+        }
+
+        if (OperatingSystem.IsLinux())
+        {
+            var trustedCandidates = fileName switch
+            {
+                "ss" => new[] { "/usr/bin/ss", "/usr/sbin/ss", "/bin/ss" },
+                "systemctl" => new[] { "/usr/bin/systemctl", "/bin/systemctl" },
+                "ip" => new[] { "/usr/bin/ip", "/usr/sbin/ip", "/bin/ip" },
+                "ufw" => new[] { "/usr/sbin/ufw", "/usr/bin/ufw" },
+                "firewall-cmd" => new[] { "/usr/bin/firewall-cmd", "/bin/firewall-cmd" },
+                "nft" => new[] { "/usr/sbin/nft", "/usr/bin/nft" },
+                _ => Array.Empty<string>()
+            };
+            return trustedCandidates.Contains(resolvedPath, StringComparer.Ordinal);
+        }
+
+        return false;
     }
 }
 

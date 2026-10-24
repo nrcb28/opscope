@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace Opscope;
 
@@ -19,6 +20,10 @@ internal static class Reporter
     {
         return JsonSerializer.Serialize(redact ? Redact(snapshot) : snapshot, JsonOptions);
     }
+
+    public static Snapshot RedactForOutput(Snapshot snapshot) => Redact(snapshot);
+
+    public static string SafeDisplay(string? value) => new((value ?? string.Empty).Select(character => char.IsControl(character) ? ' ' : character).ToArray());
 
     public static string ToJson(DiffReport report) => JsonSerializer.Serialize(report, JsonOptions);
 
@@ -245,8 +250,40 @@ internal static class Reporter
             User = "[redacted-user]",
             CommandLine = null
         }).ToArray();
-        var listeners = snapshot.Listeners.Select(listener => listener with { LocalAddress = "[redacted-address]" }).ToArray();
-        return snapshot with { Host = host, Disks = disks, Network = network, Processes = processes, Listeners = listeners };
+        var listeners = snapshot.Listeners.Select(listener => listener with
+        {
+            LocalAddress = "[redacted-address]",
+            Process = RedactText(listener.Process)
+        }).ToArray();
+        var services = snapshot.Services.Select(service => service with
+        {
+            Description = service.Description is null ? null : RedactText(service.Description)
+        }).ToArray();
+        var findings = snapshot.Findings.Select(finding => finding with
+        {
+            Title = RedactText(finding.Title),
+            Detail = RedactText(finding.Detail),
+            Recommendation = RedactText(finding.Recommendation)
+        }).ToArray();
+        return snapshot with
+        {
+            Host = host,
+            Disks = disks,
+            Network = network,
+            Processes = processes,
+            Listeners = listeners,
+            Services = services,
+            Findings = findings,
+            CollectionWarnings = Array.Empty<string>()
+        };
+    }
+
+    private static string RedactText(string value)
+    {
+        foreach (var replacement in new[] { Environment.UserName, Environment.MachineName }.Where(text => !string.IsNullOrWhiteSpace(text)))
+            value = value.Replace(replacement, "[redacted]", StringComparison.OrdinalIgnoreCase);
+        value = Regex.Replace(value, @"(?i)([A-Z]:\\Users\\)[^\\\s]+", "$1[redacted]");
+        return Regex.Replace(value, @"(?i)(/home/)[^/\s]+", "$1[redacted]");
     }
 
     private static async Task WriteEntryAsync(ZipArchive archive, string name, string content, CancellationToken cancellationToken)
@@ -275,7 +312,7 @@ internal static class Reporter
 
     private static string FormatDuration(TimeSpan value) => value.TotalDays >= 1 ? $"{value.TotalDays:F1}d" : value.TotalHours >= 1 ? $"{value.TotalHours:F1}h" : value.TotalMinutes >= 1 ? $"{value.TotalMinutes:F0}m" : $"{value.TotalSeconds:F1}s";
 
-    private static string Clean(string? value) => new((value ?? string.Empty).Select(character => char.IsControl(character) ? ' ' : character).ToArray());
+    private static string Clean(string? value) => SafeDisplay(value);
 
     private static string Trim(string? value, int length)
     {

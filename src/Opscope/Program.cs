@@ -47,9 +47,10 @@ internal static class Program
                 var baselineJson = await ReadSnapshotTextAsync(options.BaselinePath!, cancellation.Token);
                 var baseline = Reporter.ParseSnapshot(baselineJson);
                 var current = await SystemProbe.CollectAsync(options.ToCollectorOptions(), cancellation.Token);
-                var report = DiffEngine.Compare(
-                    options.Redact ? Reporter.RedactForOutput(baseline) : baseline,
-                    options.Redact ? Reporter.RedactForOutput(current) : current);
+                // Compare full-fidelity snapshots first; redact only the final report so identifiers cannot hide drift.
+                // Comparamos instantáneas completas y redactamos solo el informe final para no ocultar cambios.
+                var report = DiffEngine.Compare(baseline, current);
+                if (options.Redact) report = Reporter.RedactForOutput(report);
                 if (options.OutputPath is not null)
                 {
                     var fullPath = Path.GetFullPath(options.OutputPath);

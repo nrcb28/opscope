@@ -6,6 +6,8 @@ namespace Opscope;
 
 internal static class CommandRunner
 {
+    // Bound child-process output to avoid memory exhaustion from a broken or hostile utility.
+    // Limitamos la salida de procesos hijos para evitar agotamiento de memoria por una herramienta defectuosa u hostil.
     private const int MaxOutputChars = 256 * 1024;
     private static readonly string UnavailableExecutable = OperatingSystem.IsWindows()
         ? Path.Combine(Environment.SystemDirectory, "opscope-unavailable.exe")
@@ -13,6 +15,8 @@ internal static class CommandRunner
 
     public static async Task<CommandResult> RunAsync(string fileName, IEnumerable<string> arguments, TimeSpan timeout, CancellationToken cancellationToken = default)
     {
+        // Execute argument arrays directly: no shell means no shell expansion or command injection.
+        // Ejecutamos arrays de argumentos directamente: sin shell no hay expansión ni inyección de comandos.
         using var process = new Process
         {
             StartInfo = new ProcessStartInfo
@@ -53,7 +57,7 @@ internal static class CommandRunner
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                try { process.Kill(entireProcessTree: true); } catch { /* best effort */ }
+                try { process.Kill(entireProcessTree: true); } catch { /* best effort / mejor esfuerzo */ }
                 readerCts.Cancel();
                 var timedOutStdout = await stdoutTask;
                 var timedOutStderr = await stderrTask;
@@ -66,7 +70,7 @@ internal static class CommandRunner
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            try { process.Kill(entireProcessTree: true); } catch { /* best effort */ }
+            try { process.Kill(entireProcessTree: true); } catch { /* best effort / mejor esfuerzo */ }
             readerCts.Cancel();
             if (stdoutTask is not null) await stdoutTask;
             if (stderrTask is not null) await stderrTask;
@@ -132,6 +136,7 @@ internal static class CommandRunner
 
         // Never fall back to PATH for an unrecognised relative command. A future
         // collector must opt into an explicit trusted path before it can spawn.
+        // Nunca usamos PATH para comandos relativos desconocidos; cualquier futuro colector debe declarar una ruta confiable.
         return UnavailableExecutable;
     }
 

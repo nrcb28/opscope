@@ -65,7 +65,7 @@ Common options: `--json`, `--out <path>`, `--no-processes`, `--no-network`, `--n
 
 ## Security and privacy
 
-Support bundles redact user profile paths from command lines, usernames from process records, and the local host name from the exported JSON. Collection is local and read-only. Treat bundles as operational evidence: listening ports, package/runtime versions and filesystem paths can still be sensitive.
+Collection is local and read-only. External commands are launched without a shell, with fixed executable resolution and bounded output. Support bundles omit process command lines and redact host, user, network-address and filesystem-root identifiers. Treat snapshots and bundles as operational evidence: service names, listener counts and package/runtime versions can still be sensitive. See [SECURITY.md](SECURITY.md) for the reporting policy.
 
 ## Repository layout
 
@@ -73,6 +73,7 @@ Support bundles redact user profile paths from command lines, usernames from pro
 src/Opscope/       Application source
 tests/             Cross-platform smoke scripts
 .github/workflows/ Build matrix for Linux and Windows
+.gitattributes       Cross-platform line-ending policy
+SECURITY.md          Vulnerability reporting and data-handling notes
 ```
-
 

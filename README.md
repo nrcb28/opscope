@@ -32,6 +32,7 @@ dotnet run --project src/Opscope/Opscope.csproj -- snapshot --json --out snapsho
 dotnet run --project src/Opscope/Opscope.csproj -- doctor
 dotnet run --project src/Opscope/Opscope.csproj -- bundle --out ./incident-bundle.zip
 dotnet run --project src/Opscope/Opscope.csproj -- diff ./baseline.json
+dotnet run --project src/Opscope/Opscope.csproj -- tools --json
 dotnet run --project src/Opscope/Opscope.csproj -- watch --interval 5
 ```
 
@@ -57,6 +58,7 @@ dotnet publish src/Opscope/Opscope.csproj -c Release -r win-x64 --self-contained
 | `bundle` | Create a ZIP with redacted JSON evidence for incident handoff. |
 | `watch` | Refresh a compact health dashboard until Ctrl+C. |
 | `diff <snapshot.json>` | Compare a saved baseline with a fresh collection from the current host. |
+| `tools` | Inventory required/enrichment utilities, trusted paths, permissions and versions. |
 | `version` | Print build/runtime information. |
 
 Common options: `--json`, `--redact`, `--out <path>`, `--no-processes`, `--no-network`, `--no-services`, `--top <n>`, `--interval <seconds>`, `--help`.
@@ -64,6 +66,8 @@ Common options: `--json`, `--redact`, `--out <path>`, `--no-processes`, `--no-ne
 Use `snapshot --redact --json --out safe-snapshot.json` when the output may leave the host. This omits process command lines and redacts host, user, network-address and filesystem-root identifiers. The default snapshot remains detailed for local troubleshooting.
 
 `diff` returns exit code `1` when it detects a significant metric change, a host mismatch, or an added/removed/changed process, service or listener. Save a baseline with `snapshot --json --out baseline.json`, then run `diff baseline.json` during a maintenance window or incident investigation.
+
+`tools` checks the native utilities used for enrichment (`ss`, `systemctl`, `netstat`, `netsh`, `sc.exe`, firewall utilities and `ip`). It reports missing coverage and fails if an available utility is outside the trusted system locations or is world-writable.
 
 ## Security and privacy
 

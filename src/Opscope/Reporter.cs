@@ -13,6 +13,8 @@ internal static class Reporter
     {
         WriteIndented = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        // Bound nested input/output depth so malformed baselines cannot trigger unbounded parsing work.
+        // Limitamos la profundidad para que una línea base malformada no provoque trabajo ilimitado.
         MaxDepth = 64,
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
     };
@@ -65,6 +67,8 @@ internal static class Reporter
 
     public static async Task WriteTextAtomicallyAsync(string path, string content, CancellationToken cancellationToken)
     {
+        // Write beside the destination and rename only after completion, preventing partial evidence files.
+        // Escribimos junto al destino y renombramos al terminar para evitar archivos de evidencia incompletos.
         EnsureParent(path);
         var fullPath = Path.GetFullPath(path);
         var temporaryPath = $"{fullPath}.{Guid.NewGuid():N}.tmp";
@@ -88,6 +92,8 @@ internal static class Reporter
 
     public static async Task<string> WriteBundleAsync(string path, Snapshot snapshot, CancellationToken cancellationToken)
     {
+        // Bundles are always redacted before archiving because they are intended for incident handoff.
+        // Los bundles siempre se redactan antes de archivarse porque se comparten durante incidentes.
         EnsureParent(path);
         var fullPath = Path.GetFullPath(path);
         var temporaryPath = $"{fullPath}.{Guid.NewGuid():N}.tmp";

@@ -9,6 +9,8 @@ $json = dotnet run --project $project -c Release --no-build -- snapshot --json -
 if ([string]::IsNullOrWhiteSpace($json.host.platform)) { throw 'host.platform missing' }
 if ($json.processes.Count -gt 3) { throw "expected at most 3 processes, got $($json.processes.Count)" }
 if ($null -eq $json.memory.usedPercent) { throw 'memory.usedPercent missing' }
+if ($json.cpuUsedPercent -lt 0 -or $json.cpuUsedPercent -gt 100) { throw 'cpuUsedPercent outside 0..100' }
+if ($json.host.platform -eq 'windows' -and $json.security.firewallStatusKnown -ne $true) { throw 'Windows firewall state was not parsed' }
 
 $tools = dotnet run --project $project -c Release --no-build -- tools --json | ConvertFrom-Json
 if ($tools.tools.Count -lt 1) { throw 'tool inventory is empty' }
@@ -38,8 +40,16 @@ if ($redactedDoctor.host -ne '[redacted-host]') { throw 'redacted doctor host wa
 $deepBaseline = Join-Path $temp 'deep-baseline.json'
 $deepJson = ('{"x":' * 70) + '0' + ('}' * 70)
 [IO.File]::WriteAllText($deepBaseline, $deepJson, [Text.Encoding]::UTF8)
-$null = dotnet run --project $project -c Release --no-build -- diff $deepBaseline --json --no-processes --no-network --no-services 2>&1
-if ($LASTEXITCODE -ne 2) { throw "deeply nested baseline was not rejected (exit $LASTEXITCODE)" }
+$previousErrorActionPreference = $ErrorActionPreference
+try {
+    $ErrorActionPreference = 'Continue'
+    $deepOutput = dotnet run --project $project -c Release --no-build -- diff $deepBaseline --json --no-processes --no-network --no-services 2>&1
+    $deepExitCode = $LASTEXITCODE
+}
+finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+}
+if ($deepExitCode -ne 2) { throw "deeply nested baseline was not rejected (exit $deepExitCode)" }
 
 $baseline = Join-Path $temp 'baseline.json'
 dotnet run --project $project -c Release --no-build -- snapshot --json --out $baseline --no-processes --no-network --no-services | Out-Host

@@ -60,7 +60,7 @@ internal static class Program
         }
         catch (CliException ex)
         {
-            Console.Error.WriteLine($"error: {ex.Message}");
+            Console.Error.WriteLine($"error: {Reporter.SafeDisplay(ex.Message)}");
             Console.Error.WriteLine("Use 'opscope --help' for usage.");
             return 2;
         }
@@ -71,20 +71,21 @@ internal static class Program
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"fatal: {ex.Message}");
+            Console.Error.WriteLine($"fatal: {Reporter.SafeDisplay(ex.Message)}");
             return 2;
         }
     }
 
     private static async Task<int> SnapshotAsync(Snapshot snapshot, CliOptions options, CancellationToken cancellationToken)
     {
+        var outputSnapshot = options.Redact ? Reporter.RedactForOutput(snapshot) : snapshot;
         if (options.OutputPath is not null)
         {
-            await Reporter.WriteJsonAsync(options.OutputPath, snapshot, redact: false, cancellationToken);
-            Console.Error.WriteLine($"Wrote {Path.GetFullPath(options.OutputPath)}");
+            await Reporter.WriteJsonAsync(options.OutputPath, outputSnapshot, redact: false, cancellationToken);
+            Console.Error.WriteLine($"Wrote {Reporter.SafeDisplay(Path.GetFullPath(options.OutputPath))}");
         }
-        if (options.Json) Console.WriteLine(Reporter.ToJson(snapshot));
-        else Reporter.PrintSnapshot(snapshot);
+        if (options.Json) Console.WriteLine(Reporter.ToJson(outputSnapshot));
+        else Reporter.PrintSnapshot(outputSnapshot);
         return Reporter.ExitCode(snapshot);
     }
 
@@ -95,7 +96,7 @@ internal static class Program
         if (options.Json) Console.WriteLine(Reporter.ToDoctorJson(snapshot));
         else
         {
-            Console.WriteLine($"opscope doctor | {snapshot.Host.Hostname} | {DateTimeOffset.UtcNow:O}");
+            Console.WriteLine($"opscope doctor | {Reporter.SafeDisplay(snapshot.Host.Hostname)} | {DateTimeOffset.UtcNow:O}");
             Reporter.PrintFindings(snapshot.Findings, snapshot.CollectionWarnings);
         }
         return Task.FromResult(Reporter.ExitCode(snapshot));
@@ -107,7 +108,7 @@ internal static class Program
         var parent = Path.GetDirectoryName(fullPath);
         if (!string.IsNullOrWhiteSpace(parent)) Directory.CreateDirectory(parent);
         await Reporter.WriteTextAtomicallyAsync(fullPath, Reporter.ToDoctorJson(snapshot), cancellationToken);
-        Console.Error.WriteLine($"Wrote {fullPath}");
+        Console.Error.WriteLine($"Wrote {Reporter.SafeDisplay(fullPath)}");
         if (!json) Reporter.PrintFindings(snapshot.Findings, snapshot.CollectionWarnings);
         return Reporter.ExitCode(snapshot);
     }
@@ -120,7 +121,7 @@ internal static class Program
             Console.WriteLine($"{{\"bundle\":{System.Text.Json.JsonSerializer.Serialize(fullPath)},\"findings\":{snapshot.Findings.Count}}}");
         else
         {
-            Console.WriteLine($"Bundle written: {fullPath}");
+            Console.WriteLine($"Bundle written: {Reporter.SafeDisplay(fullPath)}");
             Reporter.PrintFindings(snapshot.Findings, snapshot.CollectionWarnings);
         }
         return Reporter.ExitCode(snapshot);
@@ -184,6 +185,7 @@ Usage:
 
 Options:
   --json                  Emit machine-readable JSON
+  --redact                Omit command lines and redact host/user/network/path data
   --out <path>            Write JSON or ZIP to this path
   --top <n>               Number of processes to retain (default: 20)
   --interval <seconds>    Watch refresh interval (default: 5)
@@ -197,6 +199,7 @@ Exit codes: 0 healthy, 1 warning/critical finding, 2 CLI/collection error.
 
     public string Command { get; private set; } = "snapshot";
     public bool Json { get; private set; }
+    public bool Redact { get; private set; }
     public bool ShowHelp { get; private set; }
     public string? OutputPath { get; private set; }
     public string? BaselinePath { get; private set; }
@@ -220,6 +223,7 @@ Exit codes: 0 healthy, 1 warning/critical finding, 2 CLI/collection error.
                 case "--help": case "-h": result.ShowHelp = true; break;
                 case "--version": result.Command = "version"; break;
                 case "--json": result.Json = true; break;
+                case "--redact": result.Redact = true; break;
                 case "--no-processes": result.IncludeProcesses = false; break;
                 case "--no-network": result.IncludeNetwork = false; break;
                 case "--no-services": result.IncludeServices = false; break;

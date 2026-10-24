@@ -12,7 +12,17 @@ if ($null -eq $json.memory.usedPercent) { throw 'memory.usedPercent missing' }
 
 $tools = dotnet run --project $project -c Release --no-build -- tools --json | ConvertFrom-Json
 if ($tools.tools.Count -lt 1) { throw 'tool inventory is empty' }
-if ($tools.tools | Where-Object { $_.available -and $_.security -in @('world-writable', 'untrusted-path', 'reparse-point') }) { throw 'tool inventory reported an unsafe executable' }
+if ($tools.tools | Where-Object { $_.available -and $_.security -ne 'secure' }) { throw 'tool inventory reported an unsafe executable' }
+
+$oldPath = $env:PATH
+try {
+    $env:PATH = (Join-Path $temp 'not-a-tool') + [IO.Path]::PathSeparator + $oldPath
+    $pathTools = dotnet run --project $project -c Release --no-build -- tools --json | ConvertFrom-Json
+    if ($pathTools.tools | Where-Object { $_.available -and $_.security -ne 'secure' }) { throw 'tool resolution changed under a polluted PATH' }
+}
+finally {
+    $env:PATH = $oldPath
+}
 
 $redacted = dotnet run --project $project -c Release --no-build -- snapshot --json --redact --no-processes --no-network --no-services | ConvertFrom-Json
 if ($redacted.host.hostname -ne '[redacted-host]') { throw 'redacted snapshot host was not redacted' }
@@ -24,6 +34,12 @@ if ($redactedTools.tools | Where-Object { $_.path }) { throw 'redacted tool inve
 
 $redactedDoctor = dotnet run --project $project -c Release --no-build -- doctor --json --redact --no-processes --no-network --no-services | ConvertFrom-Json
 if ($redactedDoctor.host -ne '[redacted-host]') { throw 'redacted doctor host was not redacted' }
+
+$deepBaseline = Join-Path $temp 'deep-baseline.json'
+$deepJson = ('{"x":' * 70) + '0' + ('}' * 70)
+[IO.File]::WriteAllText($deepBaseline, $deepJson, [Text.Encoding]::UTF8)
+$null = dotnet run --project $project -c Release --no-build -- diff $deepBaseline --json --no-processes --no-network --no-services 2>&1
+if ($LASTEXITCODE -ne 2) { throw "deeply nested baseline was not rejected (exit $LASTEXITCODE)" }
 
 $baseline = Join-Path $temp 'baseline.json'
 dotnet run --project $project -c Release --no-build -- snapshot --json --out $baseline --no-processes --no-network --no-services | Out-Host

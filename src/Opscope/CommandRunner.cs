@@ -28,6 +28,9 @@ internal static class CommandRunner
             process.StartInfo.ArgumentList.Add(argument);
         }
 
+        using var readerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        Task<(string Text, bool Truncated)>? stdoutTask = null;
+        Task<(string Text, bool Truncated)>? stderrTask = null;
         try
         {
             if (!process.Start())
@@ -35,8 +38,8 @@ internal static class CommandRunner
                 return new CommandResult(-1, string.Empty, "Process did not start", false);
             }
 
-            var stdoutTask = ReadLimitedAsync(process.StandardOutput, cancellationToken);
-            var stderrTask = ReadLimitedAsync(process.StandardError, cancellationToken);
+            stdoutTask = ReadLimitedAsync(process.StandardOutput, readerCts.Token);
+            stderrTask = ReadLimitedAsync(process.StandardError, readerCts.Token);
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(timeout);
 
@@ -47,6 +50,7 @@ internal static class CommandRunner
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
                 try { process.Kill(entireProcessTree: true); } catch { /* best effort */ }
+                readerCts.Cancel();
                 var timedOutStdout = await stdoutTask;
                 var timedOutStderr = await stderrTask;
                 return new CommandResult(-1, timedOutStdout.Text, timedOutStderr.Text, true, timedOutStdout.Truncated || timedOutStderr.Truncated);
@@ -55,6 +59,14 @@ internal static class CommandRunner
             var stdout = await stdoutTask;
             var stderr = await stderrTask;
             return new CommandResult(process.ExitCode, stdout.Text, stderr.Text, false, stdout.Truncated || stderr.Truncated);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            try { process.Kill(entireProcessTree: true); } catch { /* best effort */ }
+            readerCts.Cancel();
+            if (stdoutTask is not null) await stdoutTask;
+            if (stderrTask is not null) await stderrTask;
+            throw;
         }
         catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or IOException or UnauthorizedAccessException or ArgumentException or PlatformNotSupportedException)
         {
@@ -68,17 +80,24 @@ internal static class CommandRunner
         var output = new StringBuilder(Math.Min(MaxOutputChars, 32 * 1024));
         var truncated = false;
         int read;
-        while ((read = await reader.ReadAsync(buffer.AsMemory(), cancellationToken)) > 0)
+        try
         {
-            if (output.Length >= MaxOutputChars)
+            while ((read = await reader.ReadAsync(buffer.AsMemory(), cancellationToken)) > 0)
             {
-                truncated = true;
-                continue;
-            }
+                if (output.Length >= MaxOutputChars)
+                {
+                    truncated = true;
+                    continue;
+                }
 
-            var remaining = MaxOutputChars - output.Length;
-            output.Append(buffer, 0, Math.Min(read, remaining));
-            if (read > remaining) truncated = true;
+                var remaining = MaxOutputChars - output.Length;
+                output.Append(buffer, 0, Math.Min(read, remaining));
+                if (read > remaining) truncated = true;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            truncated = true;
         }
         return (output.ToString(), truncated);
     }

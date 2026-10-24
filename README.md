@@ -1,2 +1,78 @@
 # opscope
-Cross-platform systems operations CLI for Linux and Windows: inventory, health checks, security posture, drift detection and incident bundles.
+
+`opscope` is a cross-platform systems operations CLI for Linux and Windows. It is designed for the first ten minutes of an incident: capture a reliable host snapshot, spot degraded signals, inspect processes and listening sockets, and produce a shareable support bundle without requiring an agent or third-party runtime.
+
+## What it does
+
+- Host inventory: OS, kernel/runtime, architecture, boot time, uptime and elevation state.
+- Health signals: memory pressure, disk pressure, network reachability and failed services.
+- Process inventory with CPU time, memory and command line when the OS permits access.
+- Listening socket discovery using native `ss`/`netstat` tooling when available.
+- Running service discovery using `systemctl` on Linux and `sc.exe` on Windows.
+- Security posture: host firewall state and wildcard-bound listeners, with actionable exposure findings.
+- Snapshot drift detection across metrics, processes, services, disks and listeners.
+- Stable JSON output for automation and human-readable output for operators.
+- Redacted ZIP support bundles containing a snapshot, findings, process list, network data and collection metadata.
+- Watch mode for a compact live dashboard.
+
+The collector is intentionally read-only. It does not stop processes, change services, modify firewall rules or send telemetry.
+
+## Requirements
+
+- .NET 8 runtime for the framework-dependent build, or a self-contained publish.
+- Linux: `ss` and `systemctl` are optional enrichments. The core collector works without them.
+- Windows: `sc.exe` is an optional enrichment and ships with Windows.
+
+## Build and run
+
+```bash
+dotnet build src/Opscope/Opscope.csproj -c Release
+dotnet run --project src/Opscope/Opscope.csproj -- snapshot
+dotnet run --project src/Opscope/Opscope.csproj -- snapshot --json --out snapshot.json
+dotnet run --project src/Opscope/Opscope.csproj -- doctor
+dotnet run --project src/Opscope/Opscope.csproj -- bundle --out ./incident-bundle.zip
+dotnet run --project src/Opscope/Opscope.csproj -- diff ./baseline.json
+dotnet run --project src/Opscope/Opscope.csproj -- watch --interval 5
+```
+
+For a portable binary:
+
+```bash
+dotnet publish src/Opscope/Opscope.csproj -c Release -r linux-x64 --self-contained true -p:PublishSingleFile=true -o artifacts/linux-x64
+dotnet publish src/Opscope/Opscope.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o artifacts/win-x64
+```
+
+## Exit codes
+
+- `0`: command completed and no high-severity finding was observed.
+- `1`: command completed and at least one warning/error finding was observed.
+- `2`: invalid command line or an operational error prevented collection.
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `snapshot` | Collect and print a full host snapshot. |
+| `doctor` | Collect a snapshot and print only actionable findings. |
+| `bundle` | Create a ZIP with redacted JSON evidence for incident handoff. |
+| `watch` | Refresh a compact health dashboard until Ctrl+C. |
+| `diff <snapshot.json>` | Compare a saved baseline with a fresh collection from the current host. |
+| `version` | Print build/runtime information. |
+
+Common options: `--json`, `--out <path>`, `--no-processes`, `--no-network`, `--no-services`, `--top <n>`, `--interval <seconds>`, `--help`.
+
+`diff` returns exit code `1` when it detects a significant metric change, a host mismatch, or an added/removed/changed process, service or listener. Save a baseline with `snapshot --json --out baseline.json`, then run `diff baseline.json` during a maintenance window or incident investigation.
+
+## Security and privacy
+
+Support bundles redact user profile paths from command lines, usernames from process records, and the local host name from the exported JSON. Collection is local and read-only. Treat bundles as operational evidence: listening ports, package/runtime versions and filesystem paths can still be sensitive.
+
+## Repository layout
+
+```text
+src/Opscope/       Application source
+tests/             Cross-platform smoke scripts
+.github/workflows/ Build matrix for Linux and Windows
+```
+
+

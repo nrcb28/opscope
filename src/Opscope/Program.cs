@@ -27,7 +27,7 @@ internal static class Program
                 var tooling = ToolInventory.Collect();
                 if (options.Json) Console.WriteLine(Reporter.ToJson(tooling, options.Redact));
                 else Reporter.PrintTools(options.Redact ? Reporter.RedactForOutput(tooling) : tooling);
-                return tooling.Tools.Any(tool => !tool.Security.Equals("secure", StringComparison.OrdinalIgnoreCase)) ? 1 : 0;
+                return tooling.Tools.Any(tool => tool.Available && !tool.Security.Equals("secure", StringComparison.OrdinalIgnoreCase)) ? 1 : 0;
             }
 
             using var cancellation = new CancellationTokenSource();

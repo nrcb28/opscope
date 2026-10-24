@@ -7,6 +7,9 @@ namespace Opscope;
 internal static class CommandRunner
 {
     private const int MaxOutputChars = 256 * 1024;
+    private static readonly string UnavailableExecutable = OperatingSystem.IsWindows()
+        ? Path.Combine(Environment.SystemDirectory, "opscope-unavailable.exe")
+        : "/opscope-unavailable";
 
     public static async Task<CommandResult> RunAsync(string fileName, IEnumerable<string> arguments, TimeSpan timeout, CancellationToken cancellationToken = default)
     {
@@ -15,6 +18,7 @@ internal static class CommandRunner
             StartInfo = new ProcessStartInfo
             {
                 FileName = ResolveExecutable(fileName),
+                WorkingDirectory = OperatingSystem.IsWindows() ? Environment.SystemDirectory : Path.DirectorySeparatorChar.ToString(),
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -123,10 +127,12 @@ internal static class CommandRunner
             };
             var resolved = candidates.FirstOrDefault(File.Exists);
             if (resolved is not null) return resolved;
-            if (candidates.Length > 0) return $"/opscope-unavailable/{fileName}";
+            if (candidates.Length > 0) return UnavailableExecutable;
         }
 
-        return fileName;
+        // Never fall back to PATH for an unrecognised relative command. A future
+        // collector must opt into an explicit trusted path before it can spawn.
+        return UnavailableExecutable;
     }
 
     internal static bool IsTrustedExecutablePath(string fileName, string resolvedPath)
@@ -135,7 +141,9 @@ internal static class CommandRunner
         if (OperatingSystem.IsWindows())
         {
             var systemDirectory = Path.GetFullPath(Environment.SystemDirectory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-            return resolvedPath.StartsWith(systemDirectory, StringComparison.OrdinalIgnoreCase);
+            var expectedName = fileName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? fileName : $"{fileName}.exe";
+            return resolvedPath.StartsWith(systemDirectory, StringComparison.OrdinalIgnoreCase) &&
+                   Path.GetFileName(resolvedPath).Equals(expectedName, StringComparison.OrdinalIgnoreCase);
         }
 
         if (OperatingSystem.IsLinux())

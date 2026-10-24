@@ -8,8 +8,9 @@
 - Health signals: memory pressure, disk pressure, network reachability and failed services.
 - Process inventory with CPU time, memory and command line when the OS permits access.
 - Listening socket discovery using native `ss`/`netstat` tooling when available.
-- Running service discovery using `systemctl` on Linux and `sc.exe` on Windows.
+- Service discovery, including failed units, using `systemctl` on Linux and `sc.exe` on Windows.
 - Security posture: host firewall state and wildcard-bound listeners, with actionable exposure findings.
+- Firewall coverage distinguishes enabled state, rules present and effective filtering; incomplete checks are reported explicitly.
 - Snapshot drift detection across metrics, processes, services, disks and listeners.
 - Stable JSON output for automation and human-readable output for operators.
 - Redacted ZIP support bundles containing a snapshot, findings, process list, network data and collection metadata.
@@ -72,6 +73,8 @@ Use `snapshot --redact --json --out safe-snapshot.json` when the output may leav
 
 `tools` checks the native utilities used for enrichment (`ss`, `systemctl`, `netstat`, `netsh`, `sc.exe`, firewall utilities and `ip`). It reports missing coverage and fails if an available utility is outside the trusted system locations, writable by a non-owner, non-executable or otherwise not securely inspected.
 
+The regression suite covers localized UFW parsing, nftables verification, unsafe executable blocking, private output permissions, redaction of addresses and paths, and diff detection before redaction.
+
 ## Security and privacy
 
 Collection is local and read-only. External commands are launched without a shell, with fixed executable resolution and bounded output. Support bundles omit process command lines and redact host, user, network-address and filesystem-root identifiers. Treat snapshots and bundles as operational evidence: service names, listener counts and package/runtime versions can still be sensitive. See [SECURITY.md](SECURITY.md) for the reporting policy.
@@ -82,6 +85,7 @@ Collection is local and read-only. External commands are launched without a shel
 src/Opscope/       Application source
 tests/             Cross-platform smoke scripts
 .github/workflows/ Build matrix for Linux and Windows
+tests/Opscope.Tests/ Deterministic parser and security regression tests
 .gitattributes       Cross-platform line-ending policy
 SECURITY.md          Vulnerability reporting and data-handling notes
 ```

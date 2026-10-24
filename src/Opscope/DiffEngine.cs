@@ -4,6 +4,8 @@ internal static class DiffEngine
 {
     public static DiffReport Compare(Snapshot baseline, Snapshot current)
     {
+        // Compare normalized evidence instead of raw JSON so ordering and formatting do not create false changes.
+        // Comparamos evidencia normalizada, no JSON bruto, para evitar falsos cambios por orden o formato.
         var metrics = new List<MetricDelta>
         {
             Delta("cpuUsedPercent", baseline.CpuUsedPercent, current.CpuUsedPercent, "%"),
@@ -28,6 +30,8 @@ internal static class DiffEngine
         AddServiceChanges(changes, baseline.Services, current.Services);
         AddProcessChanges(changes, baseline.Processes, current.Processes);
 
+        // Thresholds highlight operationally meaningful drift while ignoring normal sampling noise.
+        // Los umbrales resaltan cambios operativos relevantes e ignoran el ruido normal de las muestras.
         var significant = changes.Count > 0 || metrics.Any(metric =>
             (metric.Name.Contains("cpu", StringComparison.OrdinalIgnoreCase) && Math.Abs(metric.Delta) >= 20) ||
             (metric.Name.Contains("memory", StringComparison.OrdinalIgnoreCase) && Math.Abs(metric.Delta) >= 15) ||
@@ -79,5 +83,4 @@ internal static class DiffEngine
         }
     }
 }
-
 

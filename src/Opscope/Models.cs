@@ -81,7 +81,8 @@ public sealed record FirewallProfile(
     string State,
     string Source,
     bool RulesPresent = false,
-    bool FilteringVerified = false);
+    bool FilteringVerified = false,
+    IReadOnlyList<string>? Families = null);
 
 public sealed record SecurityPosture(
     IReadOnlyList<FirewallProfile> Firewalls,

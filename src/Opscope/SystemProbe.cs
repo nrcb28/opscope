@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace Opscope;
@@ -12,7 +13,7 @@ internal sealed class SystemProbe
     private static readonly Regex Whitespace = new(@"\s+", RegexOptions.Compiled);
     private static readonly Regex WindowsServiceState = new(@"\b(RUNNING|STOPPED|PAUSED|START_PENDING|STOP_PENDING|PAUSE_PENDING|CONTINUE_PENDING)\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-    public async Task<Snapshot> CollectAsync(CollectorOptions options, CancellationToken cancellationToken = default)
+    public static async Task<Snapshot> CollectAsync(CollectorOptions options, CancellationToken cancellationToken = default)
     {
         var started = Stopwatch.GetTimestamp();
         var warnings = new List<string>();
@@ -21,7 +22,7 @@ internal sealed class SystemProbe
         var cpu = await ReadCpuPercentAsync(options.EffectiveCommandTimeout, warnings, cancellationToken);
         var memory = ReadMemory(warnings);
         var disks = ReadDisks(warnings);
-        var network = options.IncludeNetwork ? ReadNetwork(warnings) : Array.Empty<NetworkAdapter>();
+        IReadOnlyList<NetworkAdapter> network = options.IncludeNetwork ? ReadNetwork(warnings) : Array.Empty<NetworkAdapter>();
         var processes = options.IncludeProcesses ? ReadProcesses(options.TopProcesses, warnings) : Array.Empty<ProcessInfo>();
         var listeners = options.IncludeNetwork ? await ReadListenersAsync(options.EffectiveCommandTimeout, warnings, cancellationToken) : Array.Empty<ListenerInfo>();
         var services = options.IncludeServices ? await ReadServicesAsync(options.EffectiveCommandTimeout, warnings, cancellationToken) : Array.Empty<ServiceInfo>();
@@ -164,7 +165,7 @@ internal sealed class SystemProbe
         return new MemoryInfo(total, available, used, total == 0 ? 0 : used * 100d / total, source);
     }
 
-    private static IReadOnlyList<DiskInfo> ReadDisks(List<string> warnings)
+    private static List<DiskInfo> ReadDisks(List<string> warnings)
     {
         var result = new List<DiskInfo>();
         try
@@ -196,7 +197,7 @@ internal sealed class SystemProbe
         return result;
     }
 
-    private static IReadOnlyList<NetworkAdapter> ReadNetwork(List<string> warnings)
+    private static List<NetworkAdapter> ReadNetwork(List<string> warnings)
     {
         var result = new List<NetworkAdapter>();
         try
@@ -214,7 +215,7 @@ internal sealed class SystemProbe
         return result;
     }
 
-    private static IReadOnlyList<ProcessInfo> ReadProcesses(int top, List<string> warnings)
+    private static ProcessInfo[] ReadProcesses(int top, List<string> warnings)
     {
         var rows = new List<ProcessInfo>();
         try
@@ -251,7 +252,16 @@ internal sealed class SystemProbe
 
     private static string TryGetProcessUser(Process process)
     {
-        if (!OperatingSystem.IsWindows()) return Environment.UserName;
+        if (OperatingSystem.IsLinux())
+        {
+            try
+            {
+                var uidLine = File.ReadLines($"/proc/{process.Id}/status").FirstOrDefault(line => line.StartsWith("Uid:", StringComparison.Ordinal));
+                var uid = uidLine?.Split(' ', StringSplitOptions.RemoveEmptyEntries).ElementAtOrDefault(1);
+                return string.IsNullOrWhiteSpace(uid) ? "?" : $"uid:{uid}";
+            }
+            catch { return "?"; }
+        }
         return "?";
     }
 
@@ -262,7 +272,14 @@ internal sealed class SystemProbe
             if (OperatingSystem.IsLinux())
             {
                 var path = $"/proc/{process.Id}/cmdline";
-                if (File.Exists(path)) return File.ReadAllText(path).Replace('\0', ' ').Trim();
+                if (File.Exists(path))
+                {
+                    using var stream = File.OpenRead(path);
+                    var buffer = new byte[8192];
+                    var read = stream.Read(buffer, 0, buffer.Length);
+                    var value = Encoding.UTF8.GetString(buffer, 0, read).Replace('\0', ' ').Trim();
+                    return stream.Position < stream.Length ? $"{value} …[truncated]" : value;
+                }
             }
             // Reading another process' command line on Windows requires either
             // WMI or a native NtQueryInformationProcess implementation. Keep
@@ -416,7 +433,7 @@ internal sealed class SystemProbe
                address.StartsWith(":::", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static IReadOnlyList<Finding> Evaluate(HostInfo host, double cpu, MemoryInfo memory, IReadOnlyList<DiskInfo> disks,
+    private static List<Finding> Evaluate(HostInfo host, double cpu, MemoryInfo memory, IReadOnlyList<DiskInfo> disks,
         IReadOnlyList<NetworkAdapter> network, IReadOnlyList<ListenerInfo> listeners, IReadOnlyList<ServiceInfo> services, SecurityPosture security,
         bool networkRequested, bool servicesRequested)
     {
@@ -479,5 +496,4 @@ internal static class StringExtensions
 {
     public static IEnumerable<string> SplitLines(this string value) => value.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 }
-
 

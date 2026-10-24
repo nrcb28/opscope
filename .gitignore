@@ -1,0 +1,12 @@
+bin/
+obj/
+artifacts/
+.idea/
+.vscode/
+*.user
+*.suo
+*.swp
+*.log
+*.zip
+
+

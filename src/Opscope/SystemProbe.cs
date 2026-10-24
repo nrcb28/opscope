@@ -10,7 +10,7 @@ namespace Opscope;
 
 internal sealed class SystemProbe
 {
-    internal sealed record FirewallObservation(string State, bool RulesPresent, bool FilteringVerified);
+    internal sealed record FirewallObservation(string State, bool RulesPresent, bool FilteringVerified, IReadOnlyList<string>? Families = null);
 
     private static readonly Regex Whitespace = new(@"\s+", RegexOptions.Compiled);
     private static readonly Regex WindowsServiceState = new(@"\b(RUNNING|STOPPED|PAUSED|START_PENDING|STOP_PENDING|PAUSE_PENDING|CONTINUE_PENDING)\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -482,7 +482,7 @@ internal sealed class SystemProbe
                     _ => new FirewallObservation("UNKNOWN", false, false)
                 };
                 if (!observation.State.Equals("UNKNOWN", StringComparison.OrdinalIgnoreCase)) successfulInspection = true;
-                firewalls.Add(new FirewallProfile(candidate.Name, observation.State, candidate.Name, observation.RulesPresent, observation.FilteringVerified));
+                firewalls.Add(new FirewallProfile(candidate.Name, observation.State, candidate.Name, observation.RulesPresent, observation.FilteringVerified, observation.Families));
             }
 
             if (!successfulInspection)
@@ -491,7 +491,11 @@ internal sealed class SystemProbe
 
         var known = firewalls.Any(profile => !profile.State.Equals("UNKNOWN", StringComparison.OrdinalIgnoreCase));
         var active = firewalls.Any(profile => profile.State.Equals("ACTIVE", StringComparison.OrdinalIgnoreCase));
-        var protectionVerified = firewalls.Any(profile => profile.FilteringVerified && profile.RulesPresent);
+        var verifiedFamilies = firewalls
+            .Where(profile => profile.FilteringVerified && profile.RulesPresent)
+            .SelectMany(profile => profile.Families ?? Array.Empty<string>())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var protectionVerified = verifiedFamilies.Contains("inet") || (verifiedFamilies.Contains("ip") && verifiedFamilies.Contains("ip6"));
         var exposed = listeners.Count(IsExposedListener);
         return new SecurityPosture(firewalls, known, active, exposed, protectionVerified);
     }
@@ -541,30 +545,74 @@ internal sealed class SystemProbe
     {
         if (string.IsNullOrWhiteSpace(output)) return new FirewallObservation("INACTIVE", false, false);
 
-        var hasFilterChain = false;
+        var currentFamily = string.Empty;
+        var currentTableSupported = false;
+        var currentHook = string.Empty;
+        var hasSupportedFilterTable = false;
+        var hasInputHook = false;
         var hasRule = false;
         var filteringVerified = false;
+        var effectiveFamilies = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var line in output.SplitLines())
         {
             var trimmed = line.Trim();
-            if (trimmed.Contains("type filter", StringComparison.OrdinalIgnoreCase) && trimmed.Contains("hook", StringComparison.OrdinalIgnoreCase))
-                hasFilterChain = true;
-            if (!hasFilterChain) continue;
-            if (Regex.IsMatch(trimmed, @"\b(policy\s+(drop|reject)|drop|reject)\b", RegexOptions.IgnoreCase))
+            var table = Regex.Match(trimmed, @"^table\s+(?<family>\w+)\s+", RegexOptions.IgnoreCase);
+            if (table.Success)
+            {
+                currentFamily = table.Groups["family"].Value.ToLowerInvariant();
+                currentTableSupported = currentFamily is "ip" or "ip6" or "inet";
+                hasSupportedFilterTable |= currentTableSupported;
+                currentHook = string.Empty;
+                continue;
+            }
+
+            if (trimmed.StartsWith("chain ", StringComparison.OrdinalIgnoreCase))
+            {
+                currentHook = string.Empty;
+                continue;
+            }
+
+            var hook = Regex.Match(trimmed, @"\btype\s+filter\s+hook\s+(?<hook>\w+)\b", RegexOptions.IgnoreCase);
+            if (hook.Success)
+            {
+                currentHook = hook.Groups["hook"].Value.ToLowerInvariant();
+                if (currentTableSupported && currentHook.Equals("input", StringComparison.OrdinalIgnoreCase)) hasInputHook = true;
+            }
+
+            // Only an input hook in an IP-capable family can protect local TCP/UDP listeners.
+            // Solo un hook input en una familia IP puede proteger listeners TCP/UDP locales.
+            if (!currentTableSupported || !currentHook.Equals("input", StringComparison.OrdinalIgnoreCase)) continue;
+            if (Regex.IsMatch(trimmed, @"\bpolicy\s+(drop|reject)\b", RegexOptions.IgnoreCase))
             {
                 hasRule = true;
                 filteringVerified = true;
+                effectiveFamilies.Add(currentFamily);
             }
-            else if (Regex.IsMatch(trimmed, @"\b(accept|jump|goto|return|queue)\b", RegexOptions.IgnoreCase))
+            else if (Regex.IsMatch(trimmed, @"\b(drop|reject)\b", RegexOptions.IgnoreCase))
             {
                 hasRule = true;
+                if (AppliesToNonLoopback(trimmed))
+                {
+                    filteringVerified = true;
+                    effectiveFamilies.Add(currentFamily);
+                }
             }
         }
 
-        if (!hasFilterChain) return new FirewallObservation("UNKNOWN", false, false);
-        return hasRule
-            ? new FirewallObservation(filteringVerified ? "ACTIVE" : "UNVERIFIED", true, filteringVerified)
-            : new FirewallObservation("UNVERIFIED", false, false);
+        if (!hasSupportedFilterTable) return new FirewallObservation("UNKNOWN", false, false);
+        if (!hasInputHook || !hasRule) return new FirewallObservation("UNVERIFIED", false, false);
+        return new FirewallObservation(filteringVerified ? "ACTIVE" : "UNVERIFIED", true, filteringVerified, effectiveFamilies.ToArray());
+    }
+
+    private static bool AppliesToNonLoopback(string rule)
+    {
+        var onlyLoopbackInterface = Regex.IsMatch(rule, @"\b(?:iif|iifname|oif|oifname)\s+(?:""lo""|'lo'|lo)(?:\s|;|$)", RegexOptions.IgnoreCase) &&
+                                    !Regex.IsMatch(rule, @"\b(?:iif|iifname|oif|oifname)\s+(?:!=|not\s+in)\b", RegexOptions.IgnoreCase) &&
+                                    !Regex.IsMatch(rule, @"\b(?:iif|iifname|oif|oifname)\s+\{[^}]*\b(?:eth|en|wl|bond|br)", RegexOptions.IgnoreCase);
+        if (onlyLoopbackInterface) return false;
+
+        var onlyLoopbackAddress = Regex.IsMatch(rule, @"\b(?:ip\s+(?:saddr|daddr)\s+127\.0\.0\.0/8|ip6\s+(?:saddr|daddr)\s+::1)\b", RegexOptions.IgnoreCase);
+        return !onlyLoopbackAddress;
     }
 
     private static string ParseWindowsServiceState(string value)

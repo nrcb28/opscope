@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text;
 
 namespace Opscope;
 
@@ -21,7 +22,6 @@ internal static class Program
                 return 0;
             }
 
-            var probe = new SystemProbe();
             using var cancellation = new CancellationTokenSource();
             Console.CancelKeyPress += (_, eventArgs) =>
             {
@@ -30,20 +30,18 @@ internal static class Program
             };
 
             if (options.Command.Equals("watch", StringComparison.OrdinalIgnoreCase))
-                return await WatchAsync(probe, options, cancellation.Token);
+                return await WatchAsync(options, cancellation.Token);
 
             if (options.Command.Equals("diff", StringComparison.OrdinalIgnoreCase))
             {
-                var baselineJson = await File.ReadAllTextAsync(options.BaselinePath!, cancellation.Token);
+                var baselineJson = await ReadSnapshotTextAsync(options.BaselinePath!, cancellation.Token);
                 var baseline = Reporter.ParseSnapshot(baselineJson);
-                var current = await probe.CollectAsync(options.ToCollectorOptions(), cancellation.Token);
+                var current = await SystemProbe.CollectAsync(options.ToCollectorOptions(), cancellation.Token);
                 var report = DiffEngine.Compare(baseline, current);
                 if (options.OutputPath is not null)
                 {
                     var fullPath = Path.GetFullPath(options.OutputPath);
-                    var parent = Path.GetDirectoryName(fullPath);
-                    if (!string.IsNullOrWhiteSpace(parent)) Directory.CreateDirectory(parent);
-                    await File.WriteAllTextAsync(fullPath, Reporter.ToJson(report), cancellation.Token);
+                    await Reporter.WriteTextAtomicallyAsync(fullPath, Reporter.ToJson(report), cancellation.Token);
                     Console.Error.WriteLine($"Wrote {fullPath}");
                 }
                 if (options.Json) Console.WriteLine(Reporter.ToJson(report));
@@ -51,7 +49,7 @@ internal static class Program
                 return report.Significant ? 1 : 0;
             }
 
-            var snapshot = await probe.CollectAsync(options.ToCollectorOptions(), cancellation.Token);
+            var snapshot = await SystemProbe.CollectAsync(options.ToCollectorOptions(), cancellation.Token);
             return options.Command.ToLowerInvariant() switch
             {
                 "snapshot" => await SnapshotAsync(snapshot, options, cancellation.Token),
@@ -108,7 +106,7 @@ internal static class Program
         var fullPath = Path.GetFullPath(path);
         var parent = Path.GetDirectoryName(fullPath);
         if (!string.IsNullOrWhiteSpace(parent)) Directory.CreateDirectory(parent);
-        await File.WriteAllTextAsync(fullPath, Reporter.ToDoctorJson(snapshot), cancellationToken);
+        await Reporter.WriteTextAtomicallyAsync(fullPath, Reporter.ToDoctorJson(snapshot), cancellationToken);
         Console.Error.WriteLine($"Wrote {fullPath}");
         if (!json) Reporter.PrintFindings(snapshot.Findings, snapshot.CollectionWarnings);
         return Reporter.ExitCode(snapshot);
@@ -128,17 +126,37 @@ internal static class Program
         return Reporter.ExitCode(snapshot);
     }
 
-    private static async Task<int> WatchAsync(SystemProbe probe, CliOptions options, CancellationToken cancellationToken)
+    private static async Task<int> WatchAsync(CliOptions options, CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
-            var snapshot = await probe.CollectAsync(options.ToCollectorOptions(), cancellationToken);
+            var snapshot = await SystemProbe.CollectAsync(options.ToCollectorOptions(), cancellationToken);
             if (!Console.IsOutputRedirected) Console.Clear();
             Reporter.PrintDashboard(snapshot);
             try { await Task.Delay(options.Interval, cancellationToken); }
             catch (OperationCanceledException) { break; }
         }
         return 0;
+    }
+
+    private static async Task<string> ReadSnapshotTextAsync(string path, CancellationToken cancellationToken)
+    {
+        var fullPath = Path.GetFullPath(path);
+        const long maxSnapshotBytes = 16 * 1024 * 1024;
+        if (!File.Exists(fullPath)) throw new CliException($"Baseline snapshot was not found: {fullPath}");
+        await using var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read, 8192, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        if (stream.Length > maxSnapshotBytes) throw new CliException($"Baseline snapshot exceeds the {maxSnapshotBytes / 1024 / 1024} MiB safety limit.");
+
+        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        var content = new StringBuilder((int)Math.Min(stream.Length, maxSnapshotBytes));
+        var buffer = new char[8192];
+        int read;
+        while ((read = await reader.ReadAsync(buffer.AsMemory(), cancellationToken)) > 0)
+        {
+            if (content.Length + read > maxSnapshotBytes) throw new CliException($"Baseline snapshot exceeds the {maxSnapshotBytes / 1024 / 1024} MiB safety limit.");
+            content.Append(buffer, 0, read);
+        }
+        return content.ToString();
     }
 
     private static void PrintVersion()
@@ -192,8 +210,8 @@ Exit codes: 0 healthy, 1 warning/critical finding, 2 CLI/collection error.
     {
         var result = new CliOptions();
         var index = 0;
-        if (args.Length > 0 && !args[0].StartsWith("-", StringComparison.Ordinal)) result.Command = args[index++];
-        if (result.Command.Equals("diff", StringComparison.OrdinalIgnoreCase) && index < args.Length && !args[index].StartsWith("-", StringComparison.Ordinal))
+        if (args.Length > 0 && !args[0].StartsWith('-')) result.Command = args[index++];
+        if (result.Command.Equals("diff", StringComparison.OrdinalIgnoreCase) && index < args.Length && !args[index].StartsWith('-'))
             result.BaselinePath = args[index++];
         while (index < args.Length)
         {
@@ -225,7 +243,7 @@ Exit codes: 0 healthy, 1 warning/critical finding, 2 CLI/collection error.
 
     private static string Next(string[] args, ref int index, string option)
     {
-        if (index >= args.Length || args[index].StartsWith("-", StringComparison.Ordinal)) throw new CliException($"{option} requires a value.");
+        if (index >= args.Length || args[index].StartsWith('-')) throw new CliException($"{option} requires a value.");
         return args[index++];
     }
 
@@ -235,5 +253,4 @@ Exit codes: 0 healthy, 1 warning/critical finding, 2 CLI/collection error.
         return parsed;
     }
 }
-
 

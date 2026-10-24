@@ -13,6 +13,7 @@ internal static class Reporter
     {
         WriteIndented = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        MaxDepth = 64,
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
     };
 
@@ -35,8 +36,10 @@ internal static class Reporter
 
     public static Snapshot ParseSnapshot(string json)
     {
-        return JsonSerializer.Deserialize<Snapshot>(json, JsonOptions)
+        var snapshot = JsonSerializer.Deserialize<Snapshot>(json, JsonOptions)
             ?? throw new InvalidDataException("Snapshot JSON was empty or invalid.");
+        ValidateSnapshot(snapshot);
+        return snapshot;
     }
 
     public static string ToDoctorJson(Snapshot snapshot, bool redact = false)
@@ -312,6 +315,38 @@ internal static class Reporter
             value = value.Replace(replacement, "[redacted]", StringComparison.OrdinalIgnoreCase);
         value = Regex.Replace(value, @"(?i)([A-Z]:\\Users\\)[^\\\s]+", "$1[redacted]");
         return Regex.Replace(value, @"(?i)(/home/)[^/\s]+", "$1[redacted]");
+    }
+
+    private static void ValidateSnapshot(Snapshot snapshot)
+    {
+        if (snapshot.Host is null || snapshot.Memory is null || snapshot.Security is null ||
+            snapshot.Disks is null || snapshot.Network is null || snapshot.Processes is null ||
+            snapshot.Listeners is null || snapshot.Services is null || snapshot.Findings is null ||
+            snapshot.CollectionWarnings is null || snapshot.Tooling is { Tools: null })
+            throw new InvalidDataException("Snapshot is missing required collections or metadata.");
+
+        EnsureCount("disks", snapshot.Disks.Count, 1024);
+        EnsureCount("network adapters", snapshot.Network.Count, 4096);
+        EnsureCount("processes", snapshot.Processes.Count, 1000);
+        EnsureCount("listeners", snapshot.Listeners.Count, 10000);
+        EnsureCount("services", snapshot.Services.Count, 10000);
+        EnsureCount("findings", snapshot.Findings.Count, 1000);
+        EnsureCount("collection warnings", snapshot.CollectionWarnings.Count, 1000);
+        if (snapshot.Tooling is not null) EnsureCount("tools", snapshot.Tooling.Tools.Count, 64);
+
+        if (snapshot.Disks.Any(disk => disk is null) ||
+            snapshot.Network.Any(adapter => adapter is null) ||
+            snapshot.Processes.Any(process => process is null) ||
+            snapshot.Listeners.Any(listener => listener is null) ||
+            snapshot.Services.Any(service => service is null) ||
+            snapshot.Findings.Any(finding => finding is null) ||
+            snapshot.CollectionWarnings.Any(warning => warning is null))
+            throw new InvalidDataException("Snapshot contains null collection entries.");
+    }
+
+    private static void EnsureCount(string name, int count, int maximum)
+    {
+        if (count > maximum) throw new InvalidDataException($"Snapshot contains too many {name}; maximum is {maximum}.");
     }
 
     private static async Task WriteEntryAsync(ZipArchive archive, string name, string content, CancellationToken cancellationToken)

@@ -67,7 +67,7 @@ Use `snapshot --redact --json --out safe-snapshot.json` when the output may leav
 
 `diff` returns exit code `1` when it detects a significant metric change, a host mismatch, or an added/removed/changed process, service or listener. Save a baseline with `snapshot --json --out baseline.json`, then run `diff baseline.json` during a maintenance window or incident investigation.
 
-`tools` checks the native utilities used for enrichment (`ss`, `systemctl`, `netstat`, `netsh`, `sc.exe`, firewall utilities and `ip`). It reports missing coverage and fails if an available utility is outside the trusted system locations or is world-writable.
+`tools` checks the native utilities used for enrichment (`ss`, `systemctl`, `netstat`, `netsh`, `sc.exe`, firewall utilities and `ip`). It reports missing coverage and fails if an available utility is outside the trusted system locations, writable by a non-owner, non-executable or otherwise not securely inspected.
 
 ## Security and privacy
 

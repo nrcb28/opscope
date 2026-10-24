@@ -10,6 +10,30 @@ json="$(dotnet run --project "$project" -c Release --no-build -- snapshot --json
 printf '%s' "$json" | grep -q '"platform"'
 printf '%s' "$json" | grep -q '"usedPercent"'
 
+tools_json="$(dotnet run --project "$project" -c Release --no-build -- tools --json)"
+printf '%s' "$tools_json" | grep -q '"tools"'
+if printf '%s' "$tools_json" | grep -Eq '"security": "(world-writable|untrusted-path|reparse-point)"'; then
+  echo 'tool inventory reported an unsafe executable' >&2
+  exit 1
+fi
+
+redacted_json="$(dotnet run --project "$project" -c Release --no-build -- snapshot --json --redact --no-processes --no-network --no-services)"
+printf '%s' "$redacted_json" | grep -q '"hostname": "\[redacted-host\]"'
+printf '%s' "$redacted_json" | grep -q '"currentUser": "\[redacted-user\]"'
+if printf '%s' "$redacted_json" | grep -q '"path": "'; then
+  echo 'redacted snapshot contains a tool path' >&2
+  exit 1
+fi
+
+redacted_tools="$(dotnet run --project "$project" -c Release --no-build -- tools --json --redact)"
+if printf '%s' "$redacted_tools" | grep -q '"path": "'; then
+  echo 'redacted tool inventory contains a path' >&2
+  exit 1
+fi
+
+redacted_doctor="$(dotnet run --project "$project" -c Release --no-build -- doctor --json --redact --no-processes --no-network --no-services)"
+printf '%s' "$redacted_doctor" | grep -q '"host": "\[redacted-host\]"'
+
 baseline="$temp/baseline.json"
 dotnet run --project "$project" -c Release --no-build -- snapshot --json --out "$baseline" --no-processes --no-network --no-services >/dev/null
 diff_json="$(dotnet run --project "$project" -c Release --no-build -- diff "$baseline" --json --no-processes --no-network --no-services)"
@@ -23,6 +47,7 @@ mkdir -p "$bundle_dir"
 unzip -q -o "$bundle" -d "$bundle_dir"
 grep -q '"hostname": "\[redacted-host\]"' "$bundle_dir/snapshot.json"
 ! grep -q 'commandLine' "$bundle_dir/snapshot.json"
+! grep -Eq 'commandLine|"path"[[:space:]]*:' "$bundle_dir/findings.json"
 
 echo 'opscope smoke test passed'
 

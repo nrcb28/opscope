@@ -8,10 +8,11 @@
     <AssemblyName>opscope</AssemblyName>
     <RootNamespace>Opscope</RootNamespace>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisMode>Recommended</AnalysisMode>
     <PublishSingleFile Condition="'$(PublishSingleFile)' == ''">true</PublishSingleFile>
     <SelfContained Condition="'$(SelfContained)' == ''">false</SelfContained>
     <DebugType>portable</DebugType>
   </PropertyGroup>
 </Project>
-
 

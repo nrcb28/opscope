@@ -103,6 +103,32 @@ internal sealed class SystemProbe
             }
         }
 
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                if (GetSystemTimes(out var firstIdle, out var firstKernel, out var firstUser))
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(150), cancellationToken);
+                    if (GetSystemTimes(out var secondIdle, out var secondKernel, out var secondUser))
+                    {
+                        var idleDelta = secondIdle.ToUInt64() - firstIdle.ToUInt64();
+                        var totalDelta = (secondKernel.ToUInt64() + secondUser.ToUInt64()) -
+                                         (firstKernel.ToUInt64() + firstUser.ToUInt64());
+                        return totalDelta == 0 ? 0 : Math.Clamp((1 - (double)idleDelta / totalDelta) * 100, 0, 100);
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                warnings.Add($"CPU sampling via GetSystemTimes failed: {ex.Message}");
+            }
+        }
+
         try
         {
             using var process = Process.GetCurrentProcess();
@@ -378,8 +404,7 @@ internal sealed class SystemProbe
                     if (key.Contains("SERVICE", StringComparison.OrdinalIgnoreCase) || key.Contains("SERVICIO", StringComparison.OrdinalIgnoreCase)) name = value;
                     else if (name is not null && (key.Contains("STATE", StringComparison.OrdinalIgnoreCase) || key.Contains("ESTADO", StringComparison.OrdinalIgnoreCase)))
                     {
-                        var stateMatch = WindowsServiceState.Match(value);
-                        var state = stateMatch.Success ? stateMatch.Value.ToUpperInvariant() : value;
+                        var state = ParseWindowsServiceState(value);
                         services.Add(new ServiceInfo(name, state, null, "sc.exe"));
                         name = null;
                     }
@@ -412,7 +437,7 @@ internal sealed class SystemProbe
                     else if (profile is not null && (trimmed.StartsWith("State", StringComparison.OrdinalIgnoreCase) || trimmed.StartsWith("Estado", StringComparison.OrdinalIgnoreCase)))
                     {
                         var fields = trimmed.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                        var state = fields.Length == 0 ? "UNKNOWN" : fields[^1].ToUpperInvariant();
+                        var state = fields.Length == 0 ? "UNKNOWN" : NormalizeFirewallState(fields[^1]);
                         firewalls.Add(new FirewallProfile(profile, state, "netsh"));
                         profile = null;
                     }
@@ -459,6 +484,35 @@ internal sealed class SystemProbe
         if (command.ExitCode != 0 && !string.IsNullOrWhiteSpace(command.StandardError))
             warnings.Add($"{name} unavailable: {command.StandardError.Trim()}");
     }
+
+    private static string ParseWindowsServiceState(string value)
+    {
+        foreach (var token in value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (!int.TryParse(token, NumberStyles.Integer, CultureInfo.InvariantCulture, out var code)) continue;
+            return code switch
+            {
+                1 => "STOPPED",
+                2 => "START_PENDING",
+                3 => "STOP_PENDING",
+                4 => "RUNNING",
+                5 => "CONTINUE_PENDING",
+                6 => "PAUSE_PENDING",
+                7 => "PAUSED",
+                _ => "UNKNOWN"
+            };
+        }
+
+        var stateMatch = WindowsServiceState.Match(value);
+        return stateMatch.Success ? stateMatch.Value.ToUpperInvariant() : value;
+    }
+
+    private static string NormalizeFirewallState(string value) => value.Trim().ToUpperInvariant() switch
+    {
+        "ON" or "ACTIVE" or "RUNNING" or "ACTIVATED" or "ACTIVADO" or "ACTIVAR" or "ENABLED" or "HABILITADO" or "1" => "ACTIVE",
+        "OFF" or "INACTIVE" or "STOPPED" or "DEACTIVATED" or "DESACTIVATED" or "DESACTIVADO" or "DESACTIVAR" or "DISABLED" or "DESHABILITADO" or "0" => "INACTIVE",
+        _ => "UNKNOWN"
+    };
 
     private static bool IsExposedListener(ListenerInfo listener)
     {
@@ -559,6 +613,18 @@ internal sealed class SystemProbe
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KernelFileTime
+    {
+        public uint Low;
+        public uint High;
+
+        public ulong ToUInt64() => ((ulong)High << 32) | Low;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetSystemTimes(out KernelFileTime idleTime, out KernelFileTime kernelTime, out KernelFileTime userTime);
 
 }
 

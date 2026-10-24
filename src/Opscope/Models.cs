@@ -84,6 +84,18 @@ public sealed record SecurityPosture(
     bool HasActiveFirewall,
     int ExposedListeners);
 
+public sealed record ToolInfo(
+    string Name,
+    string Purpose,
+    string Role,
+    bool Available,
+    string? Path,
+    string Security,
+    string? Version);
+
+public sealed record ToolingPosture(
+    IReadOnlyList<ToolInfo> Tools);
+
 public sealed record CommandResult(
     int ExitCode,
     string StandardOutput,
@@ -102,6 +114,7 @@ public sealed record Snapshot(
     IReadOnlyList<ListenerInfo> Listeners,
     IReadOnlyList<ServiceInfo> Services,
     SecurityPosture Security,
+    ToolingPosture? Tooling,
     IReadOnlyList<Finding> Findings,
     IReadOnlyList<string> CollectionWarnings,
     TimeSpan CollectionDuration);

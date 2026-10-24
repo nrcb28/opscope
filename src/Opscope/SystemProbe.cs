@@ -307,13 +307,16 @@ internal sealed class SystemProbe
         }
         else if (OperatingSystem.IsWindows())
         {
-            var command = await CommandRunner.RunAsync("netstat", ["-ano", "-p", "tcp"], timeout, cancellationToken);
+            var command = await CommandRunner.RunAsync("netstat", ["-ano"], timeout, cancellationToken);
             if (command.ExitCode == 0)
             {
-                foreach (var line in command.StandardOutput.SplitLines().Where(line => line.Contains("LISTENING", StringComparison.OrdinalIgnoreCase)))
+                foreach (var line in command.StandardOutput.SplitLines())
                 {
                     var fields = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                    if (fields.Length >= 5) result.Add(new ListenerInfo(fields[0], fields[1], $"pid={fields[^1]}", "netstat"));
+                    if (fields.Length >= 5 && fields[0].Equals("TCP", StringComparison.OrdinalIgnoreCase) && fields[3].Equals("LISTENING", StringComparison.OrdinalIgnoreCase))
+                        result.Add(new ListenerInfo(fields[0], fields[1], $"pid={fields[^1]}", "netstat"));
+                    else if (fields.Length >= 4 && fields[0].Equals("UDP", StringComparison.OrdinalIgnoreCase))
+                        result.Add(new ListenerInfo(fields[0], fields[1], $"pid={fields[^1]}", "netstat"));
                 }
             }
             else if (!string.IsNullOrWhiteSpace(command.StandardError)) warnings.Add($"netstat unavailable: {command.StandardError.Trim()}");
@@ -401,7 +404,7 @@ internal sealed class SystemProbe
             {
                 ("ufw", ["status"]),
                 ("firewalld", ["--state"]),
-                ("nftables", ["list", "ruleset"])
+                ("nft", ["list", "ruleset"])
             };
             foreach (var candidate in candidates)
             {
@@ -430,7 +433,9 @@ internal sealed class SystemProbe
         var address = listener.LocalAddress;
         return address.Contains("0.0.0.0", StringComparison.OrdinalIgnoreCase) ||
                address.Contains("[::]", StringComparison.OrdinalIgnoreCase) ||
-               address.StartsWith(":::", StringComparison.OrdinalIgnoreCase);
+               address.StartsWith(":::", StringComparison.OrdinalIgnoreCase) ||
+               address.StartsWith("*:", StringComparison.OrdinalIgnoreCase) ||
+               address.Equals("*", StringComparison.OrdinalIgnoreCase);
     }
 
     private static List<Finding> Evaluate(HostInfo host, double cpu, MemoryInfo memory, IReadOnlyList<DiskInfo> disks,

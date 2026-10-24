@@ -9,6 +9,8 @@ internal static class Program
     {
         try
         {
+            // Keep command dispatch centralized so every mode shares the same cancellation and error policy.
+            // Centralizamos el despacho para que todos los modos compartan cancelación y tratamiento de errores.
             var options = CliOptions.Parse(args);
             if (options.ShowHelp)
             {
@@ -154,6 +156,8 @@ internal static class Program
     private static async Task<string> ReadSnapshotTextAsync(string path, CancellationToken cancellationToken)
     {
         var fullPath = Path.GetFullPath(path);
+        // Baselines are untrusted input: cap their size before parsing to limit resource consumption.
+        // Las líneas base son entradas no confiables: limitamos su tamaño antes de analizarlas.
         const long maxSnapshotBytes = 16 * 1024 * 1024;
         if (!File.Exists(fullPath)) throw new CliException($"Baseline snapshot was not found: {fullPath}");
         await using var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read, 8192, FileOptions.Asynchronous | FileOptions.SequentialScan);
@@ -223,6 +227,8 @@ Exit codes: 0 healthy, 1 warning/critical finding, 2 CLI/collection error.
 
     public static CliOptions Parse(string[] args)
     {
+        // Parse only known options; rejecting unknown flags avoids silently changing collection behavior.
+        // Solo aceptamos opciones conocidas para no cambiar silenciosamente el comportamiento de recopilación.
         var result = new CliOptions();
         var index = 0;
         if (args.Length > 0 && !args[0].StartsWith('-')) result.Command = args[index++];

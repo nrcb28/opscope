@@ -23,9 +23,15 @@ internal static class Reporter
 
     public static Snapshot RedactForOutput(Snapshot snapshot) => Redact(snapshot);
 
+    public static ToolingPosture RedactForOutput(ToolingPosture tooling) =>
+        tooling with { Tools = tooling.Tools.Select(tool => tool with { Path = null }).ToArray() };
+
     public static string SafeDisplay(string? value) => new((value ?? string.Empty).Select(character => char.IsControl(character) ? ' ' : character).ToArray());
 
     public static string ToJson(DiffReport report) => JsonSerializer.Serialize(report, JsonOptions);
+
+    public static string ToJson(ToolingPosture tooling, bool redact = false) =>
+        JsonSerializer.Serialize(redact ? RedactForOutput(tooling) : tooling, JsonOptions);
 
     public static Snapshot ParseSnapshot(string json)
     {
@@ -33,17 +39,18 @@ internal static class Reporter
             ?? throw new InvalidDataException("Snapshot JSON was empty or invalid.");
     }
 
-    public static string ToDoctorJson(Snapshot snapshot)
+    public static string ToDoctorJson(Snapshot snapshot, bool redact = false)
     {
+        var view = redact ? Redact(snapshot) : snapshot;
         var result = new
         {
-            status = snapshot.Findings.Count == 0 && snapshot.CollectionWarnings.Count == 0
+            status = view.Findings.Count == 0 && view.CollectionWarnings.Count == 0
                 ? "ok"
-                : HighestSeverity(snapshot.Findings).ToString().ToLowerInvariant(),
-            collectedAtUtc = snapshot.CollectedAtUtc,
-            host = snapshot.Host.Hostname,
-            findings = snapshot.Findings,
-            collectionWarnings = snapshot.CollectionWarnings
+                : HighestSeverity(view.Findings).ToString().ToLowerInvariant(),
+            collectedAtUtc = view.CollectedAtUtc,
+            host = view.Host.Hostname,
+            findings = view.Findings,
+            collectionWarnings = view.CollectionWarnings
         };
         return JsonSerializer.Serialize(result, JsonOptions);
     }
@@ -81,13 +88,14 @@ internal static class Reporter
         EnsureParent(path);
         var fullPath = Path.GetFullPath(path);
         var temporaryPath = $"{fullPath}.{Guid.NewGuid():N}.tmp";
+        var redactedSnapshot = Redact(snapshot);
         try
         {
             await using (var file = File.Create(temporaryPath))
             using (var archive = new ZipArchive(file, ZipArchiveMode.Create))
             {
-                await WriteEntryAsync(archive, "snapshot.json", ToJson(snapshot, redact: true), cancellationToken);
-                await WriteEntryAsync(archive, "findings.json", JsonSerializer.Serialize(snapshot.Findings, JsonOptions), cancellationToken);
+                await WriteEntryAsync(archive, "snapshot.json", ToJson(redactedSnapshot), cancellationToken);
+                await WriteEntryAsync(archive, "findings.json", JsonSerializer.Serialize(redactedSnapshot.Findings, JsonOptions), cancellationToken);
                 await WriteEntryAsync(archive, "README.txt", BuildBundleReadme(snapshot), cancellationToken);
                 await WriteEntryAsync(archive, "manifest.json", JsonSerializer.Serialize(new
                 {
@@ -129,6 +137,8 @@ internal static class Reporter
         Console.WriteLine($"Processes  {snapshot.Processes.Count} top processes by working set | Services {snapshot.Services.Count}");
         var firewall = snapshot.Security is null ? "unknown" : snapshot.Security.FirewallStatusKnown ? (snapshot.Security.HasActiveFirewall ? "active" : "inactive") : "unknown";
         Console.WriteLine($"Security   firewall {firewall} | wildcard listeners {snapshot.Security?.ExposedListeners ?? 0}");
+        var toolingSummary = snapshot.Tooling is null ? "unknown" : $"{snapshot.Tooling.Tools.Count(tool => tool.Available)}/{snapshot.Tooling.Tools.Count} available";
+        Console.WriteLine($"Tooling    {toolingSummary}");
 
         if (!includeDetails) return;
         Console.WriteLine();
@@ -171,6 +181,19 @@ internal static class Reporter
         foreach (var change in report.Changes.Take(100))
             Console.WriteLine($"  [{Clean(change.Change).ToUpperInvariant(),-7}] {Clean(change.Category),-9} {Trim(change.Identity, 44)} — {Clean(change.Details)}");
         if (report.Changes.Count > 100) Console.WriteLine($"  ... {report.Changes.Count - 100} more changes");
+    }
+
+    public static void PrintTools(ToolingPosture tooling)
+    {
+        Console.WriteLine("opscope tools | trusted executable and coverage inventory");
+        Console.WriteLine();
+        Console.WriteLine("  NAME             ROLE        STATUS          SECURITY          PATH");
+        foreach (var tool in tooling.Tools)
+        {
+            var status = tool.Available ? "available" : "missing";
+            var path = tool.Path is null ? "-" : SafeDisplay(tool.Path);
+            Console.WriteLine($"  {SafeDisplay(tool.Name),-16} {SafeDisplay(tool.Role),-11} {status,-15} {SafeDisplay(tool.Security),-17} {path}");
+        }
     }
 
     public static void PrintFindings(IReadOnlyList<Finding> findings, IReadOnlyList<string> warnings)
@@ -265,6 +288,10 @@ internal static class Reporter
             Detail = RedactText(finding.Detail),
             Recommendation = RedactText(finding.Recommendation)
         }).ToArray();
+        var tooling = snapshot.Tooling is null ? null : snapshot.Tooling with
+        {
+            Tools = snapshot.Tooling.Tools.Select(tool => tool with { Path = null }).ToArray()
+        };
         return snapshot with
         {
             Host = host,
@@ -273,6 +300,7 @@ internal static class Reporter
             Processes = processes,
             Listeners = listeners,
             Services = services,
+            Tooling = tooling,
             Findings = findings,
             CollectionWarnings = Array.Empty<string>()
         };

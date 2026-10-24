@@ -8,6 +8,8 @@ internal static class ToolInventory
 
     public static ToolingPosture Collect()
     {
+        // Keep the platform matrix explicit so PATH hijacking cannot change what we inspect or execute.
+        // Mantenemos explícita la matriz por plataforma para que PATH no pueda alterar lo inspeccionado o ejecutado.
         var definitions = OperatingSystem.IsWindows()
             ? new[]
             {
@@ -32,6 +34,8 @@ internal static class ToolInventory
 
     private static ToolInfo Inspect(Definition definition)
     {
+        // Missing optional tools reduce coverage; present but unsafe tools are security findings.
+        // Las herramientas opcionales ausentes reducen cobertura; las presentes pero inseguras son hallazgos.
         var path = CommandRunner.ResolveExecutable(definition.Name);
         if (!Path.IsPathFullyQualified(path) || !File.Exists(path))
             return new ToolInfo(definition.Name, definition.Purpose, definition.Role, false, null, "missing", null);

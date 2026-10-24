@@ -19,6 +19,7 @@ internal sealed class SystemProbe
         var warnings = new List<string>();
 
         var host = ReadHostInfo(warnings);
+        var tooling = ToolInventory.Collect();
         var cpu = await ReadCpuPercentAsync(options.EffectiveCommandTimeout, warnings, cancellationToken);
         var memory = ReadMemory(warnings);
         var disks = ReadDisks(warnings);
@@ -28,9 +29,9 @@ internal sealed class SystemProbe
         var services = options.IncludeServices ? await ReadServicesAsync(options.EffectiveCommandTimeout, warnings, cancellationToken) : Array.Empty<ServiceInfo>();
         var security = options.IncludeNetwork ? await ReadSecurityAsync(listeners, options.EffectiveCommandTimeout, warnings, cancellationToken) : new SecurityPosture(Array.Empty<FirewallProfile>(), false, false, 0);
 
-        var findings = Evaluate(host, cpu, memory, disks, network, listeners, services, security, options.IncludeNetwork, options.IncludeServices);
+        var findings = Evaluate(host, cpu, memory, disks, network, listeners, services, security, tooling, options.IncludeNetwork, options.IncludeServices);
         var duration = Stopwatch.GetElapsedTime(started);
-        return new Snapshot(DateTimeOffset.UtcNow, host, cpu, memory, disks, network, processes, listeners, services, security, findings, warnings, duration);
+        return new Snapshot(DateTimeOffset.UtcNow, host, cpu, memory, disks, network, processes, listeners, services, security, tooling, findings, warnings, duration);
     }
 
     private static HostInfo ReadHostInfo(List<string> warnings)
@@ -440,6 +441,7 @@ internal sealed class SystemProbe
 
     private static List<Finding> Evaluate(HostInfo host, double cpu, MemoryInfo memory, IReadOnlyList<DiskInfo> disks,
         IReadOnlyList<NetworkAdapter> network, IReadOnlyList<ListenerInfo> listeners, IReadOnlyList<ServiceInfo> services, SecurityPosture security,
+        ToolingPosture tooling,
         bool networkRequested, bool servicesRequested)
     {
         var findings = new List<Finding>();
@@ -465,6 +467,22 @@ internal sealed class SystemProbe
             findings.Add(new(FindingSeverity.Critical, "EXPOSED_LISTENERS", "Listeners exposed without an active firewall", $"{security.ExposedListeners} listener(s) are bound to a wildcard address while the host firewall appears inactive.", "Restrict bindings, enable the intended firewall policy and confirm access from a trusted network."));
         else if (security.ExposedListeners >= 10)
             findings.Add(new(FindingSeverity.Info, "LISTENER_SURFACE", "Large listening surface", $"{security.ExposedListeners} listeners are bound to wildcard addresses.", "Review each exposed service and remove listeners that are not required."));
+
+        var insecureTools = tooling.Tools.Where(tool => tool.Available && !tool.Security.Equals("secure", StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (insecureTools.Length > 0)
+        {
+            var names = string.Join(", ", insecureTools.Select(tool => tool.Name));
+            var severe = insecureTools.Any(tool => tool.Security is "world-writable" or "untrusted-path");
+            findings.Add(new(severe ? FindingSeverity.Critical : FindingSeverity.Warning, "TOOL_SECURITY", "System tool trust check failed", $"Tool(s) failed the trusted-path or file-permission check: {names}.", "Do not run diagnostics with modified system utilities; restore trusted ownership and permissions before collecting evidence."));
+        }
+
+        var missingCore = tooling.Tools.Where(tool => tool.Role.Equals("core", StringComparison.OrdinalIgnoreCase) && !tool.Available).Select(tool => tool.Name).ToArray();
+        if (missingCore.Length > 0)
+            findings.Add(new(FindingSeverity.Warning, "TOOLING_CORE_GAP", "Core diagnostic tooling is missing", $"Missing tool(s): {string.Join(", ", missingCore)}.", "Install the platform package that provides the missing utility or expect reduced listener/service/firewall coverage."));
+
+        var missingEnrichment = tooling.Tools.Where(tool => tool.Role.Equals("enrichment", StringComparison.OrdinalIgnoreCase) && !tool.Available).Select(tool => tool.Name).ToArray();
+        if (missingEnrichment.Length > 0 && missingEnrichment.Length == tooling.Tools.Count(tool => tool.Role.Equals("enrichment", StringComparison.OrdinalIgnoreCase)))
+            findings.Add(new(FindingSeverity.Info, "TOOLING_ENRICHMENT_GAP", "Optional security enrichment tooling is missing", $"No optional firewall/network enrichment tool was found; checked: {string.Join(", ", missingEnrichment)}.", "Install one supported firewall inspection utility to improve posture coverage."));
 
         if (host.Uptime > TimeSpan.FromDays(180))
             findings.Add(new(FindingSeverity.Info, "LONG_UPTIME", "Long host uptime", $"The host has been up for {host.Uptime.TotalDays:F0} days.", "Consider a maintenance window if kernel, driver or platform updates are pending."));

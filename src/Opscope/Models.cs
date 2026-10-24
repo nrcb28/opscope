@@ -79,13 +79,16 @@ public sealed record ServiceInfo(
 public sealed record FirewallProfile(
     string Name,
     string State,
-    string Source);
+    string Source,
+    bool RulesPresent = false,
+    bool FilteringVerified = false);
 
 public sealed record SecurityPosture(
     IReadOnlyList<FirewallProfile> Firewalls,
     bool FirewallStatusKnown,
     bool HasActiveFirewall,
-    int ExposedListeners);
+    int ExposedListeners,
+    bool ProtectionVerified = false);
 
 public sealed record ToolInfo(
     string Name,

@@ -1,0 +1,483 @@
+using System.Diagnostics;
+using System.Globalization;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
+using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
+
+namespace Opscope;
+
+internal sealed class SystemProbe
+{
+    private static readonly Regex Whitespace = new(@"\s+", RegexOptions.Compiled);
+    private static readonly Regex WindowsServiceState = new(@"\b(RUNNING|STOPPED|PAUSED|START_PENDING|STOP_PENDING|PAUSE_PENDING|CONTINUE_PENDING)\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    public async Task<Snapshot> CollectAsync(CollectorOptions options, CancellationToken cancellationToken = default)
+    {
+        var started = Stopwatch.GetTimestamp();
+        var warnings = new List<string>();
+
+        var host = ReadHostInfo(warnings);
+        var cpu = await ReadCpuPercentAsync(options.EffectiveCommandTimeout, warnings, cancellationToken);
+        var memory = ReadMemory(warnings);
+        var disks = ReadDisks(warnings);
+        var network = options.IncludeNetwork ? ReadNetwork(warnings) : Array.Empty<NetworkAdapter>();
+        var processes = options.IncludeProcesses ? ReadProcesses(options.TopProcesses, warnings) : Array.Empty<ProcessInfo>();
+        var listeners = options.IncludeNetwork ? await ReadListenersAsync(options.EffectiveCommandTimeout, warnings, cancellationToken) : Array.Empty<ListenerInfo>();
+        var services = options.IncludeServices ? await ReadServicesAsync(options.EffectiveCommandTimeout, warnings, cancellationToken) : Array.Empty<ServiceInfo>();
+        var security = options.IncludeNetwork ? await ReadSecurityAsync(listeners, options.EffectiveCommandTimeout, warnings, cancellationToken) : new SecurityPosture(Array.Empty<FirewallProfile>(), false, false, 0);
+
+        var findings = Evaluate(host, cpu, memory, disks, network, listeners, services, security, options.IncludeNetwork, options.IncludeServices);
+        var duration = Stopwatch.GetElapsedTime(started);
+        return new Snapshot(DateTimeOffset.UtcNow, host, cpu, memory, disks, network, processes, listeners, services, security, findings, warnings, duration);
+    }
+
+    private static HostInfo ReadHostInfo(List<string> warnings)
+    {
+        var uptime = TimeSpan.FromMilliseconds(Environment.TickCount64);
+        var boot = DateTimeOffset.UtcNow - uptime;
+        var currentUser = Environment.UserName;
+        var elevated = false;
+
+        try
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                using var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+                elevated = new System.Security.Principal.WindowsPrincipal(identity)
+                    .IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+            }
+            else
+            {
+                elevated = Environment.UserName == "root" || Environment.GetEnvironmentVariable("EUID") == "0";
+            }
+        }
+        catch (Exception ex)
+        {
+            warnings.Add($"Could not determine elevation state: {ex.Message}");
+        }
+
+        return new HostInfo(
+            Environment.MachineName,
+            RuntimeInformation.OSDescription.Trim(),
+            OperatingSystem.IsWindows() ? "windows" : OperatingSystem.IsLinux() ? "linux" : OperatingSystem.IsMacOS() ? "macos" : "other",
+            RuntimeInformation.OSArchitecture.ToString(),
+            RuntimeInformation.FrameworkDescription,
+            Environment.OSVersion.VersionString,
+            boot,
+            uptime,
+            elevated,
+            Environment.ProcessorCount,
+            currentUser);
+    }
+
+    private static async Task<double> ReadCpuPercentAsync(TimeSpan timeout, List<string> warnings, CancellationToken cancellationToken)
+    {
+        if (OperatingSystem.IsLinux())
+        {
+            try
+            {
+                var first = ReadProcStat();
+                await Task.Delay(TimeSpan.FromMilliseconds(150), cancellationToken);
+                var second = ReadProcStat();
+                var idle = second.Idle - first.Idle;
+                var total = second.Total - first.Total;
+                return total <= 0 ? 0 : Math.Clamp((1 - (double)idle / total) * 100, 0, 100);
+            }
+            catch (Exception ex)
+            {
+                warnings.Add($"CPU sampling via /proc/stat failed: {ex.Message}");
+            }
+        }
+
+        try
+        {
+            using var process = Process.GetCurrentProcess();
+            var before = process.TotalProcessorTime;
+            var started = Stopwatch.GetTimestamp();
+            await Task.Delay(TimeSpan.FromMilliseconds(150), cancellationToken);
+            process.Refresh();
+            var elapsed = Stopwatch.GetElapsedTime(started);
+            var delta = process.TotalProcessorTime - before;
+            return Math.Clamp(delta.TotalMilliseconds / (elapsed.TotalMilliseconds * Environment.ProcessorCount) * 100, 0, 100);
+        }
+        catch (Exception ex)
+        {
+            warnings.Add($"CPU sampling failed: {ex.Message}");
+            return 0;
+        }
+    }
+
+    private static (ulong Idle, ulong Total) ReadProcStat()
+    {
+        var line = File.ReadLines("/proc/stat").First(l => l.StartsWith("cpu ", StringComparison.Ordinal));
+        var values = line.Split(' ', StringSplitOptions.RemoveEmptyEntries).Skip(1).Select(ulong.Parse).ToArray();
+        var idle = values.ElementAtOrDefault(3) + values.ElementAtOrDefault(4);
+        return (idle, values.Aggregate(0UL, (sum, value) => sum + value));
+    }
+
+    private static MemoryInfo ReadMemory(List<string> warnings)
+    {
+        try
+        {
+            if (OperatingSystem.IsLinux() && File.Exists("/proc/meminfo"))
+            {
+                var values = File.ReadLines("/proc/meminfo")
+                    .Select(line => line.Split(':', 2))
+                    .Where(parts => parts.Length == 2)
+                    .ToDictionary(parts => parts[0], parts => ParseKilobytes(parts[1]));
+                var total = values.GetValueOrDefault("MemTotal");
+                var available = values.GetValueOrDefault("MemAvailable", values.GetValueOrDefault("MemFree"));
+                return CreateMemory(total, available, "procfs");
+            }
+
+            if (OperatingSystem.IsWindows())
+            {
+                var status = new MEMORYSTATUSEX { Length = (uint)Marshal.SizeOf<MEMORYSTATUSEX>() };
+                if (GlobalMemoryStatusEx(ref status))
+                {
+                    return CreateMemory(status.TotalPhys, status.AvailPhys, "GlobalMemoryStatusEx");
+                }
+            }
+
+            var gcInfo = GC.GetGCMemoryInfo();
+            var fallbackTotal = gcInfo.TotalAvailableMemoryBytes > 0 ? (ulong)gcInfo.TotalAvailableMemoryBytes : 0;
+            var fallbackUsed = (ulong)Math.Max(0, GC.GetTotalMemory(false));
+            return CreateMemory(fallbackTotal, fallbackTotal > fallbackUsed ? fallbackTotal - fallbackUsed : 0, "runtime-fallback");
+        }
+        catch (Exception ex)
+        {
+            warnings.Add($"Memory collection failed: {ex.Message}");
+            return new MemoryInfo(0, 0, 0, 0, "unavailable");
+        }
+    }
+
+    private static ulong ParseKilobytes(string value)
+    {
+        var number = ulong.Parse(Whitespace.Replace(value, string.Empty).Replace("kB", string.Empty, StringComparison.OrdinalIgnoreCase), CultureInfo.InvariantCulture);
+        return number * 1024;
+    }
+
+    private static MemoryInfo CreateMemory(ulong total, ulong available, string source)
+    {
+        var used = total > available ? total - available : 0;
+        return new MemoryInfo(total, available, used, total == 0 ? 0 : used * 100d / total, source);
+    }
+
+    private static IReadOnlyList<DiskInfo> ReadDisks(List<string> warnings)
+    {
+        var result = new List<DiskInfo>();
+        try
+        {
+            foreach (var drive in DriveInfo.GetDrives())
+            {
+                try
+                {
+                    if (!drive.IsReady)
+                    {
+                        result.Add(new DiskInfo(drive.Name, drive.RootDirectory.FullName, string.Empty, 0, 0, 0, false));
+                        continue;
+                    }
+
+                    var used = drive.TotalSize - drive.AvailableFreeSpace;
+                    result.Add(new DiskInfo(drive.Name, drive.RootDirectory.FullName, drive.DriveFormat, drive.TotalSize, drive.AvailableFreeSpace,
+                        drive.TotalSize == 0 ? 0 : used * 100d / drive.TotalSize, true));
+                }
+                catch (Exception ex)
+                {
+                    warnings.Add($"Disk {drive.Name} unavailable: {ex.Message}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            warnings.Add($"Disk enumeration failed: {ex.Message}");
+        }
+        return result;
+    }
+
+    private static IReadOnlyList<NetworkAdapter> ReadNetwork(List<string> warnings)
+    {
+        var result = new List<NetworkAdapter>();
+        try
+        {
+            foreach (var adapter in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                var addresses = adapter.GetIPProperties().UnicastAddresses.Select(address => address.Address.ToString()).ToArray();
+                result.Add(new NetworkAdapter(adapter.Name, adapter.Description, adapter.NetworkInterfaceType.ToString(), adapter.OperationalStatus.ToString(), addresses, adapter.Speed));
+            }
+        }
+        catch (Exception ex)
+        {
+            warnings.Add($"Network enumeration failed: {ex.Message}");
+        }
+        return result;
+    }
+
+    private static IReadOnlyList<ProcessInfo> ReadProcesses(int top, List<string> warnings)
+    {
+        var rows = new List<ProcessInfo>();
+        try
+        {
+            foreach (var process in Process.GetProcesses())
+            {
+                using (process)
+                {
+                    try
+                    {
+                        var commandLine = TryGetCommandLine(process);
+                        var user = TryGetProcessUser(process);
+                        var memory = process.WorkingSet64;
+                        rows.Add(new ProcessInfo(process.Id, process.ProcessName, user, memory, memory / 1024d / 1024d, process.TotalProcessorTime, commandLine, false));
+                    }
+                    catch (Exception)
+                    {
+                        rows.Add(new ProcessInfo(process.Id, SafeProcessName(process), "?", 0, 0, TimeSpan.Zero, null, true));
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            warnings.Add($"Process enumeration failed: {ex.Message}");
+        }
+        return rows.OrderByDescending(row => row.WorkingSetBytes).Take(Math.Max(1, top)).ToArray();
+    }
+
+    private static string SafeProcessName(Process process)
+    {
+        try { return process.ProcessName; } catch { return "<unknown>"; }
+    }
+
+    private static string TryGetProcessUser(Process process)
+    {
+        if (!OperatingSystem.IsWindows()) return Environment.UserName;
+        return "?";
+    }
+
+    private static string? TryGetCommandLine(Process process)
+    {
+        try
+        {
+            if (OperatingSystem.IsLinux())
+            {
+                var path = $"/proc/{process.Id}/cmdline";
+                if (File.Exists(path)) return File.ReadAllText(path).Replace('\0', ' ').Trim();
+            }
+            // Reading another process' command line on Windows requires either
+            // WMI or a native NtQueryInformationProcess implementation. Keep
+            // the core binary dependency-free and report it as best effort.
+        }
+        catch { /* command line is best effort */ }
+        return null;
+    }
+
+    private static async Task<IReadOnlyList<ListenerInfo>> ReadListenersAsync(TimeSpan timeout, List<string> warnings, CancellationToken cancellationToken)
+    {
+        var result = new List<ListenerInfo>();
+        if (OperatingSystem.IsLinux())
+        {
+            var command = await CommandRunner.RunAsync("ss", ["-lntupH"], timeout, cancellationToken);
+            if (command.ExitCode == 0)
+            {
+                foreach (var line in command.StandardOutput.SplitLines())
+                {
+                    var fields = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    if (fields.Length >= 5) result.Add(new ListenerInfo(fields[0], fields[4], fields.Length >= 7 ? string.Join(' ', fields.Skip(6)) : "-", "ss"));
+                }
+            }
+            else if (!string.IsNullOrWhiteSpace(command.StandardError)) warnings.Add($"ss unavailable: {command.StandardError.Trim()}");
+        }
+        else if (OperatingSystem.IsWindows())
+        {
+            var command = await CommandRunner.RunAsync("netstat", ["-ano", "-p", "tcp"], timeout, cancellationToken);
+            if (command.ExitCode == 0)
+            {
+                foreach (var line in command.StandardOutput.SplitLines().Where(line => line.Contains("LISTENING", StringComparison.OrdinalIgnoreCase)))
+                {
+                    var fields = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    if (fields.Length >= 5) result.Add(new ListenerInfo(fields[0], fields[1], $"pid={fields[^1]}", "netstat"));
+                }
+            }
+            else if (!string.IsNullOrWhiteSpace(command.StandardError)) warnings.Add($"netstat unavailable: {command.StandardError.Trim()}");
+        }
+        return result;
+    }
+
+    private static async Task<IReadOnlyList<ServiceInfo>> ReadServicesAsync(TimeSpan timeout, List<string> warnings, CancellationToken cancellationToken)
+    {
+        if (OperatingSystem.IsLinux())
+        {
+            var command = await CommandRunner.RunAsync("systemctl", ["list-units", "--type=service", "--state=running", "--no-legend", "--plain"], timeout, cancellationToken);
+            if (command.ExitCode == 0)
+            {
+                return command.StandardOutput.SplitLines()
+                    .Select(line => line.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+                    .Where(fields => fields.Length >= 4)
+                    .Select(fields => new ServiceInfo(fields[0], $"{fields[2]}/{fields[3]}", fields.Length > 4 ? string.Join(' ', fields.Skip(4)) : null, "systemctl"))
+                    .ToArray();
+            }
+            if (!string.IsNullOrWhiteSpace(command.StandardError)) warnings.Add($"systemctl unavailable: {command.StandardError.Trim()}");
+        }
+        else if (OperatingSystem.IsWindows())
+        {
+            var command = await CommandRunner.RunAsync("sc.exe", ["query", "state=", "all"], timeout, cancellationToken);
+            if (command.ExitCode == 0)
+            {
+                var services = new List<ServiceInfo>();
+                string? name = null;
+                foreach (var line in command.StandardOutput.SplitLines())
+                {
+                    var trimmed = line.Trim();
+                    var colon = trimmed.IndexOf(':');
+                    if (colon < 1) continue;
+                    var key = trimmed[..colon];
+                    var value = trimmed[(colon + 1)..].Trim();
+                    if (key.Contains("SERVICE", StringComparison.OrdinalIgnoreCase) || key.Contains("SERVICIO", StringComparison.OrdinalIgnoreCase)) name = value;
+                    else if (name is not null && (key.Contains("STATE", StringComparison.OrdinalIgnoreCase) || key.Contains("ESTADO", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        var stateMatch = WindowsServiceState.Match(value);
+                        var state = stateMatch.Success ? stateMatch.Value.ToUpperInvariant() : value;
+                        services.Add(new ServiceInfo(name, state, null, "sc.exe"));
+                        name = null;
+                    }
+                }
+                return services;
+            }
+            if (!string.IsNullOrWhiteSpace(command.StandardError)) warnings.Add($"sc.exe unavailable: {command.StandardError.Trim()}");
+        }
+        return Array.Empty<ServiceInfo>();
+    }
+
+    private static async Task<SecurityPosture> ReadSecurityAsync(IReadOnlyList<ListenerInfo> listeners, TimeSpan timeout, List<string> warnings, CancellationToken cancellationToken)
+    {
+        var firewalls = new List<FirewallProfile>();
+        if (OperatingSystem.IsWindows())
+        {
+            var command = await CommandRunner.RunAsync("netsh", ["advfirewall", "show", "allprofiles", "state"], timeout, cancellationToken);
+            if (command.ExitCode == 0)
+            {
+                string? profile = null;
+                foreach (var line in command.StandardOutput.SplitLines())
+                {
+                    var trimmed = line.Trim();
+                    if (trimmed.Contains("Profile Settings", StringComparison.OrdinalIgnoreCase) ||
+                        (trimmed.Contains("Configuración", StringComparison.OrdinalIgnoreCase) && trimmed.Contains("Perfil", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        profile = Regex.Replace(trimmed, @"^Configuración\s+de\s+Perfil\s*|^Configuración\s+del\s+Perfil\s*", string.Empty, RegexOptions.IgnoreCase).Trim(' ', ':');
+                        profile = Regex.Replace(profile, @"\s*Profile Settings\s*:?[ ]*$", string.Empty, RegexOptions.IgnoreCase).Trim(' ', ':');
+                    }
+                    else if (profile is not null && (trimmed.StartsWith("State", StringComparison.OrdinalIgnoreCase) || trimmed.StartsWith("Estado", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        var fields = trimmed.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                        var state = fields.Length == 0 ? "UNKNOWN" : fields[^1].ToUpperInvariant();
+                        firewalls.Add(new FirewallProfile(profile, state, "netsh"));
+                        profile = null;
+                    }
+                }
+            }
+            else if (!string.IsNullOrWhiteSpace(command.StandardError)) warnings.Add($"Firewall inspection unavailable: {command.StandardError.Trim()}");
+        }
+        else if (OperatingSystem.IsLinux())
+        {
+            var candidates = new (string Name, string[] Arguments)[]
+            {
+                ("ufw", ["status"]),
+                ("firewalld", ["--state"]),
+                ("nftables", ["list", "ruleset"])
+            };
+            foreach (var candidate in candidates)
+            {
+                var command = await CommandRunner.RunAsync(candidate.Name, candidate.Arguments, timeout, cancellationToken);
+                if (command.ExitCode != 0) continue;
+                var output = command.StandardOutput.Trim();
+                var state = candidate.Name switch
+                {
+                    "ufw" => output.Contains("active", StringComparison.OrdinalIgnoreCase) || output.Contains("activo", StringComparison.OrdinalIgnoreCase) ? "ACTIVE" : "INACTIVE",
+                    "firewalld" => output.Contains("running", StringComparison.OrdinalIgnoreCase) ? "ACTIVE" : "INACTIVE",
+                    _ => string.IsNullOrWhiteSpace(output) ? "INACTIVE" : "ACTIVE"
+                };
+                firewalls.Add(new FirewallProfile(candidate.Name, state, candidate.Name));
+                break;
+            }
+        }
+
+        var known = firewalls.Any(profile => !profile.State.Equals("UNKNOWN", StringComparison.OrdinalIgnoreCase));
+        var active = firewalls.Any(profile => profile.State is "ON" or "ACTIVE" or "RUNNING" or "ACTIVAR" or "ENABLED" or "HABILITADO");
+        var exposed = listeners.Count(IsExposedListener);
+        return new SecurityPosture(firewalls, known, active, exposed);
+    }
+
+    private static bool IsExposedListener(ListenerInfo listener)
+    {
+        var address = listener.LocalAddress;
+        return address.Contains("0.0.0.0", StringComparison.OrdinalIgnoreCase) ||
+               address.Contains("[::]", StringComparison.OrdinalIgnoreCase) ||
+               address.StartsWith(":::", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static IReadOnlyList<Finding> Evaluate(HostInfo host, double cpu, MemoryInfo memory, IReadOnlyList<DiskInfo> disks,
+        IReadOnlyList<NetworkAdapter> network, IReadOnlyList<ListenerInfo> listeners, IReadOnlyList<ServiceInfo> services, SecurityPosture security,
+        bool networkRequested, bool servicesRequested)
+    {
+        var findings = new List<Finding>();
+        if (cpu >= 95) findings.Add(new(FindingSeverity.Critical, "CPU_HIGH", "CPU saturation", $"CPU usage is {cpu:F1}%.", "Identify the top CPU consumers and check whether the load is expected."));
+        else if (cpu >= 80) findings.Add(new(FindingSeverity.Warning, "CPU_ELEVATED", "Elevated CPU usage", $"CPU usage is {cpu:F1}%.", "Review the process list and correlate with workload or scheduled jobs."));
+
+        if (memory.UsedPercent >= 95) findings.Add(new(FindingSeverity.Critical, "MEMORY_PRESSURE", "Severe memory pressure", $"Memory usage is {memory.UsedPercent:F1}%.", "Inspect top processes, swap/pagefile activity and recent workload changes."));
+        else if (memory.UsedPercent >= 85) findings.Add(new(FindingSeverity.Warning, "MEMORY_ELEVATED", "Elevated memory usage", $"Memory usage is {memory.UsedPercent:F1}%.", "Review top processes and verify that available memory is recovering."));
+
+        foreach (var disk in disks.Where(disk => disk.IsReady && disk.UsedPercent >= 95))
+            findings.Add(new(FindingSeverity.Critical, "DISK_FULL", $"Disk nearly full: {disk.Root}", $"{disk.UsedPercent:F1}% used with {FormatBytes(disk.AvailableBytes)} free.", "Free space or extend the volume before writes fail."));
+        foreach (var disk in disks.Where(disk => disk.IsReady && disk.UsedPercent >= 85 && disk.UsedPercent < 95))
+            findings.Add(new(FindingSeverity.Warning, "DISK_ELEVATED", $"Disk usage elevated: {disk.Root}", $"{disk.UsedPercent:F1}% used.", "Review growth and retention before the volume reaches a critical level."));
+
+        if (networkRequested && !network.Any(adapter => adapter.Status.Equals("Up", StringComparison.OrdinalIgnoreCase) && adapter.Addresses.Any(address => !address.Equals("127.0.0.1") && !address.Equals("::1"))))
+            findings.Add(new(FindingSeverity.Warning, "NETWORK_DOWN", "No active non-loopback adapter", "No active adapter with a non-loopback address was found.", "Check link state, DHCP/IP configuration and routing."));
+        if (servicesRequested && services.Count == 0)
+            findings.Add(new(FindingSeverity.Info, "SERVICES_UNAVAILABLE", "Service inventory unavailable", "No running-service records were returned by the platform collector.", "Install or enable the native service inspection tool if service data is required."));
+
+        if (security.FirewallStatusKnown && !security.HasActiveFirewall)
+            findings.Add(new(FindingSeverity.Warning, "FIREWALL_INACTIVE", "No active host firewall detected", "The platform firewall inspection reports all detected profiles as inactive.", "Verify the host firewall policy before exposing services to an untrusted network."));
+        if (security.FirewallStatusKnown && !security.HasActiveFirewall && security.ExposedListeners > 0)
+            findings.Add(new(FindingSeverity.Critical, "EXPOSED_LISTENERS", "Listeners exposed without an active firewall", $"{security.ExposedListeners} listener(s) are bound to a wildcard address while the host firewall appears inactive.", "Restrict bindings, enable the intended firewall policy and confirm access from a trusted network."));
+        else if (security.ExposedListeners >= 10)
+            findings.Add(new(FindingSeverity.Info, "LISTENER_SURFACE", "Large listening surface", $"{security.ExposedListeners} listeners are bound to wildcard addresses.", "Review each exposed service and remove listeners that are not required."));
+
+        if (host.Uptime > TimeSpan.FromDays(180))
+            findings.Add(new(FindingSeverity.Info, "LONG_UPTIME", "Long host uptime", $"The host has been up for {host.Uptime.TotalDays:F0} days.", "Consider a maintenance window if kernel, driver or platform updates are pending."));
+
+        return findings;
+    }
+
+    private static string FormatBytes(long bytes) => bytes switch
+    {
+        >= 1_000_000_000 => $"{bytes / 1_000_000_000d:F1} GB",
+        >= 1_000_000 => $"{bytes / 1_000_000d:F1} MB",
+        _ => $"{bytes / 1_000d:F1} KB"
+    };
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct MEMORYSTATUSEX
+    {
+        public uint Length;
+        public uint MemoryLoad;
+        public ulong TotalPhys;
+        public ulong AvailPhys;
+        public ulong TotalPageFile;
+        public ulong AvailPageFile;
+        public ulong TotalVirtual;
+        public ulong AvailVirtual;
+        public ulong AvailExtendedVirtual;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
+}
+
+internal static class StringExtensions
+{
+    public static IEnumerable<string> SplitLines(this string value) => value.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+}
+
+

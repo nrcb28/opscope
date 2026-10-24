@@ -24,6 +24,8 @@ jobs:
           dotnet-version: 8.0.426
       - name: Build
         run: dotnet build src/Opscope/Opscope.csproj -c Release --nologo
+      - name: Regression tests
+        run: dotnet run --project tests/Opscope.Tests/Opscope.Tests.csproj -c Release --nologo
       - name: Smoke test (Unix)
         if: runner.os != 'Windows'
         run: bash tests/smoke.sh

@@ -1,5 +1,8 @@
 namespace Opscope;
 
+// Immutable records keep collected evidence easy to serialize and compare.
+// Los registros inmutables facilitan serializar y comparar la evidencia recopilada.
+
 public enum FindingSeverity
 {
     Info,
@@ -148,6 +151,8 @@ public sealed record CollectorOptions(
     int TopProcesses = 20,
     TimeSpan CommandTimeout = default)
 {
+    // A short default timeout prevents one unavailable native tool from blocking a collection.
+    // Un tiempo de espera corto evita que una herramienta nativa ausente bloquee la recopilación.
     public TimeSpan EffectiveCommandTimeout => CommandTimeout == default ? TimeSpan.FromSeconds(3) : CommandTimeout;
 }
 

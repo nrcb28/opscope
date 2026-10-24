@@ -10,7 +10,13 @@ json="$(dotnet run --project "$project" -c Release --no-build -- snapshot --json
 printf '%s' "$json" | grep -q '"platform"'
 printf '%s' "$json" | grep -q '"usedPercent"'
 
-tools_json="$(dotnet run --project "$project" -c Release --no-build -- tools --json)"
+tools_status=0
+tools_json="$(dotnet run --project "$project" -c Release --no-build -- tools --json)" || tools_status=$?
+if [ "$tools_status" -ne 0 ]; then
+  echo "tools command failed with exit $tools_status:" >&2
+  printf '%s\n' "$tools_json" >&2
+  exit "$tools_status"
+fi
 printf '%s' "$tools_json" | grep -q '"tools"'
 if printf '%s' "$tools_json" | grep -Eq '"security": "(writable-by-non-owner|not-executable|untrusted-path|reparse-point|inspection-error)'; then
   echo 'tool inventory reported an unsafe executable' >&2

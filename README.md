@@ -10,7 +10,7 @@
 - Listening socket discovery using native `ss`/`netstat` tooling when available.
 - Service discovery, including failed units, using `systemctl` on Linux and `sc.exe` on Windows.
 - Security posture: host firewall state and wildcard-bound listeners, with actionable exposure findings.
-- Firewall coverage distinguishes enabled state, rules present and effective filtering; incomplete checks are reported explicitly.
+- Firewall coverage distinguishes enabled state, rules present and effective inbound filtering by family/interface; incomplete checks are reported explicitly.
 - Snapshot drift detection across metrics, processes, services, disks and listeners.
 - Stable JSON output for automation and human-readable output for operators.
 - Redacted ZIP support bundles containing a snapshot, findings, process list, network data and collection metadata.
@@ -73,7 +73,7 @@ Use `snapshot --redact --json --out safe-snapshot.json` when the output may leav
 
 `tools` checks the native utilities used for enrichment (`ss`, `systemctl`, `netstat`, `netsh`, `sc.exe`, firewall utilities and `ip`). It reports missing coverage and fails if an available utility is outside the trusted system locations, writable by a non-owner, non-executable or otherwise not securely inspected.
 
-The regression suite covers localized UFW parsing, nftables verification, unsafe executable blocking, private output permissions, redaction of addresses and paths, and diff detection before redaction.
+The regression suite covers localized UFW parsing, nftables inbound-scope verification, unsafe executable blocking, private output permissions, typed redaction of addresses/ports/paths/identities, preservation of incomplete collection state, and diff detection before redaction.
 
 ## Security and privacy
 

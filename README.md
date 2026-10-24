@@ -59,7 +59,9 @@ dotnet publish src/Opscope/Opscope.csproj -c Release -r win-x64 --self-contained
 | `diff <snapshot.json>` | Compare a saved baseline with a fresh collection from the current host. |
 | `version` | Print build/runtime information. |
 
-Common options: `--json`, `--out <path>`, `--no-processes`, `--no-network`, `--no-services`, `--top <n>`, `--interval <seconds>`, `--help`.
+Common options: `--json`, `--redact`, `--out <path>`, `--no-processes`, `--no-network`, `--no-services`, `--top <n>`, `--interval <seconds>`, `--help`.
+
+Use `snapshot --redact --json --out safe-snapshot.json` when the output may leave the host. This omits process command lines and redacts host, user, network-address and filesystem-root identifiers. The default snapshot remains detailed for local troubleshooting.
 
 `diff` returns exit code `1` when it detects a significant metric change, a host mismatch, or an added/removed/changed process, service or listener. Save a baseline with `snapshot --json --out baseline.json`, then run `diff baseline.json` during a maintenance window or incident investigation.
 

@@ -20,8 +20,11 @@ The collector is intentionally read-only. It does not stop processes, change ser
 ## Requirements
 
 - .NET 8 runtime for the framework-dependent build, or a self-contained publish.
+- Source builds use the .NET 8 SDK when available and roll forward to a newer stable SDK when the 8.x SDK is not installed.
 - Linux: `ss` and `systemctl` are optional enrichments. The core collector works without them.
 - Windows: `sc.exe` is an optional enrichment and ships with Windows.
+
+The self-contained publish has been checked for `linux-x64`, `linux-arm64`, `win-x64` and `win-arm64`. Framework-dependent builds still require the .NET 8 runtime on the target host.
 
 ## Build and run
 

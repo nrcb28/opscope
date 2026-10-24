@@ -45,13 +45,21 @@ internal static class ToolInventory
             if (attributes.HasFlag(FileAttributes.ReparsePoint))
                 return new ToolInfo(definition.Name, definition.Purpose, definition.Role, true, path, "reparse-point", null);
 
-            if (OperatingSystem.IsLinux() && File.GetUnixFileMode(path).HasFlag(UnixFileMode.OtherWrite))
-                return new ToolInfo(definition.Name, definition.Purpose, definition.Role, true, path, "world-writable", null);
+            if (OperatingSystem.IsLinux())
+            {
+                var mode = File.GetUnixFileMode(path);
+                if (mode.HasFlag(UnixFileMode.GroupWrite) || mode.HasFlag(UnixFileMode.OtherWrite))
+                    return new ToolInfo(definition.Name, definition.Purpose, definition.Role, true, path, "writable-by-non-owner", null);
+
+                var executeBits = UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute;
+                if ((mode & executeBits) == 0)
+                    return new ToolInfo(definition.Name, definition.Purpose, definition.Role, true, path, "not-executable", null);
+            }
 
             var version = TryGetVersion(path);
             return new ToolInfo(definition.Name, definition.Purpose, definition.Role, true, path, "secure", version);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException or ArgumentException)
         {
             return new ToolInfo(definition.Name, definition.Purpose, definition.Role, true, path, $"inspection-error:{ex.GetType().Name}", null);
         }

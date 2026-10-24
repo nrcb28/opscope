@@ -12,8 +12,14 @@ printf '%s' "$json" | grep -q '"usedPercent"'
 
 tools_json="$(dotnet run --project "$project" -c Release --no-build -- tools --json)"
 printf '%s' "$tools_json" | grep -q '"tools"'
-if printf '%s' "$tools_json" | grep -Eq '"security": "(world-writable|untrusted-path|reparse-point)"'; then
+if printf '%s' "$tools_json" | grep -Eq '"security": "(writable-by-non-owner|not-executable|untrusted-path|reparse-point|inspection-error)'; then
   echo 'tool inventory reported an unsafe executable' >&2
+  exit 1
+fi
+
+path_tools="$(PATH="$temp/not-a-tool:$PATH" dotnet run --project "$project" -c Release --no-build -- tools --json)"
+if printf '%s' "$path_tools" | grep -q "$temp/not-a-tool"; then
+  echo 'tool resolution changed under a polluted PATH' >&2
   exit 1
 fi
 
@@ -33,6 +39,28 @@ fi
 
 redacted_doctor="$(dotnet run --project "$project" -c Release --no-build -- doctor --json --redact --no-processes --no-network --no-services)"
 printf '%s' "$redacted_doctor" | grep -q '"host": "\[redacted-host\]"'
+
+if [ "$(id -u)" -ne 0 ]; then
+  spoofed_euid="$(env EUID=0 dotnet run --project "$project" -c Release --no-build -- snapshot --json --no-processes --no-network --no-services)"
+  if printf '%s' "$spoofed_euid" | grep -q '"isElevated": true'; then
+    echo 'Linux elevation detection trusted the spoofable EUID environment variable' >&2
+    exit 1
+  fi
+fi
+
+deep_baseline="$temp/deep-baseline.json"
+: > "$deep_baseline"
+for _ in $(seq 1 70); do printf '{"x":' >> "$deep_baseline"; done
+printf '0' >> "$deep_baseline"
+for _ in $(seq 1 70); do printf '}' >> "$deep_baseline"; done
+set +e
+dotnet run --project "$project" -c Release --no-build -- diff "$deep_baseline" --json --no-processes --no-network --no-services >/dev/null 2>&1
+deep_status=$?
+set -e
+if [ "$deep_status" -ne 2 ]; then
+  echo "deeply nested baseline was not rejected (exit $deep_status)" >&2
+  exit 1
+fi
 
 baseline="$temp/baseline.json"
 dotnet run --project "$project" -c Release --no-build -- snapshot --json --out "$baseline" --no-processes --no-network --no-services >/dev/null

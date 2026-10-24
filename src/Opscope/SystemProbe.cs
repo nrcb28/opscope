@@ -10,6 +10,8 @@ namespace Opscope;
 
 internal sealed class SystemProbe
 {
+    internal sealed record FirewallObservation(string State, bool RulesPresent, bool FilteringVerified);
+
     private static readonly Regex Whitespace = new(@"\s+", RegexOptions.Compiled);
     private static readonly Regex WindowsServiceState = new(@"\b(RUNNING|STOPPED|PAUSED|START_PENDING|STOP_PENDING|PAUSE_PENDING|CONTINUE_PENDING)\b", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
@@ -385,7 +387,7 @@ internal sealed class SystemProbe
     {
         if (OperatingSystem.IsLinux())
         {
-            var command = await CommandRunner.RunAsync("systemctl", ["list-units", "--type=service", "--state=running", "--no-legend", "--plain"], timeout, cancellationToken);
+            var command = await CommandRunner.RunAsync("systemctl", ["list-units", "--type=service", "--all", "--no-legend", "--plain"], timeout, cancellationToken);
             AddCommandDiagnostics("systemctl", command, warnings);
             if (command.ExitCode == 0)
             {
@@ -450,7 +452,7 @@ internal sealed class SystemProbe
                     {
                         var fields = trimmed.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                         var state = fields.Length == 0 ? "UNKNOWN" : NormalizeFirewallState(fields[^1]);
-                        firewalls.Add(new FirewallProfile(profile, state, "netsh"));
+                        firewalls.Add(new FirewallProfile(profile, state, "netsh", RulesPresent: false, FilteringVerified: state == "ACTIVE"));
                         profile = null;
                     }
                 }
@@ -464,37 +466,105 @@ internal sealed class SystemProbe
                 ("firewall-cmd", ["--state"]),
                 ("nft", ["list", "ruleset"])
             };
+            var successfulInspection = false;
             foreach (var candidate in candidates)
             {
                 var command = await CommandRunner.RunAsync(candidate.Name, candidate.Arguments, timeout, cancellationToken);
-                AddCommandDiagnostics(candidate.Name, command, warnings);
+                AddCommandDiagnostics(candidate.Name, command, warnings, reportExitFailure: false);
                 if (command.ExitCode != 0) continue;
                 if (command.OutputTruncated) continue;
                 var output = command.StandardOutput.Trim();
-                var state = candidate.Name switch
+                var observation = candidate.Name switch
                 {
-                    "ufw" => output.Contains("active", StringComparison.OrdinalIgnoreCase) || output.Contains("activo", StringComparison.OrdinalIgnoreCase) ? "ACTIVE" : "INACTIVE",
-                    "firewall-cmd" => output.Contains("running", StringComparison.OrdinalIgnoreCase) ? "ACTIVE" : "INACTIVE",
-                    _ => string.IsNullOrWhiteSpace(output) ? "INACTIVE" : "ACTIVE"
+                    "ufw" => ParseUfwState(output),
+                    "firewall-cmd" => ParseFirewallCmdState(output),
+                    "nft" => ParseNftablesState(output),
+                    _ => new FirewallObservation("UNKNOWN", false, false)
                 };
-                firewalls.Add(new FirewallProfile(candidate.Name, state, candidate.Name));
+                if (!observation.State.Equals("UNKNOWN", StringComparison.OrdinalIgnoreCase)) successfulInspection = true;
+                firewalls.Add(new FirewallProfile(candidate.Name, observation.State, candidate.Name, observation.RulesPresent, observation.FilteringVerified));
             }
+
+            if (!successfulInspection)
+                warnings.Add("Firewall posture could not be verified: no supported Linux firewall inspector returned a usable state.");
         }
 
         var known = firewalls.Any(profile => !profile.State.Equals("UNKNOWN", StringComparison.OrdinalIgnoreCase));
-        var active = firewalls.Any(profile => profile.State is "ON" or "ACTIVE" or "RUNNING" or "ACTIVAR" or "ENABLED" or "HABILITADO");
+        var active = firewalls.Any(profile => profile.State.Equals("ACTIVE", StringComparison.OrdinalIgnoreCase));
+        var protectionVerified = firewalls.Any(profile => profile.FilteringVerified && profile.RulesPresent);
         var exposed = listeners.Count(IsExposedListener);
-        return new SecurityPosture(firewalls, known, active, exposed);
+        return new SecurityPosture(firewalls, known, active, exposed, protectionVerified);
     }
 
-    private static void AddCommandDiagnostics(string name, CommandResult command, List<string> warnings)
+    private static void AddCommandDiagnostics(string name, CommandResult command, List<string> warnings, bool reportExitFailure = true)
     {
         if (command.TimedOut)
             warnings.Add($"{name} timed out before completing.");
         if (command.OutputTruncated)
             warnings.Add($"{name} output exceeded the safety limit and was truncated.");
-        if (command.ExitCode != 0 && !string.IsNullOrWhiteSpace(command.StandardError))
-            warnings.Add($"{name} unavailable: {command.StandardError.Trim()}");
+        if (reportExitFailure && command.ExitCode != 0)
+        {
+            var detail = string.IsNullOrWhiteSpace(command.StandardError) ? $"exit code {command.ExitCode}" : command.StandardError.Trim();
+            warnings.Add($"{name} unavailable: {detail}");
+        }
+    }
+
+    internal static FirewallObservation ParseUfwState(string output)
+    {
+        foreach (var line in output.SplitLines())
+        {
+            var colon = line.IndexOf(':');
+            if (colon < 1) continue;
+            var key = line[..colon].Trim();
+            if (!key.Equals("Status", StringComparison.OrdinalIgnoreCase) && !key.Equals("Estado", StringComparison.OrdinalIgnoreCase)) continue;
+
+            return line[(colon + 1)..].Trim().ToUpperInvariant() switch
+            {
+                "ACTIVE" or "ACTIVO" => new FirewallObservation("ACTIVE", false, false),
+                "INACTIVE" or "INACTIVO" => new FirewallObservation("INACTIVE", false, false),
+                _ => new FirewallObservation("UNKNOWN", false, false)
+            };
+        }
+
+        return new FirewallObservation("UNKNOWN", false, false);
+    }
+
+    internal static FirewallObservation ParseFirewallCmdState(string output) =>
+        output.Trim().ToUpperInvariant() switch
+        {
+            "RUNNING" => new FirewallObservation("ACTIVE", false, false),
+            "NOT RUNNING" or "STOPPED" => new FirewallObservation("INACTIVE", false, false),
+            _ => new FirewallObservation("UNKNOWN", false, false)
+        };
+
+    internal static FirewallObservation ParseNftablesState(string output)
+    {
+        if (string.IsNullOrWhiteSpace(output)) return new FirewallObservation("INACTIVE", false, false);
+
+        var hasFilterChain = false;
+        var hasRule = false;
+        var filteringVerified = false;
+        foreach (var line in output.SplitLines())
+        {
+            var trimmed = line.Trim();
+            if (trimmed.Contains("type filter", StringComparison.OrdinalIgnoreCase) && trimmed.Contains("hook", StringComparison.OrdinalIgnoreCase))
+                hasFilterChain = true;
+            if (!hasFilterChain) continue;
+            if (Regex.IsMatch(trimmed, @"\b(policy\s+(drop|reject)|drop|reject)\b", RegexOptions.IgnoreCase))
+            {
+                hasRule = true;
+                filteringVerified = true;
+            }
+            else if (Regex.IsMatch(trimmed, @"\b(accept|jump|goto|return|queue)\b", RegexOptions.IgnoreCase))
+            {
+                hasRule = true;
+            }
+        }
+
+        if (!hasFilterChain) return new FirewallObservation("UNKNOWN", false, false);
+        return hasRule
+            ? new FirewallObservation(filteringVerified ? "ACTIVE" : "UNVERIFIED", true, filteringVerified)
+            : new FirewallObservation("UNVERIFIED", false, false);
     }
 
     private static string ParseWindowsServiceState(string value)
@@ -576,11 +646,19 @@ internal sealed class SystemProbe
             findings.Add(new(FindingSeverity.Warning, "NETWORK_DOWN", "No active non-loopback adapter", "No active adapter with a non-loopback address was found.", "Check link state, DHCP/IP configuration and routing."));
         if (servicesRequested && services.Count == 0)
             findings.Add(new(FindingSeverity.Info, "SERVICES_UNAVAILABLE", "Service inventory unavailable", "No running-service records were returned by the platform collector.", "Install or enable the native service inspection tool if service data is required."));
+        var failedServices = services.Where(service => service.State.Contains("failed", StringComparison.OrdinalIgnoreCase)).ToArray();
+        if (servicesRequested && failedServices.Length > 0)
+            findings.Add(new(FindingSeverity.Warning, "SERVICE_FAILED", "Failed services detected", $"{failedServices.Length} service(s) report a failed state.", "Inspect the failed units and their recent logs before treating the host as healthy."));
 
-        if (security.FirewallStatusKnown && !security.HasActiveFirewall)
+        var allProfilesInactive = security.Firewalls.Count > 0 && security.Firewalls.All(profile => profile.State.Equals("INACTIVE", StringComparison.OrdinalIgnoreCase));
+        if (security.FirewallStatusKnown && allProfilesInactive)
             findings.Add(new(FindingSeverity.Warning, "FIREWALL_INACTIVE", "No active host firewall detected", "The platform firewall inspection reports all detected profiles as inactive.", "Verify the host firewall policy before exposing services to an untrusted network."));
-        if (security.FirewallStatusKnown && !security.HasActiveFirewall && security.ExposedListeners > 0)
+        if (security.FirewallStatusKnown && security.HasActiveFirewall && !security.ProtectionVerified)
+            findings.Add(new(FindingSeverity.Warning, "FIREWALL_UNVERIFIED", "Firewall filtering is not fully verified", "A firewall is enabled, but the collector could not verify effective filtering rules for the exposed interfaces.", "Review the active profile, ruleset and interface bindings before relying on the firewall assessment."));
+        if (security.FirewallStatusKnown && allProfilesInactive && security.ExposedListeners > 0)
             findings.Add(new(FindingSeverity.Critical, "EXPOSED_LISTENERS", "Listeners exposed without an active firewall", $"{security.ExposedListeners} listener(s) are bound to a wildcard address while the host firewall appears inactive.", "Restrict bindings, enable the intended firewall policy and confirm access from a trusted network."));
+        else if (security.ExposedListeners > 0 && security.FirewallStatusKnown && !security.ProtectionVerified)
+            findings.Add(new(FindingSeverity.Warning, "EXPOSED_LISTENERS_UNVERIFIED", "Listener protection could not be verified", $"{security.ExposedListeners} listener(s) are bound to wildcard addresses, but effective firewall filtering was not verified.", "Review firewall rules and interface bindings before exposing these listeners to an untrusted network."));
         else if (security.ExposedListeners >= 10)
             findings.Add(new(FindingSeverity.Info, "LISTENER_SURFACE", "Large listening surface", $"{security.ExposedListeners} listeners are bound to wildcard addresses.", "Review each exposed service and remove listeners that are not required."));
 

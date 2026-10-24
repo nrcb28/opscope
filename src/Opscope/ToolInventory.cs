@@ -42,23 +42,8 @@ internal static class ToolInventory
 
         try
         {
-            if (!CommandRunner.IsTrustedExecutablePath(definition.Name, path))
-                return new ToolInfo(definition.Name, definition.Purpose, definition.Role, true, path, "untrusted-path", null);
-
-            var attributes = File.GetAttributes(path);
-            if (attributes.HasFlag(FileAttributes.ReparsePoint))
-                return new ToolInfo(definition.Name, definition.Purpose, definition.Role, true, path, "reparse-point", null);
-
-            if (OperatingSystem.IsLinux())
-            {
-                var mode = File.GetUnixFileMode(path);
-                if (mode.HasFlag(UnixFileMode.GroupWrite) || mode.HasFlag(UnixFileMode.OtherWrite))
-                    return new ToolInfo(definition.Name, definition.Purpose, definition.Role, true, path, "writable-by-non-owner", null);
-
-                var executeBits = UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute;
-                if ((mode & executeBits) == 0)
-                    return new ToolInfo(definition.Name, definition.Purpose, definition.Role, true, path, "not-executable", null);
-            }
+            if (!CommandRunner.TryValidateExecutablePath(definition.Name, path, out var failure))
+                return new ToolInfo(definition.Name, definition.Purpose, definition.Role, true, path, MapFailureToSecurity(failure), null);
 
             var version = TryGetVersion(path);
             return new ToolInfo(definition.Name, definition.Purpose, definition.Role, true, path, "secure", version);
@@ -81,5 +66,13 @@ internal static class ToolInventory
             return null;
         }
     }
+
+    private static string MapFailureToSecurity(string failure) =>
+        failure.Contains("writable", StringComparison.OrdinalIgnoreCase) ? "writable-by-non-owner" :
+        failure.Contains("reparse", StringComparison.OrdinalIgnoreCase) ? "reparse-point" :
+        failure.Contains("executable", StringComparison.OrdinalIgnoreCase) ? "not-executable" :
+        failure.Contains("owner", StringComparison.OrdinalIgnoreCase) ? "owner-unverified" :
+        failure.Contains("ACL", StringComparison.OrdinalIgnoreCase) ? "acl-unverified" :
+        "untrusted-path";
 }
 

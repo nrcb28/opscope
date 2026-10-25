@@ -14,18 +14,32 @@ concurrency:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-14]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: 8.0.426
-      - name: Build
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Build CLI and modules
         run: dotnet build src/Opscope/Opscope.csproj -c Release --nologo
-      - name: Regression tests
-        run: dotnet run --project tests/Opscope.Tests/Opscope.Tests.csproj -c Release --nologo
+      - name: Exercise real CLI exports and loopback features
+        run: python tests/cli_smoke.py
+      - name: Run every .NET regression project
+        shell: pwsh
+        run: |
+          $projects = Get-ChildItem tests -Recurse -Filter *.csproj | Sort-Object FullName
+          foreach ($project in $projects) {
+            Write-Host "Running $($project.Name)"
+            dotnet run --project $project.FullName -c Release --nologo
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Smoke test (Unix)
         if: runner.os != 'Windows'
         run: bash tests/smoke.sh
@@ -33,4 +47,34 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./tests/smoke.ps1
+      - name: Validate release asset tooling without publishing
+        run: python -m unittest discover -s packaging -p test_release_assets.py
 
+  browser:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: 8.0.426
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tests/Opscope.ApiTests/package-lock.json
+      - name: Build isolated local fixture host
+        run: dotnet build tests/Opscope.ApiTests/Opscope.ApiTests.csproj --nologo
+      - name: Install locked browser test dependencies
+        working-directory: tests/Opscope.ApiTests
+        run: npm ci
+      - name: Install Chromium and operating-system dependencies
+        working-directory: tests/Opscope.ApiTests
+        run: npx playwright install --with-deps chromium
+      - name: Exercise local UI, privacy, downloads, and accessibility
+        working-directory: tests/Opscope.ApiTests
+        run: npm test

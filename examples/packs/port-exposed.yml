@@ -1,0 +1,4 @@
+version: 1
+name: port-exposed
+extends: base.yml
+collectors: [network, processes, services, certificates]

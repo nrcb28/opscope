@@ -1,0 +1,4 @@
+version: 1
+name: servicio-caido
+extends: base.yml
+collectors: [services, processes, network, logs]

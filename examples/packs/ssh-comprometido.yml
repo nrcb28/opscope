@@ -1,0 +1,4 @@
+version: 1
+name: ssh-comprometido
+extends: base.yml
+collectors: [network, processes, services, logs, accounts, scheduled-tasks, packages]

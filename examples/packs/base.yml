@@ -1,0 +1,3 @@
+version: 1
+name: base
+collectors: [host, cpu, memory, disks, security]

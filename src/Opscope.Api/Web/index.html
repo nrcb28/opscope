@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="dark light"><title>Opscope · Local evidence</title><link rel="stylesheet" href="/app.css"><script src="/app.js" defer></script></head>
+<body>
+<a class="skip-link" href="#content" data-i18n="skip">Skip to evidence</a>
+<header class="topbar"><a href="#overview" class="brand" aria-label="Opscope overview"><span class="mark" aria-hidden="true">◈</span>OPSCOPE<span class="brand-note" data-i18n="local">LOCAL</span></a><div class="top-actions"><span class="session-dot" aria-hidden="true"></span><span id="connection" role="status" data-i18n="connecting">Connecting…</span><button id="theme" class="icon-button" aria-label="Switch color theme">◐</button><label class="sr-only" for="language">Language / Idioma</label><select id="language"><option value="en">EN</option><option value="es">ES</option></select></div></header>
+<div class="safety"><span class="safety-icon" aria-hidden="true">✓</span><strong data-i18n="readonly">READ ONLY</strong><span id="privacy" data-i18n="redacted">Identifiers redacted · No telemetry · Loopback only</span><label class="full-toggle"><input type="checkbox" id="full"><span data-i18n="full">Show full identifiers</span></label></div>
+<div class="layout"><aside class="sidebar"><p class="eyebrow" data-i18n="workspace">EVIDENCE WORKSPACE</p><nav aria-label="Evidence sections" id="navigation">
+<button class="nav-item active" data-view="overview"><span aria-hidden="true">◫</span><span data-i18n="overview">Overview</span></button>
+<button class="nav-item" data-view="findings"><span aria-hidden="true">◇</span><span data-i18n="findings">Findings</span><span id="finding-badge" class="badge">—</span></button>
+<button class="nav-item" data-view="processes"><span aria-hidden="true">⌘</span><span data-i18n="processes">Processes & ports</span></button>
+<button class="nav-item" data-view="services"><span aria-hidden="true">≡</span><span data-i18n="services">Services</span></button>
+<button class="nav-item" data-view="drift"><span aria-hidden="true">⇄</span><span data-i18n="drift">Drift comparison</span></button>
+<button class="nav-item" data-view="fleet"><span aria-hidden="true">▦</span><span data-i18n="fleet">Fleet comparison</span></button>
+<button class="nav-item" data-view="history"><span aria-hidden="true">◷</span><span data-i18n="history">History & timeline</span></button>
+<button class="nav-item" data-view="cloud"><span aria-hidden="true">☁</span><span data-i18n="cloud">Cloud</span></button>
+<button class="nav-item" data-view="policy"><span aria-hidden="true">⊞</span><span data-i18n="policy">Policy</span></button>
+<button class="nav-item" data-view="reports"><span aria-hidden="true">↗</span><span data-i18n="reports">Reports & bundle</span></button>
+<button class="nav-item" data-view="settings"><span aria-hidden="true">⚙</span><span data-i18n="settings">Settings</span></button>
+</nav><div class="sidebar-foot"><span class="eyebrow">OPSCOPE</span><p data-i18n="sideNote">Local evidence.<br>Clear decisions.</p><small data-i18n="readOnlyNote">No host changes are available.</small></div></aside>
+<main id="content" tabindex="-1"><div class="page-head"><div><p class="eyebrow" data-i18n="observability">HOST OBSERVABILITY</p><h1 id="page-title">Overview</h1><p id="page-description" class="muted" data-i18n="description">A clear view of this host, from the evidence it provides.</p></div><button id="collect" class="primary"><span aria-hidden="true">↻</span><span data-i18n="collect">Collect now</span></button></div>
+<div class="search-wrap"><span aria-hidden="true">⌕</span><label class="sr-only" for="search" data-i18n="search">Search all evidence</label><input id="search" type="search" autocomplete="off" data-placeholder="search" placeholder="Search all evidence"><kbd>Ctrl K</kbd></div><div id="search-results" hidden aria-live="polite"></div>
+<p id="notice" class="notice" role="status" hidden></p><div id="view"></div><footer><span id="collected-at">—</span><span data-i18n="footer">Evidence stays on this device.</span></footer></main></div>
+</body></html>

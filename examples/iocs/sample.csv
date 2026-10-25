@@ -1,0 +1,5 @@
+type,value,label
+ip,198.51.100.10,Documentation-only example address
+domain,evil.example,Documentation-only example domain
+process,suspicious,Example exact process name
+sha256,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,Example SHA-256 digest

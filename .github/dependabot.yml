@@ -6,7 +6,14 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
   - package-ecosystem: nuget
-    directory: /src/Opscope
+    directories:
+      - /src/*
+      - /tests/*
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: npm
+    directory: /tests/Opscope.ApiTests
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

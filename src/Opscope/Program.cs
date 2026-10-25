@@ -11,6 +11,7 @@ internal static class Program
         {
             // Keep command dispatch centralized so every mode shares the same cancellation and error policy.
             // Centralizamos el despacho para que todos los modos compartan cancelación y tratamiento de errores.
+            if (await FeatureCli.TryRunAsync(args) is { } extendedResult) return extendedResult;
             var options = CliOptions.Parse(args);
             if (options.ShowHelp)
             {
@@ -46,7 +47,7 @@ internal static class Program
             {
                 var baselineJson = await ReadSnapshotTextAsync(options.BaselinePath!, cancellation.Token);
                 var baseline = Reporter.ParseSnapshot(baselineJson);
-                var current = await SystemProbe.CollectAsync(options.ToCollectorOptions(), cancellation.Token);
+                var current = await FeatureCli.CollectBaseAsync(options.ToCollectorOptions(), cancellation.Token);
                 // Compare full-fidelity snapshots first; redact only the final report so identifiers cannot hide drift.
                 // Comparamos instantáneas completas y redactamos solo el informe final para no ocultar cambios.
                 var report = DiffEngine.Compare(baseline, current);
@@ -62,7 +63,7 @@ internal static class Program
                 return report.Significant ? 1 : 0;
             }
 
-            var snapshot = await SystemProbe.CollectAsync(options.ToCollectorOptions(), cancellation.Token);
+            var snapshot = await FeatureCli.CollectBaseAsync(options.ToCollectorOptions(), cancellation.Token);
             return options.Command.ToLowerInvariant() switch
             {
                 "snapshot" => await SnapshotAsync(snapshot, options, cancellation.Token),
@@ -145,7 +146,7 @@ internal static class Program
     {
         while (!cancellationToken.IsCancellationRequested)
         {
-            var snapshot = await SystemProbe.CollectAsync(options.ToCollectorOptions(), cancellationToken);
+            var snapshot = await FeatureCli.CollectBaseAsync(options.ToCollectorOptions(), cancellationToken);
             if (!Console.IsOutputRedirected) Console.Clear();
             Reporter.PrintDashboard(options.Redact ? Reporter.RedactForOutput(snapshot) : snapshot);
             try { await Task.Delay(options.Interval, cancellationToken); }
@@ -154,27 +155,7 @@ internal static class Program
         return 0;
     }
 
-    private static async Task<string> ReadSnapshotTextAsync(string path, CancellationToken cancellationToken)
-    {
-        var fullPath = Path.GetFullPath(path);
-        // Baselines are untrusted input: cap their size before parsing to limit resource consumption.
-        // Las líneas base son entradas no confiables: limitamos su tamaño antes de analizarlas.
-        const long maxSnapshotBytes = 16 * 1024 * 1024;
-        if (!File.Exists(fullPath)) throw new CliException($"Baseline snapshot was not found: {fullPath}");
-        await using var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read, 8192, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        if (stream.Length > maxSnapshotBytes) throw new CliException($"Baseline snapshot exceeds the {maxSnapshotBytes / 1024 / 1024} MiB safety limit.");
-
-        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
-        var content = new StringBuilder((int)Math.Min(stream.Length, maxSnapshotBytes));
-        var buffer = new char[8192];
-        int read;
-        while ((read = await reader.ReadAsync(buffer.AsMemory(), cancellationToken)) > 0)
-        {
-            if (content.Length + read > maxSnapshotBytes) throw new CliException($"Baseline snapshot exceeds the {maxSnapshotBytes / 1024 / 1024} MiB safety limit.");
-            content.Append(buffer, 0, read);
-        }
-        return content.ToString();
-    }
+    private static Task<string> ReadSnapshotTextAsync(string path, CancellationToken cancellationToken) => SnapshotIO.ReadTextAsync(path, cancellationToken);
 
     private static void PrintVersion()
     {
@@ -212,7 +193,7 @@ Options:
   --help                  Show this help
 
 Exit codes: 0 healthy, 1 warning/critical finding, 2 CLI/collection error.
-""";
+""" + FeatureCli.Usage;
 
     public string Command { get; private set; } = "snapshot";
     public bool Json { get; private set; }

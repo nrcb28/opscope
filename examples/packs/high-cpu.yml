@@ -1,0 +1,4 @@
+version: 1
+name: high-cpu
+extends: base.yml
+collectors: [processes, services, logs]

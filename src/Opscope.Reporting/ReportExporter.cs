@@ -9,6 +9,8 @@ namespace Opscope;
 
 public static class ReportExporter
 {
+    // EN: Use a shared redaction decision, then escape each format without changing its machine-readable contract.
+    // ES: Se comparte la decisión de redacción y después se escapa cada formato sin alterar su contrato procesable.
     private static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, WriteIndented = true, MaxDepth = 64 };
     public static IReadOnlyList<string> Formats { get; } = ["json", "sarif", "junit", "html", "pdf", "csv", "jsonl", "cef", "asff"];
     public static string Export(Snapshot snapshot, string format, bool redact = true)

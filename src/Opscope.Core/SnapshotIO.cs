@@ -8,6 +8,8 @@ namespace Opscope;
 
 public static class SnapshotIO
 {
+    // EN: Inspect the opened handle before reading; a path-only check can race or block on a FIFO.
+    // ES: Se inspecciona el descriptor abierto antes de leer; comprobar solo la ruta permite carreras o bloqueos en un FIFO.
     public const int MaximumBytes = 16 * 1024 * 1024;
 
     public static async Task<Snapshot> ReadAsync(string path, CancellationToken cancellationToken = default) =>

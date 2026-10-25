@@ -1,4 +1,6 @@
 'use strict';
+// EN: Session tokens and evidence stay in memory; only language/theme preferences may persist.
+// ES: Los tokens de sesión y la evidencia permanecen en memoria; solo se guardan idioma y tema.
 (() => {
 const $ = id => document.getElementById(id);
 const token = new URLSearchParams(location.hash.slice(1)).get('token');
@@ -76,6 +78,8 @@ const match = value => !String($('search').value).trim() || JSON.stringify(value
 function notice(message){$('notice').textContent=message;$('notice').hidden=!message;}
 function translate(){document.documentElement.lang=lang;$('language').value=lang;document.querySelectorAll('[data-i18n]').forEach(node=>node.textContent=t(node.dataset.i18n));document.querySelectorAll('[data-placeholder]').forEach(node=>node.placeholder=t(node.dataset.placeholder));$('privacy').textContent=t($('full').checked?'fullWarning':'redacted');$('connection').textContent=t(snapshot?'connected':token?'connecting':'disconnected');$('page-title').textContent=t(view);render();}
 async function api(path, options = {}) {
+    // EN: Authenticate local requests and expose bounded failure details without automatic write retries.
+    // ES: Se autentican las peticiones locales y se muestran errores acotados sin reintentar escrituras automáticamente.
     const response = await fetch(path, {...options, headers:{'X-Opscope-Token':token || '', ...options.headers}, credentials:'omit', cache:'no-store', referrerPolicy:'no-referrer'});
     if (response.ok) return response;
     let message = response.status === 429 ? t('busy') : t('error'), failureReport = null;
@@ -111,6 +115,8 @@ function navigate(next){view=next;document.querySelectorAll('.nav-item').forEach
 function panel(title){const node=el('section',null,'panel');node.append(el('h2',title));return node;}
 function empty(parent,message='noData'){parent.append(el('p',t(message),'empty'));}
 function paginate(items, renderItems, key) {
+    // EN: Mount only one page of rows so large evidence sets do not flood the DOM.
+    // ES: Solo se monta una página de filas para que grandes conjuntos de evidencia no saturen el DOM.
     const wrap = el('div'), size = 50, total = Math.max(1, Math.ceil(items.length / size));
     let page = Math.min(tablePages.get(key) || 0, total - 1);
     const body = el('div'), controls = el('div', null, 'pagination');
@@ -296,6 +302,8 @@ function invalidateAnalysis() {
     if (download) download.disabled = analysisOperation !== 'inspect' || !analysisSafe;
 }
 function clearAnalysis() {
+    // EN: Invalidate pending responses before discarding data so a late request cannot restore cleared evidence.
+    // ES: Se invalidan las respuestas pendientes antes de borrar datos para que una petición tardía no restaure la evidencia.
     analysisVersion++;
     analysisController?.abort();
     analysisController = null;
@@ -338,6 +346,8 @@ async function openAnalysisSnapshot(file, isBaseline = false) {
     }
 }
 async function runAnalysis() {
+    // EN: Send the selected saved source; live refresh must not substitute host data or overwrite this draft.
+    // ES: Se envía la fuente guardada seleccionada; el refresco en vivo no debe sustituirla ni sobrescribir el borrador.
     if (analysisBusy || !analysisSafe) return;
     const version = ++analysisVersion;
     analysisController = new AbortController();
@@ -576,6 +586,8 @@ function render() {
     searchResults();
 }
 function applyLiveSample(next, history, timeline, generation, version, wantsFull) {
+    // EN: Recheck privacy and request generations after every await before showing identifiers.
+    // ES: Se vuelven a comprobar la privacidad y las generaciones de petición tras cada await antes de mostrar identidades.
     if (generation !== privacyVersion || version !== snapshotVersion || wantsFull !== $('full').checked) return;
     snapshot = next;
     if (!wantsFull) safeSnapshot = next;

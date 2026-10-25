@@ -1,8 +1,76 @@
 # opscope
 
-`opscope` is a cross-platform systems operations CLI for Linux, Windows and macOS, with an authenticated local web interface. It is designed for the first ten minutes of an incident: capture a reliable host snapshot, spot degraded signals, inspect processes and listening sockets, and produce a shareable support bundle without requiring an agent or third-party runtime.
+[Español](#español) · [English](#english)
 
-## What it does
+## Español
+
+`opscope` diagnostica Linux, Windows y macOS desde la terminal o una interfaz web local autenticada. Recoge snapshots, muestra problemas de salud y seguridad y genera evidencia para soporte sin instalar un agente de monitorización. Los binarios autocontenidos incluyen el runtime; las compilaciones dependientes del framework necesitan el runtime ASP.NET Core de .NET 8.
+
+### Requisitos y primer arranque
+
+Para compilar, instala el SDK **8.0.426** o un parche posterior de la misma banda, según `global.json`. Node.js 22 o posterior solo se usa en las pruebas de navegador; la interfaz incorpora sus recursos y no usa CDN.
+
+```bash
+dotnet build src/Opscope/Opscope.csproj -c Release
+dotnet run --project src/Opscope/Opscope.csproj -- serve
+```
+
+Abre la URL que imprime la terminal. Su token es propio de esa sesión: el servidor escucha en `127.0.0.1` y no publica la interfaz en la red. Selecciona **ES** para cambiar de idioma. Las utilidades nativas y los permisos disponibles determinan la cobertura; una fuente ausente se comunica como no evaluada.
+
+### Usos de la interfaz
+
+| Vista | Uso |
+| --- | --- |
+| Resumen, Hallazgos, Procesos/Puertos y Servicios | Inspeccionar el equipo actual y buscar evidencia con tablas paginadas. |
+| Laboratorio de evidencia | Cargar un snapshot JSON, inspeccionarlo, ejecutar triaje, comparar IoC CSV/STIX y crear una cronología con baseline opcional. |
+| Comparación de cambios y de flota | Comparar una baseline con el equipo actual o varios snapshots entre sí. |
+| Historial y cronología | Consultar observaciones redactadas retenidas en SQLite. |
+| Cloud | Consultar los proveedores y ámbitos configurados antes de iniciar la sesión. |
+| Política | Validar y evaluar YAML en memoria; descargar el borrador sin aplicar cambios al host. |
+| Informes y bundle | Descargar evidencia redactada y un ZIP cuyo digest verifica el navegador. |
+
+El laboratorio mantiene su evidencia separada del equipo en vivo y del historial. Admite **2 MiB por petición** y **128 KiB de indicadores**, exige UTF-8 y limita cada carga a diez segundos. Compara observables guardados: no consulta DNS o feeds remotos ni escanea archivos del equipo actual. Un resultado sin coincidencias no demuestra ausencia de compromiso. El botón de limpiar descarta el estado del laboratorio en memoria.
+
+### Comandos frecuentes
+
+```bash
+dotnet run --project src/Opscope -- snapshot --redact --json --out snapshot.json
+dotnet run --project src/Opscope -- doctor --fail-on critical
+dotnet run --project src/Opscope -- report snapshot.json --format html --out informe.html --quiet
+dotnet run --project src/Opscope -- triage --input snapshot.json --scenario high-cpu
+dotnet run --project src/Opscope -- ioc examples/iocs/sample.csv --input snapshot.json
+dotnet run --project src/Opscope -- timeline --input snapshot.json --format csv
+dotnet run --project src/Opscope -- policy validate examples/policies/opscope.yml
+dotnet run --project src/Opscope -- bundle --out evidencia.zip
+```
+
+Con el binario o la herramienta instalada, sustituye `dotnet run --project src/Opscope --` por `opscope`. Los ejemplos pueden devolver `1` cuando encuentran un problema; eso no significa que la ejecución haya fallado. Códigos: **0** sin hallazgos al umbral elegido, **1** hallazgo o verificación fallida y **2** error de entrada/ejecución. `--require-complete` también rechaza avisos de cobertura. Los modos en vivo rechazan `--input`; los análisis guardados rechazan opciones que introducirían evidencia nativa de otro equipo.
+
+Los informes admiten JSON, SARIF, JUnit, HTML, PDF, CSV, JSONL y CEF; ASFF exige cuenta y región reales. Bundles e historial siempre están redactados. El `snapshot` detallado predeterminado puede contener información sensible: usa `--redact` antes de compartirlo. Las firmas RSA-PSS necesitan una clave pública confiable obtenida por otro canal; un hash por sí solo no autentica al remitente.
+
+### Cloud, seguridad y desarrollo
+
+Azure y AWS requieren sus CLI oficiales instaladas, autenticación previa y permisos de lectura sobre los ámbitos elegidos. La consulta de metadatos es explícita. La recolección local funciona sin credenciales cloud; no activa servicios ni inicia sesión. Las notificaciones producen una vista previa y requieren `--confirm-send`; no hay envío desde la web.
+
+La recolección no detiene procesos, cambia servicios, modifica el firewall ni eleva privilegios. La redacción es acotada: si no puede completar su contexto, omite texto y lo indica conservando cifras y severidades. Consulta la [política de seguridad](SECURITY.md), los [permisos cloud](docs/cloud.md), los [contratos de la API](src/Opscope.Api/README.md) y los [límites de las propuestas](docs/proposals.md).
+
+```bash
+python3 tests/cli_smoke.py
+dotnet run --project tests/Opscope.ReportingTests -c Release
+dotnet build tests/Opscope.ApiTests/Opscope.ApiTests.csproj
+cd tests/Opscope.ApiTests
+npm ci
+npx playwright install --with-deps chromium
+npm test
+```
+
+Compila primero la CLI en Release para las pruebas Python. En Windows puedes usar `python` o `py` si `python3` no está disponible. CI ejecuta los diez proyectos de regresión .NET, CLI y pruebas de humo en Linux/Windows/macOS, y el navegador en Linux/Windows. Los comentarios explican las decisiones clave en **EN/ES**; los identificadores, comandos y esquemas públicos mantienen sus nombres para conservar compatibilidad. La preparación de releases genera artefactos y borradores; no publica automáticamente paquetes ni convierte un borrador en release pública.
+
+## English
+
+`opscope` is a cross-platform systems operations CLI for Linux, Windows and macOS, with an authenticated local web interface. It is designed for the first ten minutes of an incident: capture a reliable host snapshot, spot degraded signals, inspect processes and listening sockets, and produce a shareable support bundle without installing a monitoring agent. Self-contained builds include the runtime; framework-dependent builds require the .NET 8 ASP.NET Core runtime.
+
+### What it does
 
 - Host inventory: OS, kernel/runtime, architecture, boot time, uptime and elevation state.
 - Health signals: memory pressure, disk pressure, network reachability and failed services.
@@ -23,16 +91,17 @@
 
 Collection is read-only: it does not stop processes, change services, modify firewall rules or send telemetry. Explicit cloud queries and confirmed notification delivery are optional separate operations.
 
-## Requirements
+### Requirements
 
 - .NET 8 ASP.NET Core runtime for the framework-dependent build (the CLI includes its local API), or a self-contained publish. Source builds require the .NET 8 SDK.
 - Source builds use SDK 8.0.426 or a later servicing patch in the same feature band, as pinned in `global.json`, so installed newer SDKs do not change compiler/analyzer behavior.
+- Browser tests require Node.js 22 or later; the embedded production UI does not need Node.js or CDN resources.
 - Linux: `ss` and `systemctl` provide core coverage; `lsof`, `journalctl`, `resolvectl`, `ip` and supported firewall tools are optional enrichments. `lsof` is used as a read-only listener fallback.
 - Windows: `netstat`, `netsh` and `sc.exe` provide core coverage; `tasklist.exe` and `wevtutil.exe` are optional diagnostics enrichments.
 
 The release workflow targets `linux-x64`, `linux-arm64`, `win-x64`, `win-arm64`, `osx-x64` and `osx-arm64`. The local validation includes an actual Linux self-contained publish; native Windows/macOS execution is covered by the configured CI matrix.
 
-## Build and run
+### Build and run
 
 ```bash
 dotnet build src/Opscope/Opscope.csproj -c Release
@@ -52,13 +121,13 @@ dotnet publish src/Opscope/Opscope.csproj -c Release -r linux-x64 --self-contain
 dotnet publish src/Opscope/Opscope.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o artifacts/win-x64
 ```
 
-## Exit codes
+### Exit codes
 
 - `0`: requested work completed without a finding at the selected threshold.
 - `1`: a finding meets `--fail-on`, or archive verification failed.
 - `2`: invalid input or required work could not complete. `--require-complete` also rejects coverage warnings.
 
-## Commands
+### Commands
 
 | Command | Purpose |
 | --- | --- |
@@ -80,11 +149,11 @@ Use `snapshot --redact --json --out safe-snapshot.json` when the output may leav
 
 The regression suite covers localized UFW parsing, nftables inbound-scope verification, unsafe executable blocking, private output permissions, typed redaction of addresses/ports/paths/identities, preservation of incomplete collection state, and diff detection before redaction.
 
-## Security and privacy
+### Security and privacy
 
 Collection is local and read-only. External commands are launched without a shell, with fixed executable resolution and bounded output. Support bundles omit process command lines and redact host, user, network-address and filesystem-root identifiers. Treat snapshots and bundles as operational evidence: service names, listener counts and package/runtime versions can still be sensitive. See [SECURITY.md](SECURITY.md) for the reporting policy.
 
-## Repository layout
+### Repository layout
 
 ```text
 src/Opscope/       CLI and command dispatch
@@ -95,7 +164,7 @@ src/Opscope.Evidence/ Optional evidence, IoCs, timeline and fleet
 src/Opscope.Api/   Embedded local UI, history, metrics and MCP
 src/Opscope.Integrations/ Explicit opt-in delivery
 tests/             Cross-platform smoke scripts
-.github/workflows/ Build matrix for Linux and Windows
+.github/workflows/ Build matrix for Linux, Windows and macOS
 tests/Opscope.Tests/ Deterministic parser and security regression tests
 .gitattributes       Cross-platform line-ending policy
 SECURITY.md          Vulnerability reporting and data-handling notes
@@ -103,7 +172,7 @@ SECURITY.md          Vulnerability reporting and data-handling notes
 
 
 
-## Implemented proposal commands
+### Implemented proposal commands
 
 ```sh
 opscope policy validate examples/policies/opscope.yml
@@ -128,7 +197,7 @@ An explicit `--policy` or a local `opscope.yml` applies configurable CPU/memory/
 
 Use `--fail-on info|warning|critical|none` (default `warning`). Required cloud failures set `operationSucceeded=false`; legitimate empty inventories remain successful. Optional service/permission gaps remain warnings unless `--require-complete` is used. Redacted baselines cannot prove exact host, disk, service or listener identity changes: count/state comparisons carry explicit coverage warnings.
 
-## Custody bundles and handoff
+### Custody bundles and handoff
 
 ```sh
 opscope bundle --pack examples/packs/base.yml --evidence security --out incident.zip
@@ -143,7 +212,7 @@ opscope decrypt incident.bundle.enc --private-key recipient-private.pem --out de
 
 A report's `--bundle` option includes the actual file digest and verification result. Native extra evidence requires a fresh local collection; omit `--input` when asking to collect logs or account metadata. Saved evidence remains available to offline reports and analyzers. Platform coverage and supported IoC patterns are documented in [Evidence](src/Opscope.Evidence/README.md).
 
-## Local interface, history and cloud
+### Local interface, history and cloud
 
 ```sh
 opscope serve
@@ -176,7 +245,7 @@ See [cloud commands, permissions and limits](docs/cloud.md), [Azure drift format
 
 For ASFF import, supply `--format asff --account <12-digit-id> --region <region>`. Generic library ASFF without context is explicitly marked as an offline placeholder.
 
-## Validation and packaging
+### Validation and packaging
 
 ```sh
 dotnet build src/Opscope/Opscope.csproj -c Release
@@ -187,5 +256,7 @@ dotnet pack src/Opscope/Opscope.csproj -c Release -p:PublishSingleFile=false -o 
 ```
 
 CI runs .NET checks on Linux/Windows/macOS and Playwright on Linux/Windows. Provider, identity and notification tests use injected transports, with no live tenant/account, real messages or infrastructure changes. Release tooling creates six-RID archives, actual-output SBOMs/checksums, optional real signatures/provenance, and winget/Homebrew manifests derived from real artifact hashes. Publication is a separate operator action; unsigned artifacts are not labelled signed.
+
+Key code comments use **EN/ES** to explain trust boundaries, evidence provenance and concurrency. Public identifiers, CLI flags and JSON schemas keep their existing names. See the [dependency review / revisión de dependencias](docs/dependency-review.md) for the reviewed updates, compatibility checks and native SQLite version change.
 
 The [proposal matrix](docs/proposals.md) maps all 60 items to code, supported scopes and explicit limitations. The recommended local web interface was selected; optional native-window alternatives are not required to run it. Review operational evidence before sharing it.

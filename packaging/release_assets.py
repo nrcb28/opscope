@@ -35,6 +35,8 @@ def validate_version(version):
 
 
 def files_in(directory):
+    # EN: Reject linked inputs so an archive cannot silently include files outside its selected source.
+    # ES: Se rechazan enlaces para que el archivo no incluya silenciosamente ficheros ajenos a su origen elegido.
     directory = Path(directory)
     if directory.is_symlink():
         raise ValueError("Release input must not contain symbolic links.")
@@ -157,6 +159,8 @@ def manifests(directory, output, version, repository):
 
 
 def checksums(directory, output):
+    # EN: Hash actual output bytes and escape filenames using the format accepted by GNU verification tools.
+    # ES: Se calculan hashes de los bytes reales y se escapan nombres según el formato de las herramientas GNU.
     root, files = files_in(directory)
     output = Path(output).resolve()
     lines = []

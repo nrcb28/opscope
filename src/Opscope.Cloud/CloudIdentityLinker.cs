@@ -4,6 +4,8 @@ namespace Opscope.Cloud;
 
 public static class CloudIdentityLinker
 {
+    // EN: Only successful normalized VM/instance evidence can establish a local-to-cloud identity link.
+    // ES: Solo la evidencia normalizada y válida de una VM o instancia puede vincular la identidad local con la nube.
     public static bool Matches(AnalysisReport report, object? identity)
     {
         ArgumentNullException.ThrowIfNull(report);

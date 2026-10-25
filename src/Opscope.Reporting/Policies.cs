@@ -10,6 +10,8 @@ namespace Opscope;
 
 internal static class BoundedYaml
 {
+    // EN: Bound parser events before constructing models so aliases, tags and deep nesting cannot bypass policy limits.
+    // ES: Se acotan los eventos antes de crear modelos para impedir que alias, etiquetas o anidamiento eludan los límites de políticas.
     internal static T Read<T>(string path)
     {
         var info = new FileInfo(path);
@@ -86,6 +88,8 @@ public sealed class PolicyDocument
 
 public sealed class PolicyEngine
 {
+    // EN: Rules evaluate observations only; evaluation never invokes remediation commands or changes settings.
+    // ES: Las reglas solo evalúan observaciones; la evaluación nunca ejecuta remediaciones ni cambia la configuración.
     private static readonly HashSet<string> Metrics = new(StringComparer.Ordinal) { "cpu.usedPercent", "memory.usedPercent", "disk.maxUsedPercent", "security.exposedListeners", "network.listenerCount", "services.runningCount", "firewall.active", "cloud.resourceCount", "cloud.warningCount", "cloud.criticalCount" };
     private readonly PolicyDocument document;
     public PolicyEngine(PolicyDocument document) { this.document = document ?? throw new ArgumentNullException(nameof(document)); }
@@ -261,6 +265,8 @@ public sealed class PackDocument
 
 public sealed record CollectionPack(string Name, IReadOnlyList<string> Collectors)
 {
+    // EN: Resolve inheritance within its allowed root and reject cycles and symbolic links before collection.
+    // ES: La herencia se resuelve dentro de su raíz permitida y rechaza ciclos y enlaces simbólicos antes de recolectar.
     private static readonly HashSet<string> Allowed = new(StringComparer.Ordinal) { "host", "cpu", "memory", "disks", "network", "processes", "services", "security", "tools", "logs", "packages", "accounts", "scheduled-tasks", "certificates" };
     public IReadOnlyList<string> EvidenceGroups => Collectors.Where(c => c is "logs" or "packages" or "accounts" or "scheduled-tasks" or "certificates" or "security").ToArray();
     public CollectorOptions ToCollectorOptions() => new(IncludeProcesses: Collectors.Contains("processes"), IncludeNetwork: Collectors.Contains("network"), IncludeServices: Collectors.Contains("services"));

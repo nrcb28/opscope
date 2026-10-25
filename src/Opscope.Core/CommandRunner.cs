@@ -11,6 +11,8 @@ namespace Opscope;
 
 public static class CommandRunner
 {
+    // EN: Trusted fixed paths and argument arrays keep execution independent of PATH and shell parsing.
+    // ES: Las rutas fijas confiables y los argumentos separados evitan depender de PATH o de un shell.
     // Bound child-process output to avoid memory exhaustion from a broken or hostile utility.
     // Limitamos la salida de procesos hijos para evitar agotamiento de memoria por una herramienta defectuosa u hostil.
     private const int MaxOutputChars = 256 * 1024;

@@ -6,6 +6,8 @@ namespace Opscope.Api;
 /// <summary>Read-only MCP JSON-RPC. Stdio uses newline-delimited messages; HTTP uses the same handler behind local session authentication.</summary>
 public static class McpServer
 {
+    // EN: Expose narrow read tools; requests cannot choose shell commands, executable arguments or host file paths.
+    // ES: Solo se exponen herramientas de lectura limitadas; las peticiones no pueden elegir comandos, argumentos ejecutables o rutas del host.
     private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web) { MaxDepth = 32 };
     public static Task RunAsync(Func<CancellationToken, Task<Snapshot>> readLatest, CancellationToken cancellationToken = default) => RunAsync(readLatest, Console.In, Console.Out, cancellationToken);
 

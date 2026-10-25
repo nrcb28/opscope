@@ -10,6 +10,8 @@ namespace Opscope.Evidence;
 /// <summary>Bounded optional evidence collection. Commands and file locations are fixed, never supplied by packs.</summary>
 public static partial class EvidenceCollector
 {
+    // EN: Optional groups run only when requested; unsupported or failed reads remain explicit coverage gaps.
+    // ES: Los grupos opcionales solo se ejecutan si se solicitan; las lecturas fallidas o no admitidas quedan como carencias de cobertura.
     private const int MaximumRecords = 2048;
     private static readonly string[] DefaultGroups = ["logs", "packages", "users", "tasks", "certificates", "security", "environment"];
     private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(5);

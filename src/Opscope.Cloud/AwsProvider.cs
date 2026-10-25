@@ -7,6 +7,8 @@ namespace Opscope.Cloud;
 /// <summary>Read-only AWS collection through the optional AWS CLI and its normal credential chain.</summary>
 public sealed class AwsProvider(ICloudCommandRunner runner) : ICloudProvider
 {
+    // EN: Validate projected response shapes and distinguish failed sources from genuine empty inventories.
+    // ES: Se valida la forma de las respuestas y se distinguen las fuentes fallidas de los inventarios realmente vacíos.
     public string Name => "aws";
     private static readonly HashSet<string> Operations = new(StringComparer.OrdinalIgnoreCase)
         { "inventory", "posture", "health", "instance", "bundle", "drift", "patches", "cost" };

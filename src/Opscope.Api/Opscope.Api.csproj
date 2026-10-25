@@ -1,4 +1,19 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><TreatWarningsAsErrors>true</TreatWarningsAsErrors></PropertyGroup>
-  <ItemGroup><FrameworkReference Include="Microsoft.AspNetCore.App"/><ProjectReference Include="../Opscope.Core/Opscope.Core.csproj"/><ProjectReference Include="../Opscope.Reporting/Opscope.Reporting.csproj"/><ProjectReference Include="../Opscope.Evidence/Opscope.Evidence.csproj"/><PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.33"/><PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.14"/><EmbeddedResource Include="Web/*" /></ItemGroup>
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="../Opscope.Core/Opscope.Core.csproj" />
+    <ProjectReference Include="../Opscope.Reporting/Opscope.Reporting.csproj" />
+    <ProjectReference Include="../Opscope.Evidence/Opscope.Evidence.csproj" />
+    <!-- EN: Validate managed net8 assets and the actual native engine independently of package version numbers. -->
+    <!-- ES: Se validan los ensamblados net8 y el motor nativo real por separado de las versiones de los paquetes. -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="3.0.5" />
+    <EmbeddedResource Include="Web/*" />
+  </ItemGroup>
 </Project>

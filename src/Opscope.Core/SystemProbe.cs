@@ -10,6 +10,8 @@ namespace Opscope;
 
 public sealed class SystemProbe
 {
+    // EN: Missing tools and permission gaps remain visible; absent evidence does not establish health.
+    // ES: Las herramientas ausentes y los permisos insuficientes quedan visibles; la falta de evidencia no demuestra buena salud.
     internal sealed record FirewallObservation(string State, bool RulesPresent, bool FilteringVerified, IReadOnlyList<string>? Families = null);
 
     private static readonly Regex Whitespace = new(@"\s+", RegexOptions.Compiled);

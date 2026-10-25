@@ -35,6 +35,8 @@ public sealed record ServerOptions
 
 public static class LocalServer
 {
+    // EN: Authenticate protected routes and validate request origins; uploaded analyses never replace live state.
+    // ES: Se autentican las rutas protegidas y se valida el origen; los análisis cargados nunca sustituyen el estado en vivo.
     public static async Task RunAsync(ServerOptions options, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -63,6 +65,8 @@ public static class LocalServer
         string? origin = null;
         var requests = new RequestWindow();
         using var offlineOperations = new SemaphoreSlim(2, 2);
+        // EN: Origin and session checks run before every protected handler, including metrics and MCP.
+        // ES: El origen y la sesión se comprueban antes de cada endpoint protegido, incluidos métricas y MCP.
         app.Use(async (context, next) =>
         {
             context.Response.Headers["Content-Security-Policy"] = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'";
@@ -113,6 +117,8 @@ public static class LocalServer
             return state.Latest is { } snapshot
                 ? Results.Text(Reporter.ToJson(Reporter.RedactForOutput(DiffEngine.Compare(baseline, snapshot))), "application/json") : Results.StatusCode(503);
         });
+        // EN: Saved evidence uses a bounded separate path; it never replaces the collector or enters history.
+        // ES: La evidencia guardada usa una ruta separada y acotada; no sustituye al recolector ni entra en el historial.
         app.MapPost("/api/analyze", async (HttpContext context) =>
         {
             if (!await offlineOperations.WaitAsync(0, context.RequestAborted)) return Results.StatusCode(429);

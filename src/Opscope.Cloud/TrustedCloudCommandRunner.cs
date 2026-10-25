@@ -4,6 +4,8 @@ namespace Opscope.Cloud;
 
 public sealed class TrustedCloudCommandRunner : ICloudCommandRunner
 {
+    // EN: Accept exact read verbs and option arity; literal values cannot introduce endpoint or file overrides.
+    // ES: Solo se admiten lecturas y opciones con aridad exacta; los valores literales no pueden introducir endpoints o archivos externos.
     private static readonly HashSet<string> AwsReads = new(StringComparer.Ordinal)
     {
         "sts get-caller-identity", "ec2 describe-regions", "ec2 describe-instances", "ec2 describe-volumes",

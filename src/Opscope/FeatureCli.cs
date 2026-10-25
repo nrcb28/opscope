@@ -11,6 +11,8 @@ namespace Opscope;
 
 internal static class FeatureCli
 {
+    // EN: Route extended options without changing legacy JSON; saved inputs must not silently trigger live collection.
+    // ES: Las opciones extendidas conservan el JSON anterior; una entrada guardada no debe iniciar recolección en vivo sin indicarlo.
     public const string Usage = """
 
 Extended commands:

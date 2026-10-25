@@ -13,6 +13,8 @@ public sealed record IocImport(IReadOnlyList<IocIndicator> Indicators, IReadOnly
 
 public static class IocAnalyzer
 {
+    // EN: Offline comparison does not resolve indicators; only the live overload can hash authorized running executables.
+    // ES: La comparación offline no resuelve indicadores; solo la variante en vivo puede calcular hashes de ejecutables en ejecución autorizados.
     private const int MaximumIndicators = 10000;
     private const int MaximumMatches = 2000;
     private static readonly Regex SimpleStixPattern = new(@"^\[\s*(ipv4-addr:value|ipv6-addr:value|domain-name:value|process:name|file:hashes\.'?(?:MD5|SHA-1|SHA-256)'?)\s*=\s*'([^'\\]{1,1024})'\s*\]$",

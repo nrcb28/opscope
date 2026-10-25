@@ -7,6 +7,8 @@ namespace Opscope.Evidence;
 
 public static class PlatformInspector
 {
+    // EN: Container markers are limited evidence; never export environment values or read cluster credentials.
+    // ES: Los marcadores de contenedor son evidencia limitada; no se exportan valores de entorno ni se leen credenciales del clúster.
     private static readonly Regex PageSize = new(@"page size of ([0-9]+) bytes", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
     private static readonly Regex IdleCpu = new(@"CPU usage:.*?([0-9.]+)% idle", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
     private static readonly string[] ContainerEnvironmentNames = ["KUBERNETES_SERVICE_HOST", "container"];

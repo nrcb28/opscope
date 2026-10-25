@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Xml.Linq;
 using Opscope;
 
@@ -106,6 +107,55 @@ tests.Add(("standard output schemas and escaped markup", async () =>
     var warningDiff = new DiffReport("a", "b", snapshot.CollectedAtUtc, snapshot.CollectedAtUtc, false, [], [], ["Service identities are redacted; only service state counts were compared."]);
     using (var diffSarif = JsonDocument.Parse(ReportExporter.Export(warningDiff, "sarif"))) Check(diffSarif.RootElement.GetProperty("runs")[0].GetProperty("invocations")[0].GetProperty("toolExecutionNotifications").GetArrayLength() == 1, "Diff coverage warning was lost in export");
     var pdfPath = Path.Combine(directory, "report.pdf"); await ReportExporter.WriteAsync(pdfPath, snapshot, "pdf"); var pdf = await File.ReadAllTextAsync(pdfPath, Encoding.Latin1); Check(pdf.StartsWith("%PDF-1.4", StringComparison.Ordinal) && pdf.EndsWith("%%EOF\n", StringComparison.Ordinal) && pdf.Contains("xref", StringComparison.Ordinal), "Invalid standalone PDF");
+}));
+tests.Add(("nested credential fields and repeated secrets stay redacted", () =>
+{
+    foreach (var key in new[] { "password", "passwd", "pwd", "apiKey", "api_key", "connectionString" })
+    {
+        var secret = "credential-sentinel-" + key;
+        var report = new AnalysisReport("evidence", Fixture().CollectedAtUtc,
+            [new(FindingSeverity.Warning, "CREDENTIAL", "Review", "Observed " + secret, "Rotate " + secret)],
+            new { nested = new Dictionary<string, object> { [key] = secret, ["message"] = "Observed " + secret }, count = 7 }, ["Warning: " + secret]);
+        var text = ReportExporter.Export(report, "json");
+        Check(!text.Contains(secret, StringComparison.Ordinal), "Credential field or repeated secret leaked: " + key);
+        using var json = JsonDocument.Parse(text);
+        Check(json.RootElement.GetProperty("data").GetProperty("count").GetInt32() == 7, "Secret redaction removed numeric evidence");
+    }
+    foreach (var assignment in new[] { "password=\"quoted credential sentinel\"", "pwd='single quoted credential sentinel'", "api_key=\"another credential sentinel\"", """{"token":"first \"quoted\" credential sentinel"}""" })
+    {
+        var text = Reporter.RedactEvidenceText(assignment);
+        Check(!text.Contains("credential sentinel", StringComparison.Ordinal) && text.Contains("redacted-secret", StringComparison.Ordinal), "Quoted credential was only partly redacted: " + text);
+    }
+    Check(!Reporter.RedactEvidenceText("private-prefix-value", "private", "private-prefix-value").Contains("prefix-value", StringComparison.Ordinal), "Short identifier replacement exposed a suffix of the longer secret");
+    return Task.CompletedTask;
+}));
+tests.Add(("deep identifiers retain redaction context in findings", () =>
+{
+    JsonNode data = new JsonObject { ["id"] = "deep-resource-identifier-sentinel" };
+    for (var depth = 0; depth < 26; depth++) data = new JsonObject { ["nested"] = data };
+    var report = new AnalysisReport("evidence", Fixture().CollectedAtUtc,
+        [new(FindingSeverity.Warning, "DEEP", "Review", "Resource deep-resource-identifier-sentinel", "Review")], data);
+    Check(!ReportExporter.Export(report, "json").Contains("deep-resource-identifier-sentinel", StringComparison.Ordinal), "Nested identifier leaked through findings");
+    return Task.CompletedTask;
+}));
+tests.Add(("redaction context overflow omits text with an explicit coverage warning", () =>
+{
+    const string secret = "context-overflow-credential-sentinel";
+    var resources = Enumerable.Range(0, 1024).Select(index => new { name = "context-resource-" + index }).ToArray();
+    var report = new AnalysisReport("evidence", Fixture().CollectedAtUtc,
+        [new(FindingSeverity.Warning, "CONTEXT", "Review", "Observed " + secret, "Rotate " + secret)],
+        new { resources, password = secret, message = "Observed " + secret, records = new Dictionary<string, int> { [secret] = 3 }, count = 7 }, ["Warning: " + secret]);
+    var text = ReportExporter.Export(report, "json");
+    Check(!text.Contains(secret, StringComparison.Ordinal), "Context overflow exposed credential text or a dictionary key");
+    using var json = JsonDocument.Parse(text);
+    Check(json.RootElement.GetProperty("data").GetProperty("count").GetInt32() == 7 && json.RootElement.GetProperty("findings")[0].GetProperty("severity").GetInt32() == (int)FindingSeverity.Warning, "Context overflow discarded numeric evidence or severity");
+    Check(json.RootElement.GetProperty("warnings").EnumerateArray().Any(warning => warning.GetString()!.Contains("Redaction context", StringComparison.Ordinal)), "Context overflow lacks an explicit coverage warning");
+    var complete = ReportSecurity.Redact(report with { Data = new { resources }, Findings = [], Warnings = [] });
+    Check(complete.Warnings?.Count == 0, "Exactly 1024 fully collected identifiers were reported as incomplete");
+    var ordinary = ReportSecurity.Redact(report with { Data = new { tags = new { environment = "QA" } },
+        Findings = [new(FindingSeverity.Warning, "CONTROL", "Review", "Review collected evidence", "Review")], Warnings = [] });
+    Check(ordinary.Warnings?.Count == 0 && ordinary.Findings[0].Code == "CONTROL", "Short metadata caused a spurious context limit or discarded finding text");
+    return Task.CompletedTask;
 }));
 tests.Add(("manifest tampering detected after recomputing outer hash", async () =>
 {

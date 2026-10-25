@@ -62,6 +62,7 @@ public static class LocalServer
         await using var app = builder.Build();
         string? origin = null;
         var requests = new RequestWindow();
+        using var offlineOperations = new SemaphoreSlim(2, 2);
         app.Use(async (context, next) =>
         {
             context.Response.Headers["Content-Security-Policy"] = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'";
@@ -81,7 +82,11 @@ public static class LocalServer
             if (!requests.Allow()) { context.Response.StatusCode = 429; context.Response.Headers.RetryAfter = "1"; return; }
             try { await next(context); }
             catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested || lifetime.IsCancellationRequested) { }
-            catch (Exception error) when (error is InvalidDataException or JsonException or BadHttpRequestException or ArgumentException)
+            catch (RequestReadTimeoutException)
+            { if (!context.Response.HasStarted) { context.Response.StatusCode = 408; await context.Response.WriteAsJsonAsync(new { error = "Request upload deadline exceeded." }, context.RequestAborted); } }
+            catch (BadHttpRequestException error)
+            { if (!context.Response.HasStarted) { context.Response.StatusCode = error.StatusCode; await context.Response.WriteAsJsonAsync(new { error = "Invalid, oversized, or incomplete request." }, context.RequestAborted); } }
+            catch (Exception error) when (error is InvalidDataException or JsonException or ArgumentException)
             { if (!context.Response.HasStarted) { context.Response.StatusCode = 400; await context.Response.WriteAsJsonAsync(new { error = "Invalid or oversized request." }, context.RequestAborted); } }
             catch (Exception)
             { if (!context.Response.HasStarted) { context.Response.StatusCode = 500; await context.Response.WriteAsJsonAsync(new { error = "The local operation could not complete. No host changes were made." }, context.RequestAborted); } }
@@ -95,7 +100,8 @@ public static class LocalServer
         app.MapPost("/api/collect", async (HttpContext context) =>
         {
             if (context.Request.ContentLength is > 0 || context.Request.Headers.ContainsKey("Transfer-Encoding")) return Results.BadRequest(new { error = "Collection takes no request body." });
-            if (!await state.RefreshAsync(context.RequestAborted)) return Results.StatusCode(429);
+            var result = await state.RefreshAsync(context.RequestAborted);
+            if (result != RefreshResult.Success) return Results.StatusCode(result == RefreshResult.Limited ? 429 : 503);
             return state.Latest is { } snapshot ? Results.Text(Reporter.ToJson(snapshot, true), "application/json") : Results.StatusCode(503);
         });
         app.MapGet("/api/history", () => Results.Json(store.List()));
@@ -106,6 +112,21 @@ public static class LocalServer
             var baseline = Reporter.ParseSnapshot(await ReadBoundedAsync(context.Request.Body, HistoryStore.MaximumSnapshotBytes, context.RequestAborted));
             return state.Latest is { } snapshot
                 ? Results.Text(Reporter.ToJson(Reporter.RedactForOutput(DiffEngine.Compare(baseline, snapshot))), "application/json") : Results.StatusCode(503);
+        });
+        app.MapPost("/api/analyze", async (HttpContext context) =>
+        {
+            if (!await offlineOperations.WaitAsync(0, context.RequestAborted)) return Results.StatusCode(429);
+            try
+            {
+                RequireJson(context);
+                using var document = JsonDocument.Parse(await ReadBoundedAsync(context.Request.Body, HistoryStore.MaximumSnapshotBytes, context.RequestAborted), new JsonDocumentOptions { MaxDepth = 64 });
+                var input = OfflineAnalysis.Parse(document.RootElement);
+                input = input with { Snapshot = ScrubSessionToken(input.Snapshot, token), Baseline = input.Baseline is { } baseline ? ScrubSessionToken(baseline, token) : null };
+                return input.Operation == "inspect"
+                    ? Results.Text(Reporter.ToJson(input.Snapshot, true), "application/json")
+                    : ReportResult(input.Analyze(), token);
+            }
+            finally { offlineOperations.Release(); }
         });
         app.MapPost("/api/fleet", async (HttpContext context) =>
         {
@@ -120,7 +141,7 @@ public static class LocalServer
             var report = FleetAnalyzer.Compare(snapshots);
             var data = (FleetData)report.Data!;
             report = report with { Data = data with { Hosts = data.Hosts.Select((host, index) => host with { Host = $"[redacted-host-{index + 1}]" }).ToArray() } };
-            return Results.Text(ReportSecurity.Serialize(report), "application/json");
+            return ReportResult(report, token);
         });
         app.MapGet("/api/settings", () => Results.Json(new { readOnly = true, redactedByDefault = true, historyRedacted = true, retentionCount = options.RetentionCount, retentionDays = options.RetentionDays, refreshSeconds = options.RefreshInterval.TotalSeconds, maxUploadBytes = HistoryStore.MaximumSnapshotBytes, telemetry = false, notifications = false, listener = "127.0.0.1", mcpTransport = "authenticated HTTP JSON-RPC at /mcp; stdio through opscope mcp" }));
         app.MapGet("/api/capabilities", () => Results.Json(new { cloud = options.CloudActions?.Keys.Order(StringComparer.Ordinal).ToArray() ?? [], policy = options.PolicyView is not null }));
@@ -136,21 +157,21 @@ public static class LocalServer
             try
             {
                 var policy = PolicyEngine.Parse(text.GetString()!);
-                return Results.Text(ReportSecurity.Serialize(policy.Evaluate(snapshot)), "application/json");
+                return ReportResult(policy.Evaluate(snapshot), token);
             }
             catch (InvalidDataException error)
             {
-                var detail = Reporter.RedactEvidenceText(error.Message);
+                var detail = ScrubSessionToken(Reporter.RedactEvidenceText(error.Message), token);
                 return Results.BadRequest(new { error = "Policy validation failed.", detail = detail.Length > 4096 ? detail[..4096] : detail });
             }
         });
         app.MapGet("/api/timeline", () =>
         {
             if (state.Latest is not { } snapshot) return Results.StatusCode(503);
-            var entry = store.List().LastOrDefault(item => item.CollectedAtUtc < snapshot.CollectedAtUtc);
+            var entry = store.List().FirstOrDefault(item => item.CollectedAtUtc < snapshot.CollectedAtUtc);
             var baseline = entry is null ? null : store.Get(entry.Id);
             var redacted = Reporter.RedactForOutput(snapshot);
-            return Results.Text(ReportSecurity.Serialize(TimelineBuilder.Build(redacted, baseline)), "application/json");
+            return ReportResult(TimelineBuilder.Build(redacted, baseline), token);
         });
         app.MapPost("/api/cloud/{provider}/{operation}", async (string provider, string operation, HttpContext context) =>
         {
@@ -161,7 +182,8 @@ public static class LocalServer
             {
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);
                 timeout.CancelAfter(TimeSpan.FromSeconds(60));
-                return Results.Text(ReportSecurity.Serialize(await action(timeout.Token)), "application/json");
+                try { return ReportResult(await action(timeout.Token), token); }
+                catch (OperationCanceledException) when (timeout.IsCancellationRequested && !context.RequestAborted.IsCancellationRequested) { return Results.StatusCode(504); }
             }
             finally { state.ExitAction(); }
         });
@@ -186,6 +208,26 @@ public static class LocalServer
             if (format is "sarif") return Results.File(Encoding.UTF8.GetBytes(ReportExporter.Export(snapshot, "sarif")), "application/sarif+json", "opscope-findings.sarif");
             if (format is not ("" or "html")) return Results.BadRequest();
             return Results.Text(BuildReport(snapshot), "text/html; charset=utf-8");
+        });
+        app.MapPost("/api/report", async (HttpContext context) =>
+        {
+            if (!await offlineOperations.WaitAsync(0, context.RequestAborted)) return Results.StatusCode(429);
+            try
+            {
+                RequireJson(context);
+                using var document = JsonDocument.Parse(await ReadBoundedAsync(context.Request.Body, HistoryStore.MaximumSnapshotBytes, context.RequestAborted), new JsonDocumentOptions { MaxDepth = 64 });
+                var root = document.RootElement;
+                OfflineAnalysis.RequireFields(root, "snapshot", "format");
+                if (!root.TryGetProperty("snapshot", out var source) || !root.TryGetProperty("format", out var format) || format.ValueKind != JsonValueKind.String)
+                    return Results.BadRequest(new { error = "A validated snapshot and supported report format are required." });
+                string? selectedFormat;
+                try { selectedFormat = format.GetString(); }
+                catch (InvalidOperationException error) { throw new InvalidDataException("Invalid report format text.", error); }
+                if (selectedFormat is not ("json" or "html" or "pdf" or "sarif" or "junit" or "csv" or "jsonl" or "cef"))
+                    return Results.BadRequest(new { error = "A supported report format is required." });
+                return ExportSnapshot(ScrubSessionToken(Reporter.ParseSnapshot(source.GetRawText()), token), selectedFormat);
+            }
+            finally { offlineOperations.Release(); }
         });
         app.MapGet("/metrics", () => state.Latest is { } snapshot ? Results.Text(BuildMetrics(snapshot), "text/plain; version=0.0.4; charset=utf-8") : Results.StatusCode(503));
         app.MapPost("/mcp", async (HttpContext context) =>
@@ -257,19 +299,54 @@ public static class LocalServer
     private static void RequireJson(HttpContext context)
     {
         if (!context.Request.HasJsonContentType()) throw new InvalidDataException("JSON content type is required.");
+        if (!System.Net.Http.Headers.MediaTypeHeaderValue.TryParse(context.Request.ContentType, out var contentType))
+            throw new InvalidDataException("A valid JSON content type is required.");
+        if (contentType.CharSet is { } charset && !charset.Trim('"').Equals("utf-8", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("JSON requests must use UTF-8.");
     }
     private static async Task<string> ReadBoundedAsync(Stream input, int maxBytes, CancellationToken cancellationToken)
     {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(10));
         using var output = new MemoryStream();
         var buffer = new byte[8192];
-        while (true)
+        try
         {
-            var read = await input.ReadAsync(buffer, cancellationToken);
-            if (read == 0) break;
-            if (output.Length + read > maxBytes) throw new InvalidDataException("Request is too large.");
-            output.Write(buffer, 0, read);
+            while (true)
+            {
+                var read = await input.ReadAsync(buffer, deadline.Token);
+                if (read == 0) break;
+                if (output.Length + read > maxBytes) throw new InvalidDataException("Request is too large.");
+                output.Write(buffer, 0, read);
+            }
         }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { throw new RequestReadTimeoutException(); }
         return new UTF8Encoding(false, true).GetString(output.ToArray());
+    }
+    private sealed class RequestReadTimeoutException : TimeoutException { }
+    private static string ScrubSessionToken(string text, string token) => text.Replace(token, "[redacted-session-token]", StringComparison.Ordinal);
+    private static Snapshot ScrubSessionToken(Snapshot snapshot, string token)
+    {
+        var json = Reporter.ToJson(snapshot);
+        return json.Contains(token, StringComparison.Ordinal) ? Reporter.ParseSnapshot(ScrubSessionToken(json, token)) : snapshot;
+    }
+    private static IResult ReportResult(AnalysisReport report, string token) => Results.Text(ScrubSessionToken(ReportSecurity.Serialize(report), token), "application/json", statusCode: report.OperationSucceeded ? 200 : 502);
+    private static IResult ExportSnapshot(Snapshot snapshot, string format)
+    {
+        var (contentType, extension) = format switch
+        {
+            "json" => ("application/json", "json"),
+            "html" => ("text/html; charset=utf-8", "html"),
+            "pdf" => ("application/pdf", "pdf"),
+            "sarif" => ("application/sarif+json", "sarif"),
+            "junit" => ("application/xml", "xml"),
+            "csv" => ("text/csv; charset=utf-8", "csv"),
+            "jsonl" => ("application/x-ndjson", "jsonl"),
+            "cef" => ("text/plain; charset=utf-8", "cef"),
+            _ => throw new InvalidDataException("Unsupported report format.")
+        };
+        var output = ReportExporter.Export(snapshot, format);
+        return Results.File((format == "pdf" ? Encoding.Latin1 : Encoding.UTF8).GetBytes(output), contentType, $"opscope-redacted-report.{extension}");
     }
     private static async Task RefreshLoopAsync(EvidenceState state, TimeSpan interval, CancellationToken cancellationToken)
     {
@@ -296,6 +373,7 @@ public static class LocalServer
         var findings = string.Join("", view.Findings.OrderByDescending(f => f.Severity).Select(f => $"<li><h3>{E(f.Severity)} · {E(f.Title)}</h3><p>{E(f.Detail)}</p><p>{E(f.Recommendation)}</p></li>"));
         return $"<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Opscope handoff report</title><body><main><h1>Opscope · Read-only evidence</h1><p>Redacted report · {E(view.CollectedAtUtc.ToString("u"))}</p><p>Use your browser Print → Save as PDF to export this self-contained evidence view.</p><h2>Summary</h2><p>CPU {E(view.CpuUsedPercent)}% · Memory {E(view.Memory.UsedPercent)}% · Listeners {view.Listeners.Count}</p><h2>Prioritized findings</h2><ol>{findings}</ol><h2>Collection warnings</h2><ul>{string.Join("", view.CollectionWarnings.Select(w => $"<li>{E(w)}</li>"))}</ul><h2>Redacted evidence</h2><pre>{E(Reporter.ToJson(view))}</pre></main></body></html>";
     }
+    private enum RefreshResult { Success, Limited, Failed }
     private sealed class EvidenceState(ServerOptions options, HistoryStore store, string sessionToken) : IDisposable
     {
         private readonly SemaphoreSlim collector = new(1, 1);
@@ -311,10 +389,10 @@ public static class LocalServer
             return true;
         }
         public void ExitAction() => collector.Release();
-        public async Task<bool> RefreshAsync(CancellationToken cancellationToken, bool force = false)
+        public async Task<RefreshResult> RefreshAsync(CancellationToken cancellationToken, bool force = false)
         {
             if (force) await collector.WaitAsync(cancellationToken);
-            else if (!await TryEnterActionAsync(cancellationToken)) return false;
+            else if (!await TryEnterActionAsync(cancellationToken)) return RefreshResult.Limited;
             try
             {
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -322,15 +400,13 @@ public static class LocalServer
                 var snapshot = await (options.CollectAsync?.Invoke(timeout.Token) ?? SystemProbe.CollectAsync(options.CollectorOptions, timeout.Token));
                 // A browser launched with the bootstrap URL can expose that URL in its process arguments.
                 // Never admit the session secret to either the full in-memory view or persisted evidence.
-                var json = Reporter.ToJson(snapshot);
-                if (json.Contains(sessionToken, StringComparison.Ordinal))
-                    snapshot = Reporter.ParseSnapshot(json.Replace(sessionToken, "[redacted-session-token]", StringComparison.Ordinal));
+                snapshot = ScrubSessionToken(snapshot, sessionToken);
                 store.Add(snapshot);
                 Volatile.Write(ref latest, snapshot);
-                return true;
+                return RefreshResult.Success;
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
-            catch (Exception) when (!force) { return false; }
+            catch (Exception) when (!force) { return RefreshResult.Failed; }
             finally { Interlocked.Exchange(ref lastStart, Environment.TickCount64); collector.Release(); }
         }
         public void Dispose() => collector.Dispose();

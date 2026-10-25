@@ -32,6 +32,11 @@ collector callback. A single collection/cloud gate prevents overlapping work and
 applies a two-second cooldown. Collection has a 60-second cancellation deadline;
 automatic refresh defaults to 30 seconds. The server accepts bounded requests,
 limits connection/header counts, and permits at most four bounded SSE streams.
+JSON uploads require strict UTF-8 and complete within ten seconds. Collection
+failures return HTTP 503 while preserving the last successful snapshot; HTTP 429
+indicates an actual cooldown or concurrency limit. Failed cloud reports return
+HTTP 502 with their redacted report and `operationSucceeded: false`; coverage
+warnings alone do not turn a successful operation into a failure.
 Cloud callbacks are allowlisted provider/operation pairs and their reports pass
 through `ReportSecurity` before being returned. A policy callback supplies only a
 read-only view; no editor writes configuration or host state.
@@ -46,6 +51,33 @@ browser storage. Native event-log collection and applying a policy remain CLI
 workflows. The observed timeline uses the shared evidence timeline builder for
 boot, snapshot, failed-service observations, and baseline drift. Redacted drift
 coverage limitations are shown alongside the result.
+
+The saved-evidence workspace uses authenticated `POST /api/analyze`, with a
+2 MiB total JSON bound and exact, case-sensitive request fields:
+
+```json
+{"snapshot": {"...": "complete saved snapshot"}, "operation": "inspect"}
+{"snapshot": {"...": "complete saved snapshot"}, "operation": "triage", "scenario": "high-cpu"}
+{"snapshot": {"...": "complete saved snapshot"}, "operation": "ioc", "indicators": {"format": "csv", "text": "type,value\nprocess,worker\n"}}
+{"snapshot": {"...": "complete saved snapshot"}, "operation": "timeline", "baseline": {"...": "optional complete earlier snapshot"}}
+```
+
+Every snapshot passes `Reporter.ParseSnapshot`. Inspection returns a flat redacted
+Snapshot; the other operations return a redacted AnalysisReport. Triage scenarios
+are `high-cpu`, `disk-full`, and `port-exposed`; indicator formats are `csv` and
+`stix`, with at most 128 KiB of UTF-8 indicator text. Import warnings remain in the
+IoC report. Offline comparison never reads executable hashes, paths, native logs,
+DNS, or remote feeds. Unknown, duplicate, and operation-incompatible fields are
+rejected. At most two saved-analysis/export requests run concurrently; additional
+requests return HTTP 429. These operations have no collection cooldown, invoke no host collectors,
+and never overwrite cached live evidence or write uploaded snapshots to history.
+
+Authenticated `POST /api/report` accepts exactly `snapshot` and `format` under
+the same 2 MiB request bound. It exports the chosen validated snapshot as a
+redacted attachment in `json`, `html`, `pdf`, `sarif`, `junit`, `csv`, `jsonl`, or
+`cef` format. JSON remains a flat Snapshot. Existing `GET /api/report` continues
+to export current live evidence. Session secrets observed in supplied snapshot
+text or analysis results are removed before publication and export.
 
 Reports download as redacted JSON, SARIF, HTML, or an actual PDF. The print view
 supports the browser's PDF workflow. Bundle downloads use `CustodyBundle`,

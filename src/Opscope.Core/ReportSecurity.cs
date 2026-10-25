@@ -5,6 +5,7 @@ namespace Opscope;
 
 public static class ReportSecurity
 {
+    private static readonly string[] ContextLimitWarnings = ["Redaction context exceeded its safety limit; text and non-schema keys were omitted. Numeric evidence and finding severity remain available."];
     public static JsonSerializerOptions JsonOptions { get; } = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -18,23 +19,26 @@ public static class ReportSecurity
         var count = 0;
         var source = JsonSerializer.SerializeToNode(report.Data, JsonOptions);
         var identifiers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        CollectIdentifiers(source, identifiers, 0);
-        var sensitive = identifiers.Take(1024).ToArray();
-        var data = report.Data is Snapshot snapshot
+        var visited = 0;
+        var complete = CollectIdentifiers(source, identifiers, 0, ref visited);
+        var sensitive = identifiers.ToArray();
+        const string omitted = "[redacted-context-limit]";
+        string Text(string value) => complete ? Reporter.RedactEvidenceText(value, sensitive) : omitted;
+        var data = complete && report.Data is Snapshot snapshot
             ? JsonSerializer.SerializeToNode(Reporter.RedactForOutput(snapshot), JsonOptions)
-            : Sanitize(source, null, ref count, 0, sensitive);
+            : Sanitize(source, null, ref count, 0, sensitive, !complete);
         return report with
         {
-            Kind = Reporter.RedactEvidenceText(report.Kind, sensitive),
+            Kind = Text(report.Kind),
             Findings = report.Findings.Select(f => f with
             {
-                Code = Reporter.RedactEvidenceText(f.Code, sensitive),
-                Title = Reporter.RedactEvidenceText(f.Title, sensitive),
-                Detail = Reporter.RedactEvidenceText(f.Detail, sensitive),
-                Recommendation = Reporter.RedactEvidenceText(f.Recommendation, sensitive)
+                Code = Text(f.Code),
+                Title = Text(f.Title),
+                Detail = Text(f.Detail),
+                Recommendation = Text(f.Recommendation)
             }).ToArray(),
             Data = data,
-            Warnings = (report.Warnings ?? []).Select(w => Reporter.RedactEvidenceText(w, sensitive)).ToArray()
+            Warnings = (report.Warnings ?? []).Select(Text).Concat(complete ? [] : ContextLimitWarnings).ToArray()
         };
     }
 
@@ -47,23 +51,36 @@ public static class ReportSecurity
         "accounts" or "subscriptions" or "profiles" or "resourceids" or "addresses" or "scopes" or
         "resource" or "resourcename" or "vmname" or "image" or "vpc" or "subnet" or "volume" or "instance" or "interface" or "association" or "groups" or "logicalid";
 
-    private static void CollectIdentifiers(JsonNode? node, HashSet<string> identifiers, int depth)
+    private static bool IsSecret(string key) => key.Contains("password", StringComparison.Ordinal) || key.Contains("secret", StringComparison.Ordinal) ||
+        key.Contains("token", StringComparison.Ordinal) || key.Contains("credential", StringComparison.Ordinal) ||
+        key.Contains("accesskey", StringComparison.Ordinal) || key is "passwd" or "pwd" or "apikey" or "connectionstring" or "privatekey" or
+        "authorization" or "environment" or "parameters" or "tags" or "commandline" or "arguments" or "args";
+
+    private static bool CollectIdentifiers(JsonNode? node, HashSet<string> identifiers, int depth, ref int visited, bool secret = false, bool identifier = false)
     {
-        if (depth > 24 || identifiers.Count >= 1024) return;
+        if (++visited > 100000 || depth > JsonOptions.MaxDepth) return false;
         if (node is JsonObject obj)
             foreach (var pair in obj)
             {
                 var key = pair.Key.Replace("_", string.Empty, StringComparison.Ordinal).Replace("-", string.Empty, StringComparison.Ordinal).ToLowerInvariant();
-                if (IsIdentifier(key) && pair.Value is JsonValue value && value.TryGetValue<string>(out var text) && text.Length is >= 3 and <= 512)
-                    identifiers.Add(text);
-                if (IsIdentifier(key) && pair.Value is JsonArray identifiersArray)
-                    foreach (var item in identifiersArray.Take(1024))
-                        if (item is JsonValue arrayValue && arrayValue.TryGetValue<string>(out var identifier) && identifier.Length is >= 3 and <= 512)
-                            identifiers.Add(identifier);
-                CollectIdentifiers(pair.Value, identifiers, depth + 1);
+                if (!CollectIdentifiers(pair.Value, identifiers, depth + 1, ref visited, secret || IsSecret(key), IsIdentifier(key))) return false;
             }
         else if (node is JsonArray array)
-            foreach (var item in array.Take(10000)) CollectIdentifiers(item, identifiers, depth + 1);
+        {
+            if (array.Count > 10000) return false;
+            foreach (var item in array)
+                if (!CollectIdentifiers(item, identifiers, depth + 1, ref visited, secret, identifier)) return false;
+        }
+        else if ((secret || identifier) && node is JsonValue value && value.TryGetValue<string>(out var text))
+        {
+            if (text.Length > 16384) return false;
+            if (text.Length >= 3 && !identifiers.Contains(text))
+            {
+                if (identifiers.Count >= 1024) return false;
+                identifiers.Add(text);
+            }
+        }
+        return true;
     }
 
     private static readonly HashSet<string> SchemaKeys = new(
@@ -80,13 +97,11 @@ public static class ReportSecurity
         return Guid.TryParse(key, out _) || identifiers.Contains(key, StringComparer.OrdinalIgnoreCase);
     }
 
-    private static JsonNode? Sanitize(JsonNode? node, string? key, ref int count, int depth, string[] sensitive)
+    private static JsonNode? Sanitize(JsonNode? node, string? key, ref int count, int depth, string[] sensitive, bool omitText)
     {
         if (++count > 100000 || depth > 32) return JsonValue.Create("[redacted-limit]");
         var lower = key?.Replace("_", string.Empty, StringComparison.Ordinal).Replace("-", string.Empty, StringComparison.Ordinal).ToLowerInvariant() ?? string.Empty;
-        if (lower.Contains("password", StringComparison.Ordinal) || lower.Contains("secret", StringComparison.Ordinal) ||
-            lower.Contains("token", StringComparison.Ordinal) || lower.Contains("credential", StringComparison.Ordinal) ||
-            lower.Contains("accesskey", StringComparison.Ordinal) || lower is "privatekey" or "authorization" or "environment" or "parameters" or "tags" or "commandline" or "arguments" or "args")
+        if (IsSecret(lower))
             return JsonValue.Create("[redacted-secret]");
         if (node is JsonObject obj)
         {
@@ -94,8 +109,8 @@ public static class ReportSecurity
             var index = 0;
             foreach (var pair in obj)
             {
-                var sanitizedKey = SensitiveKey(pair.Key, sensitive) ? $"[redacted-key-{index}]" : pair.Key;
-                result[sanitizedKey] = Sanitize(pair.Value, pair.Key, ref count, depth + 1, sensitive);
+                var sanitizedKey = SensitiveKey(pair.Key, sensitive) || omitText && !SchemaKeys.Contains(pair.Key) ? $"[redacted-key-{index}]" : pair.Key;
+                result[sanitizedKey] = Sanitize(pair.Value, pair.Key, ref count, depth + 1, sensitive, omitText);
                 index++;
             }
             return result;
@@ -103,11 +118,12 @@ public static class ReportSecurity
         if (node is JsonArray array)
         {
             var result = new JsonArray();
-            foreach (var item in array.Take(10000)) result.Add(Sanitize(item, key, ref count, depth + 1, sensitive));
+            foreach (var item in array.Take(10000)) result.Add(Sanitize(item, key, ref count, depth + 1, sensitive, omitText));
             return result;
         }
         if (node is JsonValue value && value.TryGetValue<string>(out var text))
         {
+            if (omitText) return JsonValue.Create("[redacted-context-limit]");
             if (IsIdentifier(lower))
             {
                 if (System.Text.RegularExpressions.Regex.IsMatch(text, @"\A\[redacted-(?:host|service|process|identifier)(?:-[0-9]{1,4})?\]\z", System.Text.RegularExpressions.RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50)))

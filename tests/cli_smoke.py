@@ -74,6 +74,16 @@ class CliTests(unittest.TestCase):
         self.assertEqual(diff["data"]["changes"], [])
         self.assertNotIn("Unknown option", self.run_cli("snapshot", "--input", self.root / "missing.json", expected=2).decode())
 
+    def test_saved_evidence_never_silently_collects_another_host(self):
+        for command in ["serve", "watch", "tui", "mcp", "environment", "history", "azure"]:
+            with self.subTest(command=command):
+                self.run_cli(command, "--input", self.snapshot, expected=2)
+        for option in ["--cloud-context", "--no-processes", "--no-network", "--no-services"]:
+            with self.subTest(option=option):
+                self.run_cli("snapshot", "--input", self.snapshot, option, expected=2)
+        self.run_cli("report", self.snapshot, "--evidence", "logs", expected=2)
+        self.run_cli("diff", "--baseline", self.snapshot, "--input", self.snapshot, "--pack", ROOT / "examples/packs/base.yml", expected=2)
+
     def test_exports_preserve_contracts_and_redact(self):
         for format_ in ["json", "sarif", "junit", "html", "pdf", "csv", "jsonl", "cef"]:
             with self.subTest(format=format_):

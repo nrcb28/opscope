@@ -8,7 +8,7 @@ const { spawn } = require('node:child_process');
 const { createHash } = require('node:crypto');
 const root = path.resolve(__dirname, '../..');
 const results = path.join(__dirname, 'test-results');
-let server, browser, assertions = 0;
+let server, browser, activePage, assertions = 0;
 function check(value, message) { assert.ok(value, message); assertions++; console.log('PASS ' + message); }
 async function startServer() {
   server = spawn(process.env.DOTNET_BIN || 'dotnet', ['run', '--no-build', '--project', 'tests/Opscope.ApiTests', '--', '--serve'], { cwd: root, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -21,11 +21,132 @@ async function startServer() {
     server.once('exit', code => { clearTimeout(timer); reject(new Error(`Local fixture host exited (${code}). ${errors.replace(/#token=\S+/g, '#token=[redacted]')}`)); });
   });
 }
+async function exerciseSavedEvidence(page, context, origin, token) {
+  let analysisCalls = 0, collectionCalls = 0;
+  const requests = request => {
+    if (request.method() === 'POST' && request.url() === origin + '/api/analyze') analysisCalls++;
+    if (request.method() === 'POST' && request.url() === origin + '/api/collect') collectionCalls++;
+  };
+  page.on('request', requests);
+  const headers = { 'X-Opscope-Token': token };
+  const saved = await (await context.request.get(origin + '/api/snapshot?full=true', { headers })).json();
+  saved.host.hostname = 'saved-workbench-private-host'; saved.host.currentUser = 'saved-workbench-private-user';
+  saved.collectedAtUtc = '2026-10-25T12:00:00+00:00'; saved.host.bootTimeUtc = '2026-10-25T10:00:00+00:00';
+  saved.cpuUsedPercent = 96; saved.memory.usedPercent = 97;
+  saved.processes = [{ id: 73, name: 'ioc-saved-worker', user: 'saved-workbench-private-user', workingSetBytes: 2097152, workingSetMb: 2, cpuTime: '00:01:00', commandLine: 'worker --password=saved-workbench-command-secret', accessLimited: false }];
+  saved.services = [{ name: 'saved-worker.service', state: 'failed/failed', source: 'saved-fixture' }];
+  saved.findings = [{ severity: 1, code: 'SAVED_XSS', title: '<img src=x onerror="window.__savedXss=1">', detail: 'saved-workbench-private-host password=saved-workbench-detail-secret', recommendation: 'Review saved evidence.' }];
+  const snapshotFile = value => ({ name: 'saved.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(value)) });
+  async function analyze(action, operation) {
+    const pending = page.waitForResponse(response => response.url() === origin + '/api/analyze' && response.request().method() === 'POST' && response.request().postDataJSON().operation === operation);
+    await action();
+    const response = await pending;
+    assert.equal(response.status(), 200, 'Saved analysis request completes successfully');
+    return response.json();
+  }
+  async function saveDownload(selector, filename) {
+    const pending = page.waitForEvent('download'); await page.locator(selector).click();
+    const download = await pending, target = path.join(results, filename);
+    fs.mkdirSync(results, { recursive: true }); await download.saveAs(target); return fs.readFileSync(target);
+  }
+  await page.locator('[data-view="overview"]').click();
+  await page.locator('#full').check(); await page.getByText('api-private-host', { exact: true }).waitFor();
+  await page.locator('[data-view="analysis"]').click();
+  check(await page.locator('#source-context').textContent().then(text => text.includes('Saved snapshot') && text.includes('Always redacted')) && await page.locator('#full').isDisabled() && await page.locator('.full-toggle').isHidden(), 'Saved workspace states its separate always-redacted source and hides the live identifier preference');
+  check(await page.locator('#collect').isHidden() && await page.locator('.search-wrap').isHidden(), 'Live collection and live search controls are hidden while inspecting saved evidence');
+  await page.locator('#analysis-upload').setInputFiles({ name: 'too-large.json', mimeType: 'application/json', buffer: Buffer.alloc(2 * 1024 * 1024 + 1, ' ') });
+  await page.locator('#analysis-error').waitFor();
+  check(analysisCalls === 0 && await page.locator('#analysis-run').count() === 0, 'Oversized saved snapshot is rejected before a request or analysis state is created');
+  await page.locator('#analysis-upload').setInputFiles({ name: 'invalid.json', mimeType: 'application/json', buffer: Buffer.from('{broken') });
+  await page.locator('#analysis-error').waitFor();
+  check(analysisCalls === 0, 'Malformed snapshot JSON is rejected locally before analysis submission');
+  const inspected = await analyze(() => page.locator('#analysis-upload').setInputFiles(snapshotFile(saved)), 'inspect');
+  await page.getByRole('heading', { name: 'Saved snapshot evidence', exact: true }).waitFor();
+  check(inspected.cpuUsedPercent === 96 && inspected.host.hostname === '[redacted-host]' && await page.locator('.saved-summary').innerText().then(text => text.includes('96%')), 'Saved inspection presents the uploaded metrics and shared redaction rather than live host values');
+  const inspectedText = await page.locator('#analysis-result').textContent();
+  check(!inspectedText.includes('saved-workbench-private') && !inspectedText.includes('saved-workbench-command-secret') && !inspectedText.includes('saved-workbench-detail-secret'), 'Saved inspection removes host, user, command-line and finding secrets from rendered evidence');
+  check(await page.locator('#analysis-result img').count() === 0 && await page.evaluate(() => window.__savedXss === undefined) && inspectedText.includes('<img'), 'Uploaded finding markup is rendered as text without creating executable image content');
+  const inspectedDownload = JSON.parse(await saveDownload('#analysis-download', 'saved-inspect.json'));
+  check(inspectedDownload.host.hostname === '[redacted-host]' && inspectedDownload.cpuUsedPercent === 96, 'Inspection download contains the selected saved snapshot and remains redacted');
+  await page.locator('#analysis-operation').selectOption('triage');
+  await page.locator('#analysis-scenario').selectOption('high-cpu');
+  const triage = await analyze(() => page.locator('#analysis-run').click(), 'triage');
+  await page.locator('#analysis-result .triage-steps li').first().waitFor();
+  check(triage.kind === 'triage' && triage.data.scenario === 'high-cpu' && await page.locator('#analysis-result .triage-steps li').count() === triage.data.steps.length, 'Guided triage renders the shared analyzer steps for the selected saved scenario');
+  await page.locator('#analysis-scenario').selectOption('port-exposed');
+  check(await page.locator('#analysis-download').isDisabled() && await page.locator('#analysis-result').innerText().then(text => text.includes('Inputs changed')), 'Changing a triage scenario invalidates its old result and download');
+  await page.locator('#analysis-operation').selectOption('ioc');
+  const beforeLargeIndicator = analysisCalls;
+  await page.locator('#analysis-ioc-text').fill('é'.repeat(65537));
+  check(await page.locator('#analysis-run').isDisabled() && analysisCalls === beforeLargeIndicator, 'Indicator drafts use the UTF-8 byte limit rather than only a character count');
+  await page.locator('#analysis-ioc-upload').setInputFiles({ name: 'too-large.csv', mimeType: 'text/csv', buffer: Buffer.alloc(128 * 1024 + 1, 'x') });
+  await page.locator('#analysis-error').waitFor();
+  check(analysisCalls === beforeLargeIndicator, 'Oversized indicator files are rejected before reaching the analyzer');
+  const csv = 'type,value,label\nprocess,ioc-saved-worker,saved fixture\n';
+  await page.locator('#analysis-ioc-text').fill(csv);
+  await page.locator('#analysis-ioc-text').focus();
+  await page.waitForTimeout(5500); // The fixture emits a live SSE sample every five seconds.
+  check(await page.locator('#analysis-ioc-text').evaluate((node, text) => node === document.activeElement && node.value === text, csv) && await page.locator('#source-context').textContent().then(text => text.includes('Saved snapshot')), 'Live SSE updates preserve saved indicator drafts, focus and source context');
+  const csvResult = await analyze(() => page.locator('#analysis-run').click(), 'ioc');
+  await page.locator('#analysis-result td').filter({ hasText: 'ioc-saved-worker' }).first().waitFor();
+  check(csvResult.kind === 'ioc' && csvResult.data.matches.length === 1, 'CSV indicator matching uses the uploaded process evidence without scanning the live host');
+  const stix = JSON.stringify({ type: 'bundle', id: 'bundle--e095dd48-f564-4db1-a0d6-cb852d4107a3', objects: [{ type: 'indicator', spec_version: '2.1', id: 'indicator--d4ada3df-19d6-4b8a-ade8-324c29fa2f68', pattern_type: 'stix', pattern: "[process:name = 'ioc-saved-worker']", valid_from: '2026-10-25T00:00:00Z' }] });
+  await page.locator('#analysis-ioc-upload').setInputFiles({ name: 'indicators.stix', mimeType: 'application/json', buffer: Buffer.from(stix) });
+  await page.waitForFunction(() => document.getElementById('analysis-ioc-text')?.value.includes('bundle--e095dd48'));
+  check(await page.locator('#analysis-ioc-format').inputValue() === 'stix', 'STIX file selection restores the actual format and draft text');
+  const stixResult = await analyze(() => page.locator('#analysis-run').click(), 'ioc');
+  await page.locator('#analysis-result td').filter({ hasText: 'ioc-saved-worker' }).first().waitFor();
+  check(stixResult.data.matches.length === 1 && JSON.parse(await saveDownload('#analysis-download', 'saved-ioc.json')).kind === 'ioc', 'STIX matches and result download preserve the saved-analysis contract');
+  await page.locator('#analysis-operation').selectOption('timeline');
+  const before = structuredClone(saved); before.collectedAtUtc = '2026-10-25T11:00:00+00:00'; before.cpuUsedPercent = 8; before.services[0].state = 'active/running';
+  await analyze(() => page.locator('#analysis-baseline-upload').setInputFiles({ name: 'before.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(before)) }), 'inspect');
+  await page.waitForFunction(() => !document.getElementById('analysis-run')?.disabled);
+  const timeline = await analyze(() => page.locator('#analysis-run').click(), 'timeline');
+  await page.locator('#analysis-result td').filter({ hasText: 'drift' }).first().waitFor();
+  check(timeline.kind === 'timeline' && timeline.data.events.some(event => event.kind === 'drift') && timeline.data.events.some(event => event.kind === 'boot'), 'Saved timeline merges the chosen snapshot, baseline differences and observed boot evidence');
+  await page.locator('#analysis-export-format').selectOption('pdf');
+  const pdf = await saveDownload('#analysis-export', 'saved-report.pdf');
+  check(pdf.subarray(0, 5).toString() === '%PDF-' && !pdf.includes(Buffer.from('saved-workbench-private-host')), 'Saved PDF export uses the uploaded snapshot with shared redaction');
+  const live = await (await context.request.get(origin + '/api/snapshot?full=true', { headers })).json();
+  const retained = await (await context.request.get(origin + '/api/history', { headers })).json();
+  check(live.host.hostname === 'api-private-host' && live.cpuUsedPercent === 17.5 && retained.every(row => row.cpuUsedPercent === 17.5) && collectionCalls === 0, 'Saved analyses leave the live collector and retained live history unchanged');
+  await page.locator('#analysis-operation').selectOption('ioc');
+  await page.locator('#analysis-ioc-text').fill(csv);
+  await page.locator('[data-view="overview"]').click();
+  await page.locator('[data-view="analysis"]').click();
+  check(await page.locator('#analysis-ioc-text').inputValue() === csv && await page.locator('.saved-summary').innerText().then(text => text.includes('96%')), 'Navigation preserves saved drafts and selected evidence independently of the live source');
+  await page.locator('#language').selectOption('es');
+  check(await page.locator('#source-context').textContent().then(text => text.includes('Snapshot guardado')) && await page.locator('#analysis-ioc-text').inputValue() === csv, 'Spanish labels preserve the selected saved source and draft');
+  await page.locator('#language').selectOption('en');
+  await page.evaluate(fs.readFileSync(require.resolve('axe-core/axe.min.js'), 'utf8'));
+  const originalTheme = await page.locator('html').getAttribute('data-theme');
+  for (const theme of ['light', 'dark']) {
+    if (await page.locator('html').getAttribute('data-theme') !== theme) await page.locator('#theme').click();
+    await page.waitForTimeout(220);
+    const violations = await page.evaluate(async () => (await axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } })).violations);
+    fs.writeFileSync(path.join(results, 'saved-accessibility-' + theme + '.json'), JSON.stringify(violations, null, 2));
+    check(violations.length === 0, 'Saved workspace passes automated WCAG A/AA checks in the ' + theme + ' theme');
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'Saved workspace forms fit the mobile viewport without horizontal page overflow');
+  await page.screenshot({ path: path.join(results, 'saved-workspace-mobile.png'), fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  if (await page.locator('html').getAttribute('data-theme') !== originalTheme) await page.locator('#theme').click();
+  const stored = await page.evaluate(() => JSON.stringify([localStorage, sessionStorage]));
+  check(!stored.includes('saved-workbench-private') && !stored.includes('ioc-saved-worker') && !stored.includes('saved-workbench-command-secret'), 'Saved snapshots and indicator drafts never enter browser storage');
+  await page.getByRole('button', { name: 'Clear saved evidence', exact: true }).click();
+  check(await page.locator('.saved-summary').count() === 0 && await page.locator('#analysis-download').count() === 0 && !await page.locator('#view').textContent().then(text => text.includes('ioc-saved-worker')), 'Clear saved evidence removes its snapshot, drafts and downloadable results');
+  await page.locator('[data-view="overview"]').click();
+  await page.locator('#full').uncheck(); await page.getByText('[redacted-host]', { exact: true }).waitFor();
+  check(await page.locator('#source-context').textContent().then(text => text.includes('Live host')) && await page.locator('#collect').isVisible() && await page.locator('#full').isEnabled() && await page.locator('.full-toggle').isVisible(), 'Returning to live evidence restores the live source controls without importing saved state');
+  page.off('request', requests);
+}
+
 async function main() {
   const bootstrap = await startServer(), origin = new URL(bootstrap).origin, token = new URLSearchParams(new URL(bootstrap).hash.slice(1)).get('token');
   browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || (fs.existsSync('/usr/bin/chromium') ? '/usr/bin/chromium' : undefined), headless: true, args: ['--no-sandbox'] });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, acceptDownloads: true });
-  const page = await context.newPage(), errors = [], external = [];
+  const page = await context.newPage(), errors = [], external = []; activePage = page;
   page.on('pageerror', error => errors.push(error.message));
   page.on('request', request => { if (!request.url().startsWith(origin + '/') && !request.url().startsWith('blob:')) external.push(request.url()); });
   await page.goto(bootstrap);
@@ -136,6 +257,20 @@ async function main() {
   check(JSON.parse(await page.locator('#view pre').innerText()).data.resourceCount === 3, 'Azure scoped action invokes its exact allowlisted fixture callback');
   await invokeFixtureCloud('aws-scope-20/health', 5);
   check(JSON.parse(await page.locator('#view pre').innerText()).data.resourceCount === 5, 'AWS scoped action invokes its exact allowlisted fixture callback');
+  let releaseCloudFailure, markCloudStarted;
+  const cloudStarted = new Promise(resolve => { markCloudStarted = resolve; });
+  await page.route('**/api/cloud/aws-scope-20/health', async route => {
+    await new Promise(resolve => { releaseCloudFailure = resolve; markCloudStarted(); });
+    await route.fulfill({ status: 502, contentType: 'application/json', body: JSON.stringify({ kind: 'cloud/aws/health', collectedAtUtc: new Date().toISOString(), findings: [], data: null, warnings: ['Fixture cloud coverage unavailable.'], operationSucceeded: false }) });
+  });
+  const cloudFailure = page.waitForResponse(response => response.url() === origin + '/api/cloud/aws-scope-20/health');
+  await page.getByRole('button').filter({ hasText: 'aws-scope-20/health' }).click();
+  await cloudStarted; await page.locator('#cloud-status').waitFor();
+  const loadingCloudSource = await page.locator('#source-context').textContent().then(text => text.includes('aws-scope-20/health')) && await page.locator('#cloud-status').innerText().then(text => text.includes('Running configured cloud query')) && await page.locator('#view button').evaluateAll(buttons => buttons.every(button => button.disabled));
+  releaseCloudFailure(); assert.equal((await cloudFailure).status(), 502); await page.locator('#cloud-error').waitFor();
+  check(loadingCloudSource, 'Pending cloud query names its selected scope and disables competing query controls');
+  check(JSON.parse(await page.locator('#view pre').innerText()).operationSucceeded === false && !await page.locator('#view pre').innerText().then(text => text.includes('resourceCount')), 'An unsuccessful next cloud query replaces the earlier result with its actual failure and coverage report');
+  await page.unroute('**/api/cloud/aws-scope-20/health');
   await page.locator('[data-view="policy"]').click();
   check(await page.locator('#policy-editor').count() === 1 && await page.locator('#view').innerText().then(text => text.includes('never applies policy')), 'Policy editor clearly limits its behavior to preview and download');
   await page.locator('#policy-editor').fill('version: 2\n');
@@ -159,6 +294,7 @@ async function main() {
   await page.locator('#policy-editor').focus();
   await page.waitForTimeout(5200);
   check(await page.locator('#policy-editor').evaluate(node => node === document.activeElement && node.value.endsWith('# edited\n')), 'Live evidence updates preserve an active policy draft and keyboard focus');
+  await exerciseSavedEvidence(page, context, origin, token);
   await page.locator('[data-view="reports"]').click();
   const bundleEvent = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Download redacted bundle', exact: true }).click();
@@ -207,7 +343,7 @@ async function main() {
   check(external.length === 0, 'All UI resources and evidence requests remain on the authenticated local origin');
   console.log(`PASS: ${assertions} browser and accessibility assertions.`);
 }
-main().catch(error => { console.error(String(error).replace(/#token=\S+/g, '#token=[redacted]')); process.exitCode = 1; }).finally(async () => {
+main().catch(async error => { if (activePage) { try { fs.mkdirSync(results, { recursive: true }); await activePage.screenshot({ path: path.join(results, 'last-failure.png'), fullPage: true }); } catch {} } console.error(String(error).replace(/#token=\S+/g, '#token=[redacted]')); process.exitCode = 1; }).finally(async () => {
   if (browser) await browser.close();
   if (server && server.exitCode === null) { server.kill('SIGINT'); await Promise.race([new Promise(resolve => server.once('exit', resolve)), new Promise(resolve => setTimeout(resolve, 5000))]); if (server.exitCode === null) server.kill('SIGTERM'); }
 });

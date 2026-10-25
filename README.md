@@ -22,8 +22,8 @@ The collector is intentionally read-only. It does not stop processes, change ser
 
 - .NET 8 runtime for the framework-dependent build, or a self-contained publish.
 - Source builds use the .NET 8 SDK when available and roll forward to a newer stable SDK when the 8.x SDK is not installed.
-- Linux: `ss` and `systemctl` are optional enrichments. The core collector works without them.
-- Windows: `sc.exe` is an optional enrichment and ships with Windows.
+- Linux: `ss` and `systemctl` provide core coverage; `lsof`, `journalctl`, `resolvectl`, `ip` and supported firewall tools are optional enrichments. `lsof` is used as a read-only listener fallback.
+- Windows: `netstat`, `netsh` and `sc.exe` provide core coverage; `tasklist.exe` and `wevtutil.exe` are optional diagnostics enrichments.
 
 The self-contained publish has been checked for `linux-x64`, `linux-arm64`, `win-x64` and `win-arm64`. Framework-dependent builds still require the .NET 8 runtime on the target host.
 
@@ -71,7 +71,7 @@ Use `snapshot --redact --json --out safe-snapshot.json` when the output may leav
 
 `diff` returns exit code `1` when it detects a significant metric change, a host mismatch, or an added/removed/changed process, service or listener. Save a baseline with `snapshot --json --out baseline.json`, then run `diff baseline.json` during a maintenance window or incident investigation.
 
-`tools` checks the native utilities used for enrichment (`ss`, `systemctl`, `netstat`, `netsh`, `sc.exe`, firewall utilities and `ip`). It reports missing coverage and fails if an available utility is outside the trusted system locations, writable by a non-owner, non-executable or otherwise not securely inspected.
+`tools` checks the native utilities used for enrichment (`ss`, `systemctl`, `lsof`, `journalctl`, `resolvectl`, `netstat`, `netsh`, `sc.exe`, `tasklist.exe`, `wevtutil.exe`, firewall utilities and `ip`). It reports missing coverage and fails if an available utility is outside the trusted system locations, writable by a non-owner, non-executable or otherwise not securely inspected. Every optional tool uses the same fixed-path, owner, permission, ACL and reparse-point validation before execution.
 
 The regression suite covers localized UFW parsing, nftables inbound-scope verification, unsafe executable blocking, private output permissions, typed redaction of addresses/ports/paths/identities, preservation of incomplete collection state, and diff detection before redaction.
 

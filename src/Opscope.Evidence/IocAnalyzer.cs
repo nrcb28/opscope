@@ -105,7 +105,7 @@ public static class IocAnalyzer
     }
 
     private static AnalysisReport AnalyzeInternal(Snapshot snapshot, IReadOnlyList<IocIndicator> indicators,
-        IReadOnlyDictionary<int, Dictionary<string, string>> hashes, List<string> warnings)
+        Dictionary<int, Dictionary<string, string>> hashes, List<string> warnings)
     {
         var matches = new List<IocMatch>();
         var observables = new List<(string Source, string Text)>();

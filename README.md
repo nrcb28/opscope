@@ -26,7 +26,7 @@ Collection is read-only: it does not stop processes, change services, modify fir
 ## Requirements
 
 - .NET 8 ASP.NET Core runtime for the framework-dependent build (the CLI includes its local API), or a self-contained publish. Source builds require the .NET 8 SDK.
-- Source builds use the .NET 8 SDK when available and roll forward to a newer stable SDK when the 8.x SDK is not installed.
+- Source builds use SDK 8.0.426 or a later servicing patch in the same feature band, as pinned in `global.json`, so installed newer SDKs do not change compiler/analyzer behavior.
 - Linux: `ss` and `systemctl` provide core coverage; `lsof`, `journalctl`, `resolvectl`, `ip` and supported firewall tools are optional enrichments. `lsof` is used as a read-only listener fallback.
 - Windows: `netstat`, `netsh` and `sc.exe` provide core coverage; `tasklist.exe` and `wevtutil.exe` are optional diagnostics enrichments.
 

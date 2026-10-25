@@ -36,6 +36,10 @@ internal static class Program
             """);
         Assert(loopbackOnlyNft.State == "UNVERIFIED" && !loopbackOnlyNft.FilteringVerified, "nftables loopback-only rules are not inbound protection");
 
+        var lsofListeners = new List<ListenerInfo>();
+        SystemProbe.AddLsofListeners("COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\nsshd 123 root 3u IPv4 123 0t0 TCP *:22 (LISTEN)\n", lsofListeners);
+        Assert(lsofListeners.Count == 1 && lsofListeners[0].Protocol == "TCP" && lsofListeners[0].LocalAddress == "*:22", "lsof listener fallback parser");
+
         var unsafePath = Path.GetTempFileName();
         try
         {

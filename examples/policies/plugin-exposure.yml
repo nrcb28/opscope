@@ -1,0 +1,10 @@
+# Declarative plugin checks use the same policy engine; no code or shell execution.
+version: 1
+rules:
+  - id: exposed-listener-budget
+    metric: security.exposedListeners
+    operator: ">"
+    value: 3
+    severity: warning
+    title: Wildcard listener budget exceeded
+    recommendation: Review wildcard listeners against the approved service inventory.

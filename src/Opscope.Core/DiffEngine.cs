@@ -1,11 +1,20 @@
 namespace Opscope;
 
-internal static class DiffEngine
+public static class DiffEngine
 {
     public static DiffReport Compare(Snapshot baseline, Snapshot current)
     {
         // Compare normalized evidence instead of raw JSON so ordering and formatting do not create false changes.
         // Comparamos evidencia normalizada, no JSON bruto, para evitar falsos cambios por orden o formato.
+        var warnings = new List<string>();
+        var redactedHost = baseline.Host.Hostname.StartsWith("[redacted", StringComparison.Ordinal) || current.Host.Hostname.StartsWith("[redacted", StringComparison.Ordinal);
+        var redactedServices = baseline.Services.Concat(current.Services).Any(s => s.Name.StartsWith("[redacted", StringComparison.Ordinal));
+        var redactedListeners = baseline.Listeners.Concat(current.Listeners).Any(l => l.LocalAddress.StartsWith("[redacted", StringComparison.Ordinal));
+        if (redactedHost) warnings.Add("Host identity is redacted; host identity changes were not assessed.");
+        if (redactedServices) warnings.Add("Service identities are redacted; only service state counts were compared.");
+        if (redactedListeners) warnings.Add("Listener endpoints are redacted; only listener protocol counts were compared.");
+        if (baseline.Disks.Concat(current.Disks).Any(d => d.Root.StartsWith("[redacted", StringComparison.Ordinal)))
+            warnings.Add("Disk identities are redacted; per-volume drift may be unavailable.");
         var metrics = new List<MetricDelta>
         {
             Delta("cpuUsedPercent", baseline.CpuUsedPercent, current.CpuUsedPercent, "%"),
@@ -23,12 +32,28 @@ internal static class DiffEngine
         }
 
         var changes = new List<EntityDelta>();
-        if (!baseline.Host.Hostname.Equals(current.Host.Hostname, StringComparison.OrdinalIgnoreCase))
+        if (!redactedHost && !baseline.Host.Hostname.Equals(current.Host.Hostname, StringComparison.OrdinalIgnoreCase))
             changes.Add(new("host", current.Host.Hostname, "changed", $"Baseline host was {baseline.Host.Hostname}."));
 
-        AddSetChanges(changes, "listener", baseline.Listeners.Select(Key), current.Listeners.Select(Key), "Listening socket set changed.");
-        AddServiceChanges(changes, baseline.Services, current.Services);
+        if (redactedListeners)
+            AddCountChanges(changes, "listener", baseline.Listeners.Select(l => l.Protocol), current.Listeners.Select(l => l.Protocol));
+        else AddSetChanges(changes, "listener", baseline.Listeners.Select(Key), current.Listeners.Select(Key), "Listening socket set changed.");
+        if (redactedServices)
+            AddCountChanges(changes, "service", baseline.Services.Select(s => s.State), current.Services.Select(s => s.State));
+        else AddServiceChanges(changes, baseline.Services, current.Services);
         AddProcessChanges(changes, baseline.Processes, current.Processes);
+        AddSecurityChange(changes, "firewall.active", baseline.Security.HasActiveFirewall, current.Security.HasActiveFirewall);
+        AddSecurityChange(changes, "firewall.verified", baseline.Security.ProtectionVerified, current.Security.ProtectionVerified);
+        AddSecurityChange(changes, "firewall.known", baseline.Security.FirewallStatusKnown, current.Security.FirewallStatusKnown);
+        if (baseline.CollectionWarnings.Count != current.CollectionWarnings.Count)
+            changes.Add(new("coverage", "collectionWarnings", "changed", $"Collection warning count changed from {baseline.CollectionWarnings.Count} to {current.CollectionWarnings.Count}."));
+        foreach (var tool in current.Tooling?.Tools ?? Array.Empty<ToolInfo>())
+        {
+            var old = baseline.Tooling?.Tools.FirstOrDefault(t => t.Name.Equals(tool.Name, StringComparison.OrdinalIgnoreCase));
+            if (old is not null && (old.Security != tool.Security || old.Available != tool.Available))
+                changes.Add(new("security", tool.Name, "changed", "Tool availability or trust changed."));
+        }
+
 
         // Thresholds highlight operationally meaningful drift while ignoring normal sampling noise.
         // Los umbrales resaltan cambios operativos relevantes e ignoran el ruido normal de las muestras.
@@ -37,7 +62,24 @@ internal static class DiffEngine
             (metric.Name.Contains("memory", StringComparison.OrdinalIgnoreCase) && Math.Abs(metric.Delta) >= 15) ||
             (metric.Name.Contains("disk", StringComparison.OrdinalIgnoreCase) && Math.Abs(metric.Delta) >= 10));
 
-        return new DiffReport(baseline.Host.Hostname, current.Host.Hostname, baseline.CollectedAtUtc, current.CollectedAtUtc, significant, metrics, changes);
+        return new DiffReport(baseline.Host.Hostname, current.Host.Hostname, baseline.CollectedAtUtc, current.CollectedAtUtc, significant, metrics, changes, warnings);
+    }
+
+    private static void AddCountChanges(List<EntityDelta> changes, string category, IEnumerable<string> baseline, IEnumerable<string> current)
+    {
+        var before = baseline.GroupBy(v => v, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+        var after = current.GroupBy(v => v, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+        foreach (var key in before.Keys.Union(after.Keys, StringComparer.OrdinalIgnoreCase))
+        {
+            before.TryGetValue(key, out var oldCount);
+            after.TryGetValue(key, out var newCount);
+            if (oldCount != newCount) changes.Add(new(category, key, "changed", $"Observed count changed from {oldCount} to {newCount}; identities were redacted."));
+        }
+    }
+
+    private static void AddSecurityChange(List<EntityDelta> changes, string name, bool before, bool after)
+    {
+        if (before != after) changes.Add(new("security", name, "changed", $"State changed from {before} to {after}."));
     }
 
     private static MetricDelta Delta(string name, double baseline, double current, string unit) =>

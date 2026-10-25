@@ -2,7 +2,7 @@ using System.Diagnostics;
 
 namespace Opscope;
 
-internal static class ToolInventory
+public static class ToolInventory
 {
     private sealed record Definition(string Name, string Purpose, string Role);
 
@@ -32,7 +32,16 @@ internal static class ToolInventory
                     new Definition("firewall-cmd", "firewalld firewall posture", "enrichment"),
                     new Definition("nft", "nftables firewall posture", "enrichment")
                 }
-                : Array.Empty<Definition>();
+                : OperatingSystem.IsMacOS() ? new[]
+                {
+                    new Definition("lsof", "TCP and UDP listener inventory", "core"),
+                    new Definition("launchctl", "User-domain launchd service inventory", "core"),
+                    new Definition("top", "Host-wide CPU sampling", "enrichment"),
+                    new Definition("sysctl", "Host memory size", "enrichment"),
+                    new Definition("vm_stat", "Host memory pressure", "enrichment"),
+                    new Definition("socketfilterfw", "Application firewall state", "enrichment"),
+                    new Definition("pfctl", "Packet filter state", "enrichment")
+                } : Array.Empty<Definition>();
 
         return new ToolingPosture(definitions.Select(Inspect).ToArray());
     }

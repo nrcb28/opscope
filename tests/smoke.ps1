@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $project = Join-Path $PSScriptRoot '..\src\Opscope\Opscope.csproj'
 $tempRoot = if ([string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) { [IO.Path]::GetTempPath() } else { $env:RUNNER_TEMP }
-$temp = Join-Path $tempRoot 'opscope-smoke'
+$temp = Join-Path $tempRoot ('opscope-smoke-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $temp | Out-Null
 
 dotnet build $project -c Release --nologo

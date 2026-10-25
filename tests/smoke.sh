@@ -2,11 +2,19 @@
 set -euo pipefail
 
 project="$(cd "$(dirname "$0")/../src/Opscope" && pwd)/Opscope.csproj"
-temp="${TMPDIR:-/tmp}/opscope-smoke"
-mkdir -p "$temp"
+temp="$(mktemp -d "${TMPDIR:-/tmp}/opscope-smoke.XXXXXX")"
+trap 'rm -rf "$temp"' EXIT
 
 dotnet build "$project" -c Release --nologo
-json="$(dotnet run --project "$project" -c Release --no-build -- snapshot --json --no-services --top 3)"
+
+# Findings (exit 1) are valid collection results; only operational errors fail smoke.
+run_collector() {
+  local status=0
+  dotnet run --project "$project" -c Release --no-build -- "$@" || status=$?
+  if [ "$status" -gt 1 ]; then return "$status"; fi
+  return 0
+}
+json="$(run_collector snapshot --json --no-services --top 3)"
 printf '%s' "$json" | grep -q '"platform"'
 printf '%s' "$json" | grep -q '"usedPercent"'
 
@@ -29,7 +37,7 @@ if printf '%s' "$path_tools" | grep -q "$temp/not-a-tool"; then
   exit 1
 fi
 
-redacted_json="$(dotnet run --project "$project" -c Release --no-build -- snapshot --json --redact --no-processes --no-network --no-services)"
+redacted_json="$(run_collector snapshot --json --redact --no-processes --no-network --no-services)"
 printf '%s' "$redacted_json" | grep -q '"hostname": "\[redacted-host\]"'
 printf '%s' "$redacted_json" | grep -q '"currentUser": "\[redacted-user\]"'
 if printf '%s' "$redacted_json" | grep -q '"path": "'; then
@@ -43,11 +51,11 @@ if printf '%s' "$redacted_tools" | grep -q '"path": "'; then
   exit 1
 fi
 
-redacted_doctor="$(dotnet run --project "$project" -c Release --no-build -- doctor --json --redact --no-processes --no-network --no-services)"
+redacted_doctor="$(run_collector doctor --json --redact --no-processes --no-network --no-services)"
 printf '%s' "$redacted_doctor" | grep -q '"host": "\[redacted-host\]"'
 
 if [ "$(id -u)" -ne 0 ]; then
-  spoofed_euid="$(env EUID=0 dotnet run --project "$project" -c Release --no-build -- snapshot --json --no-processes --no-network --no-services)"
+  spoofed_euid="$(env EUID=0 dotnet run --project "$project" -c Release --no-build -- snapshot --json --no-processes --no-network --no-services)" || [ "$?" -eq 1 ]
   if printf '%s' "$spoofed_euid" | grep -q '"isElevated": true'; then
     echo 'Linux elevation detection trusted the spoofable EUID environment variable' >&2
     exit 1
@@ -69,12 +77,12 @@ if [ "$deep_status" -ne 2 ]; then
 fi
 
 baseline="$temp/baseline.json"
-dotnet run --project "$project" -c Release --no-build -- snapshot --json --out "$baseline" --no-processes --no-network --no-services >/dev/null
-diff_json="$(dotnet run --project "$project" -c Release --no-build -- diff "$baseline" --json --no-processes --no-network --no-services)"
+run_collector snapshot --json --out "$baseline" --no-processes --no-network --no-services >/dev/null
+diff_json="$(run_collector diff "$baseline" --json --no-processes --no-network --no-services)"
 printf '%s' "$diff_json" | grep -q '"metrics"'
 
 bundle="$temp/smoke.zip"
-dotnet run --project "$project" -c Release --no-build -- bundle --out "$bundle" --no-services --no-network --top 1
+run_collector bundle --out "$bundle" --no-services --no-network --top 1
 test -s "$bundle"
 bundle_dir="$temp/bundle-inspect"
 mkdir -p "$bundle_dir"

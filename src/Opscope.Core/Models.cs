@@ -124,7 +124,8 @@ public sealed record Snapshot(
     ToolingPosture? Tooling,
     IReadOnlyList<Finding> Findings,
     IReadOnlyList<string> CollectionWarnings,
-    TimeSpan CollectionDuration);
+    TimeSpan CollectionDuration,
+    IReadOnlyDictionary<string, AnalysisReport>? Reports = null);
 
 public sealed record MetricDelta(
     string Name,
@@ -146,7 +147,8 @@ public sealed record DiffReport(
     DateTimeOffset CurrentCollectedAtUtc,
     bool Significant,
     IReadOnlyList<MetricDelta> Metrics,
-    IReadOnlyList<EntityDelta> Changes);
+    IReadOnlyList<EntityDelta> Changes,
+    IReadOnlyList<string>? Warnings = null);
 
 public sealed record CollectorOptions(
     bool IncludeProcesses = true,

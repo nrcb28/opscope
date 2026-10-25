@@ -7,6 +7,14 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <AssemblyName>opscope</AssemblyName>
     <RootNamespace>Opscope</RootNamespace>
+    <Version>0.2.0</Version>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>opscope</ToolCommandName>
+    <PackageId>Opscope</PackageId>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <Authors>Opscope contributors</Authors>
+    <Description>Read-only systems and cloud triage with policies, reports and a secure local dashboard.</Description>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <EnableNETAnalyzers>true</EnableNETAnalyzers>
     <AnalysisMode>Recommended</AnalysisMode>
@@ -14,5 +22,14 @@
     <SelfContained Condition="'$(SelfContained)' == ''">false</SelfContained>
     <DebugType>portable</DebugType>
   </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Opscope.Core/Opscope.Core.csproj" />
+    <ProjectReference Include="../Opscope.Cloud/Opscope.Cloud.csproj" />
+    <ProjectReference Include="../Opscope.Reporting/Opscope.Reporting.csproj" />
+    <ProjectReference Include="../Opscope.Api/Opscope.Api.csproj" />
+    <ProjectReference Include="../Opscope.Evidence/Opscope.Evidence.csproj" />
+    <ProjectReference Include="../Opscope.Integrations/Opscope.Integrations.csproj" />
+  </ItemGroup>
+  <ItemGroup><None Include="../../README.md" Pack="true" PackagePath="/" /></ItemGroup>
 </Project>
 

@@ -6,7 +6,7 @@ using System.Text.RegularExpressions;
 
 namespace Opscope;
 
-internal static class Reporter
+public static class Reporter
 {
     private static readonly string[] BundleFiles = ["snapshot.json", "findings.json", "README.txt", "manifest.json"];
     private static readonly IReadOnlyList<string> RedactedAddresses = ["[redacted-addresses]"];
@@ -31,6 +31,7 @@ internal static class Reporter
     {
         BaselineHost = "[redacted-host]",
         CurrentHost = "[redacted-host]",
+        Warnings = report.Warnings?.Select(w => RedactText(w)).ToArray(),
         Metrics = report.Metrics.Select(metric => metric with { Name = RedactMetricName(metric.Name) }).ToArray(),
         Changes = report.Changes.Select(change => RedactChange(change, [report.BaselineHost, report.CurrentHost])).ToArray()
     };
@@ -47,6 +48,8 @@ internal static class Reporter
 
     public static Snapshot ParseSnapshot(string json)
     {
+        json = json.TrimStart('\uFEFF');
+        SnapshotIO.ValidateJson(json);
         var snapshot = JsonSerializer.Deserialize<Snapshot>(json, JsonOptions)
             ?? throw new InvalidDataException("Snapshot JSON was empty or invalid.");
         ValidateSnapshot(snapshot);
@@ -288,46 +291,58 @@ internal static class Reporter
         var host = snapshot.Host with
         {
             Hostname = "[redacted-host]",
+            Platform = RedactText(snapshot.Host.Platform, sensitiveIdentifiers),
+            Architecture = RedactText(snapshot.Host.Architecture, sensitiveIdentifiers),
             OsDescription = RedactText(snapshot.Host.OsDescription, sensitiveIdentifiers),
             Runtime = RedactText(snapshot.Host.Runtime, sensitiveIdentifiers),
             Kernel = RedactText(snapshot.Host.Kernel, sensitiveIdentifiers),
             CurrentUser = "[redacted-user]"
         };
-        var disks = snapshot.Disks.Select(disk => disk with { Name = "[redacted-disk]", Root = "[redacted-root]" }).ToArray();
+        var disks = snapshot.Disks.Select(disk => disk with { Name = "[redacted-disk]", Root = "[redacted-root]", FileSystem = RedactText(disk.FileSystem, sensitiveIdentifiers) }).ToArray();
         var network = snapshot.Network.Select(adapter => adapter with
         {
             Name = "[redacted-adapter]",
             Description = "[redacted-adapter]",
+            Type = RedactText(adapter.Type, sensitiveIdentifiers),
+            Status = RedactText(adapter.Status, sensitiveIdentifiers),
             Addresses = RedactedAddresses
         }).ToArray();
         var processes = snapshot.Processes.Select(process => process with
         {
+            Name = RedactText(process.Name, sensitiveIdentifiers),
             User = "[redacted-user]",
             CommandLine = null
         }).ToArray();
         var listeners = snapshot.Listeners.Select(listener => listener with
         {
             LocalAddress = "[redacted-address]",
+            Protocol = RedactText(listener.Protocol, sensitiveIdentifiers),
+            Source = RedactText(listener.Source, sensitiveIdentifiers),
             Process = RedactText(listener.Process, sensitiveIdentifiers)
         }).ToArray();
         var services = snapshot.Services.Select(service => service with
         {
             Name = "[redacted-service]",
+            State = RedactText(service.State, sensitiveIdentifiers),
+            Source = RedactText(service.Source, sensitiveIdentifiers),
             Description = null
         }).ToArray();
         var findings = snapshot.Findings.Select(finding => finding with
         {
+            Code = RedactText(finding.Code, sensitiveIdentifiers),
             Title = RedactText(finding.Title, sensitiveIdentifiers),
             Detail = RedactText(finding.Detail, sensitiveIdentifiers),
             Recommendation = RedactText(finding.Recommendation, sensitiveIdentifiers)
         }).ToArray();
         var tooling = snapshot.Tooling is null ? null : snapshot.Tooling with
         {
-            Tools = snapshot.Tooling.Tools.Select(tool => tool with { Path = null }).ToArray()
+            Tools = snapshot.Tooling.Tools.Select(tool => tool with { Path = null, Name = RedactText(tool.Name, sensitiveIdentifiers), Purpose = RedactText(tool.Purpose, sensitiveIdentifiers), Role = RedactText(tool.Role, sensitiveIdentifiers), Security = RedactText(tool.Security, sensitiveIdentifiers), Version = tool.Version is null ? null : RedactText(tool.Version, sensitiveIdentifiers) }).ToArray()
         };
         return snapshot with
         {
             Host = host,
+            Memory = snapshot.Memory with { Source = RedactText(snapshot.Memory.Source, sensitiveIdentifiers) },
+            Security = snapshot.Security with { Firewalls = snapshot.Security.Firewalls.Select(f => f with { Name = RedactText(f.Name, sensitiveIdentifiers), State = RedactText(f.State, sensitiveIdentifiers), Source = RedactText(f.Source, sensitiveIdentifiers), Families = f.Families?.Select(v => RedactText(v, sensitiveIdentifiers)).ToArray() }).ToArray() },
             Disks = disks,
             Network = network,
             Processes = processes,
@@ -335,6 +350,7 @@ internal static class Reporter
             Services = services,
             Tooling = tooling,
             Findings = findings,
+            Reports = snapshot.Reports?.Select((pair, index) => new KeyValuePair<string, AnalysisReport>(pair.Key is "evidence" or "cloud" or "policy" or "ioc" or "timeline" or "security" or "bundle" or "environment" ? pair.Key : $"[redacted-report-{index}]", ReportSecurity.Redact(pair.Value))).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal),
             CollectionWarnings = snapshot.CollectionWarnings.Select(warning => RedactText(warning, sensitiveIdentifiers)).ToArray()
         };
     }
@@ -369,30 +385,42 @@ internal static class Reporter
         return $"{RedactText(protocol)}|[redacted-address]";
     }
 
+    public static string RedactEvidenceText(string value, params string[] identifiers) => RedactText(value, identifiers);
+
     private static string RedactText(string value, IEnumerable<string>? sensitiveIdentifiers = null)
+    {
+        if (value.Length > 16384) return "[redacted-long-value]";
+        try { return RedactTextCore(value, sensitiveIdentifiers); }
+        catch (RegexMatchTimeoutException) { return "[redacted-unparsed-value]"; }
+    }
+
+    private static string RedactTextCore(string value, IEnumerable<string>? sensitiveIdentifiers)
     {
         var identifiers = new[] { Environment.UserName, Environment.MachineName }
             .Concat(sensitiveIdentifiers ?? Array.Empty<string>());
         foreach (var replacement in identifiers.Where(text => !string.IsNullOrWhiteSpace(text)).Distinct(StringComparer.OrdinalIgnoreCase))
             value = value.Replace(replacement, "[redacted]", StringComparison.OrdinalIgnoreCase);
-        value = Regex.Replace(value, @"(?i)([A-Z]:\\Users\\)[^\\\s]+", "$1[redacted]");
-        value = Regex.Replace(value, @"(?i)(?<![\w:])/(?:[^/\s,;]+/)*[^/\s,;]+", "[redacted-path]");
-        value = Regex.Replace(value, @"(?i)(?<![\w])(?:[A-Z]:\\|\\\\)[^\s,;]+", "[redacted-path]");
-        value = Regex.Replace(value, @"(?i)\b(password|passwd|pwd|token|secret|api[_-]?key)\s*[=:]\s*[^\s,;]+", "$1=[redacted-secret]");
+        value = Regex.Replace(value, @"(?i)([A-Z]:\\Users\\)[^\\\s]+", "$1[redacted]", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
+        value = Regex.Replace(value, @"(?i)(?<![\w:])/(?:[^/\s,;]+/)*[^/\s,;]+", "[redacted-path]", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
+        value = Regex.Replace(value, @"(?i)(?<![\w])(?:[A-Z]:\\|\\\\)[^\s,;]+", "[redacted-path]", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
+        value = Regex.Replace(value, @"(?i)\bAuthorization\s*:\s*(Bearer|Basic)\s+[^\s,;]+", "Authorization=[redacted-secret]", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
+        value = Regex.Replace(value, @"(?i)\b(password|passwd|pwd|token|secret|api[_-]?key)\s*[=:]\s*[^\s,;]+", "$1=[redacted-secret]", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
+        value = Regex.Replace(value, "(?i)[\"']?(password|passwd|pwd|token|secret|api[_-]?key|authorization)[\"']?\\s*[=:]\\s*(?:\"[^\"]*\"|'[^']*'|[^\\s,;]+)", "$1=[redacted-secret]", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
+        value = Regex.Replace(value, @"(?i)\b(Bearer|Basic)\s+[A-Za-z0-9+/_.=-]+", "[redacted-authorization]", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
         value = Regex.Replace(value, @"(?<![\w])(?<address>\[?[0-9A-Fa-f:.%]+\]?):(?<port>\d{1,5})(?![\w])", match =>
         {
             var token = match.Groups["address"].Value.Trim('[', ']');
-            return token.Contains(':') || token.Contains('.') && IPAddress.TryParse(token, out _)
+            return (token.Contains(':') || token.Count(c => c == '.') == 3) && IPAddress.TryParse(token.Split('%')[0], out _)
                 ? "[redacted-address]:[redacted-port]"
                 : match.Value;
-        });
+        }, RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
         value = Regex.Replace(value, @"(?<![\w])(?:\[?[0-9A-Fa-f:.%]+\]?)(?![\w])", match =>
         {
             var token = match.Value.Trim('[', ']');
-            return (token.Contains(':') || token.Contains('.')) && IPAddress.TryParse(token.Split('%')[0], out _)
+            return (token.Contains(':') || token.Count(c => c == '.') == 3) && IPAddress.TryParse(token.Split('%')[0], out _)
                 ? "[redacted-address]"
                 : match.Value;
-        });
+        }, RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
         return value;
     }
 
@@ -403,6 +431,31 @@ internal static class Reporter
             snapshot.Listeners is null || snapshot.Services is null || snapshot.Findings is null ||
             snapshot.CollectionWarnings is null || snapshot.Tooling is { Tools: null })
             throw new InvalidDataException("Snapshot is missing required collections or metadata.");
+
+        if (string.IsNullOrWhiteSpace(snapshot.Host.Hostname)) throw new InvalidDataException("Snapshot hostname is required.");
+        if (snapshot.Disks.Any(d => d is null || string.IsNullOrWhiteSpace(d.Root)) ||
+            snapshot.Processes.Any(p => p is null || string.IsNullOrWhiteSpace(p.Name)) ||
+            snapshot.Services.Any(s => s is null || string.IsNullOrWhiteSpace(s.Name) || s.State is null))
+            throw new InvalidDataException("Snapshot contains incomplete entities.");
+        if (snapshot.Services.Where(s => !s.Name.StartsWith("[redacted-service", StringComparison.Ordinal)).Select(s => s.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() != snapshot.Services.Count(s => !s.Name.StartsWith("[redacted-service", StringComparison.Ordinal)))
+            throw new InvalidDataException("Snapshot contains duplicate service names.");
+
+        static bool Missing(params string?[] values) => values.Any(v => v is null);
+        if (Missing(snapshot.Host.OsDescription, snapshot.Host.Platform, snapshot.Host.Architecture, snapshot.Host.Runtime, snapshot.Host.Kernel, snapshot.Host.CurrentUser, snapshot.Memory.Source) ||
+            snapshot.Disks.Any(d => Missing(d.Name, d.Root, d.FileSystem)) ||
+            snapshot.Network.Any(n => n is null || Missing(n.Name, n.Description, n.Type, n.Status) || n.Addresses is null || n.Addresses.Any(a => a is null)) ||
+            snapshot.Processes.Any(p => Missing(p.Name, p.User)) ||
+            snapshot.Listeners.Any(l => l is null || Missing(l.Protocol, l.LocalAddress, l.Process, l.Source)) ||
+            snapshot.Services.Any(s => Missing(s.Name, s.State, s.Source)) ||
+            snapshot.Findings.Any(f => f is null || Missing(f.Code, f.Title, f.Detail, f.Recommendation) || !Enum.IsDefined(f.Severity)) ||
+            snapshot.Security.Firewalls is null || snapshot.Security.Firewalls.Count > 64 ||
+            snapshot.Security.Firewalls.Any(f => f is null || Missing(f.Name, f.State, f.Source) || f.Families?.Any(v => v is null) == true || f.Families?.Count > 8) ||
+            snapshot.Tooling?.Tools.Any(t => t is null || Missing(t.Name, t.Purpose, t.Role, t.Security)) == true)
+            throw new InvalidDataException("Snapshot has null required fields or invalid metadata.");
+
+        if (snapshot.Reports is not null && (snapshot.Reports.Count > 16 || snapshot.Reports.Values.Any(r => r is null || r.Kind is null || r.Findings is null ||
+            r.Findings.Any(f => f is null || Missing(f.Code, f.Title, f.Detail, f.Recommendation)) || r.Warnings?.Any(w => w is null) == true)))
+            throw new InvalidDataException("Snapshot contains invalid additional reports.");
 
         EnsureCount("disks", snapshot.Disks.Count, 1024);
         EnsureCount("network adapters", snapshot.Network.Count, 4096);

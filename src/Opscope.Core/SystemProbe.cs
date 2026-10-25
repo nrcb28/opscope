@@ -8,7 +8,7 @@ using System.Text.RegularExpressions;
 
 namespace Opscope;
 
-internal sealed class SystemProbe
+public sealed class SystemProbe
 {
     internal sealed record FirewallObservation(string State, bool RulesPresent, bool FilteringVerified, IReadOnlyList<string>? Families = null);
 
@@ -61,8 +61,12 @@ internal sealed class SystemProbe
                 // Leemos el UID efectivo de procfs para que una variable de entorno no pueda falsificar root.
                 var uidLine = File.ReadLines("/proc/self/status")
                     .FirstOrDefault(line => line.StartsWith("Uid:", StringComparison.Ordinal));
-                var effectiveUid = uidLine?.Split(' ', StringSplitOptions.RemoveEmptyEntries).ElementAtOrDefault(2);
+                var effectiveUid = uidLine?.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).ElementAtOrDefault(2);
                 elevated = effectiveUid == "0";
+            }
+            else if (OperatingSystem.IsMacOS())
+            {
+                elevated = GetEffectiveUserId() == 0;
             }
             else
             {
@@ -316,7 +320,7 @@ internal sealed class SystemProbe
             try
             {
                 var uidLine = File.ReadLines($"/proc/{process.Id}/status").FirstOrDefault(line => line.StartsWith("Uid:", StringComparison.Ordinal));
-                var uid = uidLine?.Split(' ', StringSplitOptions.RemoveEmptyEntries).ElementAtOrDefault(1);
+                var uid = uidLine?.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries).ElementAtOrDefault(1);
                 return string.IsNullOrWhiteSpace(uid) ? "?" : $"uid:{uid}";
             }
             catch { return "?"; }
@@ -390,6 +394,12 @@ internal sealed class SystemProbe
                 }
             }
         }
+        else if (OperatingSystem.IsMacOS())
+        {
+            var command = await CommandRunner.RunAsync("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-iUDP"], timeout, cancellationToken);
+            AddCommandDiagnostics("lsof", command, warnings, reportExitFailure: command.ExitCode != 1);
+            if (command.ExitCode == 0 && !command.OutputTruncated) AddLsofListeners(command.StandardOutput, result);
+        }
         return result;
     }
 
@@ -451,8 +461,20 @@ internal sealed class SystemProbe
                 return services;
             }
         }
+        else if (OperatingSystem.IsMacOS())
+        {
+            var command = await CommandRunner.RunAsync("launchctl", ["list"], timeout, cancellationToken);
+            AddCommandDiagnostics("launchctl", command, warnings);
+            if (command.ExitCode == 0 && !command.OutputTruncated) return ParseLaunchctlServices(command.StandardOutput);
+        }
         return Array.Empty<ServiceInfo>();
     }
+
+    internal static IReadOnlyList<ServiceInfo> ParseLaunchctlServices(string output) => output.SplitLines()
+        .Select(line => line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries))
+        .Where(fields => fields.Length >= 3 && int.TryParse(fields[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out _))
+        .Select(fields => new ServiceInfo(fields[2], fields[1] != "0" ? "failed" : fields[0] != "-" ? "running" : "stopped", null, "launchctl"))
+        .ToArray();
 
     private static async Task<SecurityPosture> ReadSecurityAsync(IReadOnlyList<ListenerInfo> listeners, TimeSpan timeout, List<string> warnings, CancellationToken cancellationToken)
     {
@@ -514,6 +536,25 @@ internal sealed class SystemProbe
 
             if (!successfulInspection)
                 warnings.Add("Firewall posture could not be verified: no supported Linux firewall inspector returned a usable state.");
+        }
+
+        if (OperatingSystem.IsMacOS())
+        {
+            var application = await CommandRunner.RunAsync("socketfilterfw", ["--getglobalstate"], timeout, cancellationToken);
+            AddCommandDiagnostics("socketfilterfw", application, warnings);
+            var state = application.ExitCode == 0 && !application.OutputTruncated
+                ? Regex.IsMatch(application.StandardOutput, @"State\s*=\s*1\b", RegexOptions.CultureInvariant) ? "ACTIVE"
+                    : Regex.IsMatch(application.StandardOutput, @"State\s*=\s*0\b", RegexOptions.CultureInvariant) ? "INACTIVE" : "UNKNOWN"
+                : "UNKNOWN";
+            firewalls.Add(new FirewallProfile("Application Firewall", state, "socketfilterfw"));
+            var packetFilter = await CommandRunner.RunAsync("pfctl", ["-s", "info"], timeout, cancellationToken);
+            AddCommandDiagnostics("pfctl", packetFilter, warnings);
+            var pfState = packetFilter.ExitCode == 0 && !packetFilter.OutputTruncated
+                ? packetFilter.StandardOutput.Contains("Status: Enabled", StringComparison.OrdinalIgnoreCase) ? "ACTIVE"
+                    : packetFilter.StandardOutput.Contains("Status: Disabled", StringComparison.OrdinalIgnoreCase) ? "INACTIVE" : "UNKNOWN"
+                : "UNKNOWN";
+            firewalls.Add(new FirewallProfile("Packet Filter", pfState, "pfctl"));
+            warnings.Add("macOS firewall enabled states do not establish effective listener filtering; rules and interface coverage remain unverified.");
         }
 
         var known = firewalls.Any(profile => !profile.State.Equals("UNKNOWN", StringComparison.OrdinalIgnoreCase));
@@ -612,7 +653,7 @@ internal sealed class SystemProbe
             if (Regex.IsMatch(trimmed, @"\bpolicy\s+(drop|reject)\b", RegexOptions.IgnoreCase))
             {
                 hasRule = true;
-                filteringVerified = true;
+                filteringVerified = false;
                 effectiveFamilies.Add(currentFamily);
             }
             else if (Regex.IsMatch(trimmed, @"\b(drop|reject)\b", RegexOptions.IgnoreCase))
@@ -620,7 +661,7 @@ internal sealed class SystemProbe
                 hasRule = true;
                 if (AppliesToNonLoopback(trimmed))
                 {
-                    filteringVerified = true;
+                    filteringVerified = false;
                     effectiveFamilies.Add(currentFamily);
                 }
             }
@@ -717,7 +758,7 @@ internal sealed class SystemProbe
         foreach (var disk in disks.Where(disk => disk.IsReady && disk.UsedPercent >= 85 && disk.UsedPercent < 95))
             findings.Add(new(FindingSeverity.Warning, "DISK_ELEVATED", $"Disk usage elevated: {disk.Root}", $"{disk.UsedPercent:F1}% used.", "Review growth and retention before the volume reaches a critical level."));
 
-        if (networkRequested && !network.Any(adapter => adapter.Status.Equals("Up", StringComparison.OrdinalIgnoreCase) && adapter.Addresses.Any(address => !address.Equals("127.0.0.1") && !address.Equals("::1"))))
+        if (networkRequested && !network.Any(adapter => adapter.Status.Equals("Up", StringComparison.OrdinalIgnoreCase) && adapter.Addresses.Any(address => !address.Equals("127.0.0.1", StringComparison.Ordinal) && !address.Equals("::1", StringComparison.Ordinal))))
             findings.Add(new(FindingSeverity.Warning, "NETWORK_DOWN", "No active non-loopback adapter", "No active adapter with a non-loopback address was found.", "Check link state, DHCP/IP configuration and routing."));
         if (servicesRequested && services.Count == 0)
             findings.Add(new(FindingSeverity.Info, "SERVICES_UNAVAILABLE", "Service inventory unavailable", "No running-service records were returned by the platform collector.", "Install or enable the native service inspection tool if service data is required."));
@@ -779,6 +820,9 @@ internal sealed class SystemProbe
         public ulong AvailVirtual;
         public ulong AvailExtendedVirtual;
     }
+
+    [DllImport("libc", EntryPoint = "geteuid")]
+    private static extern uint GetEffectiveUserId();
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);

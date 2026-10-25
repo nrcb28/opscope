@@ -1,0 +1,19 @@
+# Strict bounded YAML; unknown keys, tags, anchors and aliases are rejected.
+version: 1
+thresholds:
+  cpuWarningPercent: 80
+  cpuCriticalPercent: 95
+  memoryWarningPercent: 85
+  memoryCriticalPercent: 95
+  diskWarningPercent: 80
+  diskCriticalPercent: 90
+allowedPorts: [22, 80, 443]
+requiredServices: [sshd]
+rules:
+  - id: firewall-required
+    metric: firewall.active
+    operator: "=="
+    value: 0
+    severity: critical
+    title: Active firewall required
+    recommendation: Review firewall coverage and collection limitations.

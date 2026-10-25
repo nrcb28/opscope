@@ -1,0 +1,23 @@
+{
+  "type": "bundle",
+  "id": "bundle--027f12a9-9363-4e64-b911-98247995281b",
+  "objects": [
+    {
+      "type": "indicator",
+      "spec_version": "2.1",
+      "id": "indicator--4e64ce1b-64af-48f2-ab94-9a167c922322",
+      "created": "2026-10-25T00:00:00Z",
+      "modified": "2026-10-25T00:00:00Z",
+      "valid_from": "2026-10-25T00:00:00Z",
+      "name": "Documentation-only example domain",
+      "pattern_type": "stix",
+      "pattern": "[domain-name:value = 'evil.example']"
+    },
+    {
+      "type": "ipv4-addr",
+      "spec_version": "2.1",
+      "id": "ipv4-addr--e1dc2f17-a222-4a15-945b-561ff19de9bc",
+      "value": "198.51.100.10"
+    }
+  ]
+}

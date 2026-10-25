@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics.CodeAnalysis;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
@@ -8,7 +9,7 @@ using System.Text;
 
 namespace Opscope;
 
-internal static class CommandRunner
+public static class CommandRunner
 {
     // Bound child-process output to avoid memory exhaustion from a broken or hostile utility.
     // Limitamos la salida de procesos hijos para evitar agotamiento de memoria por una herramienta defectuosa u hostil.
@@ -17,8 +18,12 @@ internal static class CommandRunner
         ? Path.Combine(Environment.SystemDirectory, "opscope-unavailable.exe")
         : "/opscope-unavailable";
 
-    public static async Task<CommandResult> RunAsync(string fileName, IEnumerable<string> arguments, TimeSpan timeout, CancellationToken cancellationToken = default)
+    public static Task<CommandResult> RunAsync(string fileName, IEnumerable<string> arguments, TimeSpan timeout, CancellationToken cancellationToken = default) =>
+        RunAsync(fileName, arguments, timeout, MaxOutputChars, cancellationToken);
+
+    public static async Task<CommandResult> RunAsync(string fileName, IEnumerable<string> arguments, TimeSpan timeout, int outputLimit, CancellationToken cancellationToken = default)
     {
+        if (outputLimit is < 1024 or > 8 * 1024 * 1024) throw new ArgumentOutOfRangeException(nameof(outputLimit));
         // Execute argument arrays directly: no shell means no shell expansion or command injection.
         // Ejecutamos arrays de argumentos directamente: sin shell no hay expansión ni inyección de comandos.
         var executable = ResolveExecutable(fileName);
@@ -39,12 +44,25 @@ internal static class CommandRunner
             EnableRaisingEvents = true
         };
 
+        foreach (var variable in new[] { "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES", "PYTHONPATH", "PYTHONHOME", "SYSTEMD_PAGER", "PAGER" })
+            process.StartInfo.Environment.Remove(variable);
+        process.StartInfo.Environment["SYSTEMD_PAGER"] = string.Empty;
+        process.StartInfo.Environment["AWS_PAGER"] = string.Empty;
+        process.StartInfo.Environment["AWS_CLI_AUTO_PROMPT"] = "off";
+        if (fileName is "az" or "azure-python")
+        {
+            process.StartInfo.Environment["AZURE_EXTENSION_USE_DYNAMIC_INSTALL"] = "no";
+            process.StartInfo.Environment["AZURE_CORE_COLLECT_TELEMETRY"] = "0";
+            process.StartInfo.Environment["AZURE_AUTO_UPGRADE_ENABLE"] = "no";
+            process.StartInfo.Environment["PYTHONDONTWRITEBYTECODE"] = "1";
+        }
         foreach (var argument in arguments)
         {
             process.StartInfo.ArgumentList.Add(argument);
         }
 
         using var readerCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        readerCts.CancelAfter(timeout);
         Task<(string Text, bool Truncated)>? stdoutTask = null;
         Task<(string Text, bool Truncated)>? stderrTask = null;
         try
@@ -54,8 +72,8 @@ internal static class CommandRunner
                 return new CommandResult(-1, string.Empty, "Process did not start", false);
             }
 
-            stdoutTask = ReadLimitedAsync(process.StandardOutput, readerCts.Token);
-            stderrTask = ReadLimitedAsync(process.StandardError, readerCts.Token);
+            stdoutTask = ReadLimitedAsync(process.StandardOutput, outputLimit, readerCts.Token);
+            stderrTask = ReadLimitedAsync(process.StandardError, outputLimit, readerCts.Token);
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(timeout);
 
@@ -90,23 +108,23 @@ internal static class CommandRunner
         }
     }
 
-    private static async Task<(string Text, bool Truncated)> ReadLimitedAsync(StreamReader reader, CancellationToken cancellationToken)
+    private static async Task<(string Text, bool Truncated)> ReadLimitedAsync(StreamReader reader, int outputLimit, CancellationToken cancellationToken)
     {
         var buffer = new char[8192];
-        var output = new StringBuilder(Math.Min(MaxOutputChars, 32 * 1024));
+        var output = new StringBuilder(Math.Min(outputLimit, 32 * 1024));
         var truncated = false;
         int read;
         try
         {
             while ((read = await reader.ReadAsync(buffer.AsMemory(), cancellationToken)) > 0)
             {
-                if (output.Length >= MaxOutputChars)
+                if (output.Length >= outputLimit)
                 {
                     truncated = true;
                     continue;
                 }
 
-                var remaining = MaxOutputChars - output.Length;
+                var remaining = outputLimit - output.Length;
                 output.Append(buffer, 0, Math.Min(read, remaining));
                 if (read > remaining) truncated = true;
             }
@@ -122,12 +140,15 @@ internal static class CommandRunner
     {
         if (Path.IsPathFullyQualified(fileName)) return fileName;
 
-        if (OperatingSystem.IsWindows() && fileName is "netstat" or "netsh" or "sc.exe" or "tasklist.exe" or "wevtutil.exe")
-            return Path.Combine(Environment.SystemDirectory, fileName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? fileName : $"{fileName}.exe");
-
-        if (OperatingSystem.IsLinux())
+        if (OperatingSystem.IsWindows())
         {
-            var candidates = TrustedLinuxCandidates(fileName);
+            var windows = TrustedWindowsCandidates(fileName);
+            return windows.FirstOrDefault(File.Exists) ?? UnavailableExecutable;
+        }
+
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+            var candidates = OperatingSystem.IsMacOS() ? TrustedMacCandidates(fileName) : TrustedLinuxCandidates(fileName);
             var resolved = candidates.FirstOrDefault(File.Exists);
             if (resolved is not null) return ResolveFinalPath(resolved);
             if (candidates.Length > 0) return UnavailableExecutable;
@@ -144,7 +165,7 @@ internal static class CommandRunner
         return TryValidateExecutablePath(fileName, resolvedPath, out _);
     }
 
-    internal static FileStream CreatePrivateFile(string path)
+    public static FileStream CreatePrivateFile(string path)
     {
         // Create the temporary file private from the first filesystem operation, not after writing data.
         // Creamos el temporal como privado desde la primera operación, no después de escribir datos.
@@ -156,7 +177,7 @@ internal static class CommandRunner
             BufferSize = 8192,
             Options = FileOptions.Asynchronous | FileOptions.SequentialScan
         };
-        if (OperatingSystem.IsLinux()) options = SetUnixPrivateMode(options);
+        if (!OperatingSystem.IsWindows()) options = SetUnixPrivateMode(options);
         var stream = new FileStream(path, options);
 
         try
@@ -188,13 +209,10 @@ internal static class CommandRunner
 
         if (OperatingSystem.IsWindows())
         {
-            var systemDirectory = Path.GetFullPath(Environment.SystemDirectory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-            var expectedName = fileName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? fileName : $"{fileName}.exe";
             var finalPath = ResolveFinalPath(resolvedPath);
-            if (!finalPath.StartsWith(systemDirectory, StringComparison.OrdinalIgnoreCase) ||
-                !Path.GetFileName(finalPath).Equals(expectedName, StringComparison.OrdinalIgnoreCase))
+            if (!TrustedWindowsCandidates(fileName).Select(ResolveFinalPath).Contains(finalPath, StringComparer.OrdinalIgnoreCase))
             {
-                failure = "outside the trusted Windows system directory";
+                failure = "outside the trusted Windows tool locations";
                 return false;
             }
 
@@ -202,10 +220,10 @@ internal static class CommandRunner
             return ValidateWindowsAclChain(finalPath, out failure);
         }
 
-        if (OperatingSystem.IsLinux())
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
         {
             var finalPath = ResolveFinalPath(resolvedPath);
-            var trustedCandidates = TrustedLinuxCandidates(fileName)
+            var trustedCandidates = (OperatingSystem.IsMacOS() ? TrustedMacCandidates(fileName) : TrustedLinuxCandidates(fileName))
                 .Select(ResolveFinalPath)
                 .ToArray();
             if (!trustedCandidates.Contains(finalPath, StringComparer.Ordinal))
@@ -223,6 +241,18 @@ internal static class CommandRunner
 
     private static string[] TrustedLinuxCandidates(string fileName) => Path.GetFileName(fileName) switch
     {
+        "aws" => ["/usr/local/bin/aws", "/usr/bin/aws", "/opt/aws-cli/bin/aws"],
+        "azcmagent" => ["/opt/azcmagent/bin/azcmagent", "/usr/bin/azcmagent"],
+        "az" => ["/usr/bin/az", "/usr/local/bin/az", "/opt/az/bin/az"],
+        "dpkg-query" => ["/usr/bin/dpkg-query", "/bin/dpkg-query"],
+        "apt" => ["/usr/bin/apt"],
+        "dnf" => ["/usr/bin/dnf"],
+        "passwd" => ["/usr/bin/passwd", "/bin/passwd"],
+        "rpm" => ["/usr/bin/rpm", "/bin/rpm"],
+        "getent" => ["/usr/bin/getent", "/bin/getent"],
+        "id" => ["/usr/bin/id", "/bin/id"],
+        "crontab" => ["/usr/bin/crontab", "/bin/crontab"],
+        "openssl" => ["/usr/bin/openssl", "/bin/openssl"],
         "ss" => ["/usr/bin/ss", "/usr/sbin/ss", "/bin/ss"],
         "systemctl" => ["/usr/bin/systemctl", "/bin/systemctl"],
         "ip" => ["/usr/bin/ip", "/usr/sbin/ip", "/bin/ip"],
@@ -235,19 +265,50 @@ internal static class CommandRunner
         _ => []
     };
 
-    private static string ResolveFinalPath(string path)
+    private static string[] TrustedWindowsCandidates(string name)
     {
-        try
-        {
-            return File.ResolveLinkTarget(path, returnFinalTarget: true)?.FullName ?? Path.GetFullPath(path);
-        }
-        catch
-        {
-            return Path.GetFullPath(path);
-        }
+        var binary = Path.GetFileName(name);
+        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        if (binary is "aws" or "aws.exe") return [Path.Combine(programFiles, "Amazon", "AWSCLIV2", "aws.exe")];
+        if (binary is "azcmagent" or "azcmagent.exe") return [Path.Combine(programFiles, "AzureConnectedMachineAgent", "azcmagent.exe")];
+        if (binary == "azure-python") return [Path.Combine(programFiles, "Microsoft SDKs", "Azure", "CLI2", "python.exe")];
+        var systemTools = new[] { "netstat", "netsh", "sc.exe", "tasklist.exe", "wevtutil.exe", "schtasks.exe", "net.exe", "systeminfo.exe", "certutil.exe", "reg.exe" };
+        return systemTools.Contains(binary, StringComparer.OrdinalIgnoreCase)
+            ? [Path.Combine(Environment.SystemDirectory, binary.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? binary : binary + ".exe")]
+            : [];
     }
 
-    [SupportedOSPlatform("linux")]
+    private static string[] TrustedMacCandidates(string name) => Path.GetFileName(name) switch
+    {
+        "top" => ["/usr/bin/top"], "log" => ["/usr/bin/log"], "vm_stat" => ["/usr/bin/vm_stat"], "socketfilterfw" => ["/usr/libexec/ApplicationFirewall/socketfilterfw"], "pfctl" => ["/sbin/pfctl"], "sysctl" => ["/usr/sbin/sysctl"], "ps" => ["/bin/ps"],
+        "lsof" => ["/usr/sbin/lsof"], "launchctl" => ["/bin/launchctl"], "sw_vers" => ["/usr/bin/sw_vers"],
+        "system_profiler" => ["/usr/sbin/system_profiler"], "pkgutil" => ["/usr/sbin/pkgutil"], "softwareupdate" => ["/usr/sbin/softwareupdate"],
+        "dscl" => ["/usr/bin/dscl"], "crontab" => ["/usr/bin/crontab"], "openssl" => ["/usr/bin/openssl"],
+        "aws" => ["/usr/local/bin/aws", "/opt/homebrew/bin/aws"], "az" => ["/usr/local/bin/az", "/opt/homebrew/bin/az"],
+        _ => []
+    };
+
+    private static string ResolveFinalPath(string path)
+    {
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        {
+            var canonical = RealPath(path, IntPtr.Zero);
+            if (canonical != IntPtr.Zero)
+            {
+                try { return Marshal.PtrToStringUTF8(canonical) ?? Path.GetFullPath(path); }
+                finally { Free(canonical); }
+            }
+        }
+        return Path.GetFullPath(path);
+    }
+
+    [SuppressMessage("Globalization", "CA2101", Justification = "libc filesystem paths use UTF-8, explicitly marshalled as LPUTF8Str.")]
+    [DllImport("libc", EntryPoint = "realpath", SetLastError = true)]
+    private static extern IntPtr RealPath([MarshalAs(UnmanagedType.LPUTF8Str)] string path, IntPtr resolvedPath);
+    [DllImport("libc", EntryPoint = "free")]
+    private static extern void Free(IntPtr value);
+
+    [UnsupportedOSPlatform("windows")]
     private static bool ValidateUnixPath(string path, out string failure)
     {
         failure = string.Empty;
@@ -369,6 +430,12 @@ internal static class CommandRunner
                 return false;
             }
 
+            var trustedInstaller = new SecurityIdentifier("S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464");
+            if (!owner.IsWellKnown(WellKnownSidType.LocalSystemSid) && !owner.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid) && !owner.Equals(trustedInstaller))
+            {
+                failure = "owner is not a privileged system identity";
+                return false;
+            }
             var rules = security.GetAccessRules(true, true, typeof(SecurityIdentifier));
             var privileged = new[]
             {
@@ -415,19 +482,35 @@ internal static class CommandRunner
         new FileInfo(path).SetAccessControl(security);
     }
 
-    [SupportedOSPlatform("linux")]
+    [UnsupportedOSPlatform("windows")]
     private static FileStreamOptions SetUnixPrivateMode(FileStreamOptions options)
     {
         options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
         return options;
     }
 
+    [SuppressMessage("Globalization", "CA2101", Justification = "libc filesystem paths use UTF-8, explicitly marshalled as LPUTF8Str.")]
     [DllImport("libc", EntryPoint = "statx", CallingConvention = CallingConvention.Cdecl, SetLastError = true)]
-    private static extern int Statx(int dirfd, string pathname, int flags, uint mask, ref LinuxStatx buffer);
+    private static extern int Statx(int dirfd, [MarshalAs(UnmanagedType.LPUTF8Str)] string pathname, int flags, uint mask, ref LinuxStatx buffer);
+
+    [SuppressMessage("Globalization", "CA2101", Justification = "Darwin filesystem paths use UTF-8, explicitly marshalled as LPUTF8Str.")]
+    [DllImport("libc", EntryPoint = "lstat", SetLastError = true)]
+    private static extern int DarwinLstat([MarshalAs(UnmanagedType.LPUTF8Str)] string path, IntPtr buffer);
 
     private static bool TryGetUnixOwner(string path, out uint owner)
     {
         owner = uint.MaxValue;
+        if (OperatingSystem.IsMacOS())
+        {
+            var buffer = Marshal.AllocHGlobal(256);
+            try
+            {
+                if (DarwinLstat(path, buffer) != 0) return false;
+                owner = unchecked((uint)Marshal.ReadInt32(buffer, 16));
+                return true;
+            }
+            finally { Marshal.FreeHGlobal(buffer); }
+        }
         var stat = new LinuxStatx { Spare = new ulong[14] };
         if (Statx(-100, path, 0x100, 0x1F, ref stat) != 0) return false;
         owner = stat.Uid;

@@ -17,7 +17,7 @@ internal static class Program
                 }
             }
             """);
-        Assert(nft.State == "ACTIVE" && nft.RulesPresent && nft.FilteringVerified, "nftables filtering verification");
+        Assert(nft.RulesPresent && !nft.FilteringVerified, "nftables requires external effective protection verification");
         var outputOnlyNft = SystemProbe.ParseNftablesState("""
             table inet filter {
                 chain output {

@@ -1,0 +1,37 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadIdentityAndComputeInventory",
+      "Effect": "Allow",
+      "Action": [
+        "sts:GetCallerIdentity",
+        "ec2:DescribeRegions", "ec2:DescribeInstances", "ec2:DescribeVolumes",
+        "ec2:DescribeSecurityGroups", "ec2:DescribeVpcs", "ec2:DescribeNetworkInterfaces",
+        "ec2:DescribeAddresses", "ec2:DescribeInstanceStatus", "ec2:DescribeSnapshots"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadOptionalPostureMetadata",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListAllMyBuckets", "s3:GetBucketLocation", "s3:GetBucketPublicAccessBlock",
+        "s3:GetBucketPolicyStatus", "s3:GetBucketAcl",
+        "securityhub:GetFindings", "guardduty:ListDetectors", "guardduty:ListFindings", "guardduty:GetFindings"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadHealthActivityPatchesAndRecordedDrift",
+      "Effect": "Allow",
+      "Action": [
+        "health:DescribeEvents", "cloudwatch:DescribeAlarms", "cloudwatch:GetMetricStatistics",
+        "cloudtrail:LookupEvents", "cloudformation:DescribeStacks",
+        "cloudformation:ListStackResources", "cloudformation:DescribeStackResourceDrifts",
+        "ssm:DescribeInstanceInformation", "ssm:DescribeInstancePatchStates"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

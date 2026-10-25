@@ -446,7 +446,6 @@ internal static class Program
                 Assert(events.Any(item => item.GetProperty("kind").GetString() == "baseline"), "Timeline includes retained baseline observation");
                 Assert(events.Any(item => item.GetProperty("kind").GetString() == "drift" && item.GetProperty("source").GetString() == "snapshot-diff"), "Timeline includes actual observed listener drift");
             }
-            Assert(!Encoding.UTF8.GetString(File.ReadAllBytes(historyPath)).Contains(token, StringComparison.Ordinal), "History never stores session token");
         }
         finally
         {
@@ -454,6 +453,9 @@ internal static class Program
             await serverTask.WaitAsync(TimeSpan.FromSeconds(10));
             Assert(serverTask.IsCompletedSuccessfully, "Cancellation cleanly stops server and background collection");
         }
+        // SQLite holds the database open while the server runs on Windows.
+        // Inspect persisted bytes only after shutdown has disposed its connection.
+        Assert(!Encoding.UTF8.GetString(File.ReadAllBytes(historyPath)).Contains(reflectedToken!, StringComparison.Ordinal), "History never stores session token");
     }
 
     private static async Task TestPolicyPreviewAsync(HttpClient client, Func<int> collectionCount)

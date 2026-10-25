@@ -197,16 +197,72 @@ async function main() {
   check(await page.locator('html').getAttribute('data-theme') !== theme, 'Light and dark themes switch without network resources');
   await page.locator('#language').selectOption('en');
   await page.locator('[data-view="drift"]').click();
+  const compareDrift = page.getByRole('button', { name: 'Compare with current', exact: true });
+  check(await compareDrift.isDisabled(), 'Drift comparison is disabled until a baseline is validated');
   await page.locator('#baseline-upload').setInputFiles({ name: 'invalid-baseline.json', mimeType: 'application/json', buffer: Buffer.from('{"host":{},"collectedAtUtc":"bad","findings":[]}') });
   await page.getByRole('status').filter({ hasText: 'The uploaded snapshot is invalid' }).waitFor();
   check(await page.locator('.split-evidence').count() === 0, 'Structurally invalid uploaded JSON is rejected by the shared parser before entering UI state');
   const baseline = await (await context.request.get(origin + '/api/snapshot', { headers: { 'X-Opscope-Token': token } })).json();
   baseline.cpuUsedPercent = 90;
-  await page.locator('#baseline-upload').setInputFiles({ name: 'baseline.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(baseline)) });
-  await page.getByRole('button', { name: 'Compare with current', exact: true }).click();
-  await page.getByRole('heading', { name: 'Significant changes detected', exact: true }).waitFor();
-  check(await page.locator('.split-evidence section').count() === 2, 'Uploaded baseline and current evidence appear side by side');
-  check(await page.locator('#view').innerText().then(text => text.includes('cpuUsedPercent') && text.includes('-72.5')), 'Drift uses the shared diff engine metric values');
+  // EN: Hold completed server responses to verify readiness independently of browser/network timing.
+  // ES: Se retienen respuestas del servidor para comprobar el estado sin depender de la velocidad del navegador o la red.
+  const pauseResponse = () => {
+    let release, entered;
+    const held = new Promise(resolve => { entered = resolve; });
+    const resumed = new Promise(resolve => { release = resolve; });
+    const wait = async () => {
+      let timer;
+      try {
+        await Promise.race([held, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Expected drift response was not intercepted.')), 30000); })]);
+      } finally { clearTimeout(timer); }
+    };
+    return { wait, resumed, release, entered };
+  };
+  const validation = pauseResponse(), comparison = pauseResponse(), lateValidation = pauseResponse();
+  const pausedResponses = [validation, comparison, lateValidation];
+  let driftRequests = 0;
+  const holdDriftResponse = async route => {
+    const pause = pausedResponses[driftRequests++], response = await route.fetch();
+    if (pause) { pause.entered(); await pause.resumed; }
+    await route.fulfill({ response });
+  };
+  await page.route('**/api/diff', holdDriftResponse);
+  try {
+    await page.locator('#baseline-upload').setInputFiles({ name: 'baseline.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(baseline)) });
+    await validation.wait();
+    check(await compareDrift.isDisabled() && await page.locator('.split-evidence').count() === 0, 'A pending baseline validation keeps comparison disabled and evidence unselected');
+    const pendingButton = await compareDrift.elementHandle();
+    await page.waitForFunction(button => !button.isConnected, pendingButton, { timeout: 15000 });
+    await pendingButton.dispose();
+    check(await compareDrift.isDisabled() && driftRequests === 1, 'Live SSE rendering preserves pending baseline readiness without starting a comparison');
+    validation.release();
+    await page.getByRole('status').filter({ hasText: 'Baseline loaded. Compare it with current evidence.' }).waitFor();
+    check(await compareDrift.isEnabled(), 'A validated baseline enables explicit comparison');
+    await compareDrift.click();
+    await comparison.wait();
+    check(await compareDrift.isDisabled() && driftRequests === 2, 'An in-flight comparison disables repeated submission');
+    comparison.release();
+    await page.getByRole('heading', { name: 'Significant changes detected', exact: true }).waitFor();
+    check(driftRequests === 2 && await compareDrift.isEnabled(), 'One explicit comparison completes after validation and restores the control');
+    check(await page.locator('.split-evidence section').count() === 2, 'Uploaded baseline and current evidence appear side by side');
+    check(await page.locator('#view').innerText().then(text => text.includes('cpuUsedPercent') && text.includes('-72.5')), 'Drift uses the shared diff engine metric values');
+    await page.locator('#baseline-upload').setInputFiles({ name: 'replacement.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ ...baseline, cpuUsedPercent: 55 })) });
+    await lateValidation.wait();
+    check(await compareDrift.isDisabled() && await page.locator('.split-evidence').count() === 0, 'Choosing a replacement immediately removes the old baseline and comparison');
+    await page.locator('#baseline-upload').setInputFiles({ name: 'invalid-replacement.json', mimeType: 'application/json', buffer: Buffer.from('{"host":{},"collectedAtUtc":"bad","findings":[]}') });
+    await page.getByRole('status').filter({ hasText: 'The uploaded snapshot is invalid' }).waitFor();
+    check(await compareDrift.isDisabled() && await page.locator('.split-evidence').count() === 0, 'An invalid replacement cannot fall back to previously validated evidence');
+    const lateResponseFinished = page.waitForEvent('requestfinished', request => request.url() === origin + '/api/diff' && request.postDataJSON()?.cpuUsedPercent === 55);
+    lateValidation.release();
+    await lateResponseFinished;
+    const latestButton = await compareDrift.elementHandle();
+    await page.waitForFunction(button => !button.isConnected, latestButton, { timeout: 15000 });
+    await latestButton.dispose();
+    check(await compareDrift.isDisabled() && await page.locator('.split-evidence').count() === 0, 'A late validation response cannot restore a superseded baseline after live rendering');
+  } finally {
+    pausedResponses.forEach(response => response.release());
+    await page.unroute('**/api/diff', holdDriftResponse);
+  }
   await page.locator('[data-view="fleet"]').click();
   const fleetFirst = structuredClone(baseline), fleetSecond = structuredClone(baseline);
   fleetFirst.host.hostname = 'browser-fleet-private-a'; fleetFirst.cpuUsedPercent = 10;

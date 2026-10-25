@@ -31,6 +31,8 @@ Abre la URL que imprime la terminal. Su token es propio de esa sesión: el servi
 
 El laboratorio mantiene su evidencia separada del equipo en vivo y del historial. Admite **2 MiB por petición** y **128 KiB de indicadores**, exige UTF-8 y limita cada carga a diez segundos. Compara observables guardados: no consulta DNS o feeds remotos ni escanea archivos del equipo actual. Un resultado sin coincidencias no demuestra ausencia de compromiso. El botón de limpiar descarta el estado del laboratorio en memoria.
 
+La comparación de cambios solo se habilita al terminar de validar la baseline. Mientras se carga o compara una selección, el botón evita clics prematuros o duplicados; una respuesta antigua no puede sustituir una selección posterior.
+
 ### Comandos frecuentes
 
 ```bash
@@ -226,6 +228,8 @@ opscope cloud patches --provider aws --profile audit --region eu-west-1
 ```
 
 The embedded English/Spanish UI has light/dark themes, keyboard search, findings, processes/ports, services, drift, observed timeline, history/trends, fleet upload, policy validation/download and verified report/bundle downloads. No assets come from a CDN. Policy editing is preview/download only and never applies host configuration. The server listens only on `127.0.0.1`, on a random port by default, with a fresh session token, exact Host/Origin checks and no CORS grant. Full identifiers require an explicit toggle; history and exports stay redacted.
+
+Drift comparison is enabled only after baseline validation completes. Loading/comparison states prevent premature or duplicate submissions; an older response cannot replace a later selection.
 
 Open **Saved evidence lab / Laboratorio de evidencia** to inspect a complete snapshot JSON, run guided triage, compare recorded observables with CSV/STIX indicators, or build a timeline with an optional saved baseline. The lab keeps its selected evidence separate from the live host and SQLite history; live refresh does not replace the uploaded snapshot or drafts. It exports redacted results and snapshots as JSON, HTML, PDF, SARIF, JUnit, CSV, JSONL or CEF. Tables and findings use bounded pages, and the source bar identifies live, retained, fleet, cloud or uploaded evidence.
 

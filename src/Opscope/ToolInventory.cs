@@ -15,7 +15,9 @@ internal static class ToolInventory
             {
                 new Definition("netstat", "TCP and UDP listener inventory", "core"),
                 new Definition("netsh", "Windows firewall posture", "core"),
-                new Definition("sc.exe", "Windows service inventory", "core")
+                new Definition("sc.exe", "Windows service inventory", "core"),
+                new Definition("tasklist.exe", "Process inventory enrichment", "enrichment"),
+                new Definition("wevtutil.exe", "Windows event diagnostics", "enrichment")
             }
             : OperatingSystem.IsLinux()
                 ? new[]
@@ -23,6 +25,9 @@ internal static class ToolInventory
                     new Definition("ss", "TCP and UDP listener inventory", "core"),
                     new Definition("systemctl", "systemd service inventory", "core"),
                     new Definition("ip", "Linux address and route enrichment", "enrichment"),
+                    new Definition("lsof", "Process-to-socket enrichment fallback", "enrichment"),
+                    new Definition("journalctl", "systemd journal and service diagnostics", "enrichment"),
+                    new Definition("resolvectl", "DNS resolver diagnostics", "enrichment"),
                     new Definition("ufw", "UFW firewall posture", "enrichment"),
                     new Definition("firewall-cmd", "firewalld firewall posture", "enrichment"),
                     new Definition("nft", "nftables firewall posture", "enrichment")

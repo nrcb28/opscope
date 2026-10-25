@@ -133,7 +133,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Archive generation failed.' }
           python packaging/release_assets.py sbom --input publish --output "dist/$name.spdx.json" --version $env:RELEASE_VERSION --rid $env:RELEASE_RID --assets src/Opscope/obj/project.assets.json
           if ($LASTEXITCODE -ne 0) { throw 'SBOM generation failed.' }
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: binary-${{ matrix.rid }}
           path: dist/*
@@ -161,7 +161,7 @@ jobs:
           "$RUNNER_TEMP/opscope-tool/opscope" --help
           python3 packaging/release_assets.py sbom --input dist --output tool-sbom/opscope-dotnet-tool.spdx.json --version "$RELEASE_VERSION" --rid dotnet-tool --assets src/Opscope/obj/project.assets.json
           cp tool-sbom/opscope-dotnet-tool.spdx.json dist/
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dotnet-tool
           path: dist/*
@@ -216,7 +216,7 @@ jobs:
             dist/*.nupkg
             dist/*.spdx.json
             dist/SHA256SUMS
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-assets
           path: dist/

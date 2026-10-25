@@ -363,6 +363,16 @@ internal sealed class SystemProbe
                     if (fields.Length >= 5) result.Add(new ListenerInfo(fields[0], fields[4], fields.Length >= 7 ? string.Join(' ', fields.Skip(6)) : "-", "ss"));
                 }
             }
+
+            if (result.Count == 0)
+            {
+                // lsof is an optional, read-only fallback when ss is unavailable or cannot map sockets.
+                // lsof es un fallback opcional y de solo lectura cuando ss no puede mapear sockets.
+                var fallback = await CommandRunner.RunAsync("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN", "-iUDP"], timeout, cancellationToken);
+                AddCommandDiagnostics("lsof", fallback, warnings, reportExitFailure: false);
+                if (fallback.ExitCode == 0 && !fallback.OutputTruncated)
+                    AddLsofListeners(fallback.StandardOutput, result);
+            }
         }
         else if (OperatingSystem.IsWindows())
         {
@@ -381,6 +391,23 @@ internal sealed class SystemProbe
             }
         }
         return result;
+    }
+
+    internal static void AddLsofListeners(string output, List<ListenerInfo> result)
+    {
+        foreach (var line in output.SplitLines())
+        {
+            var fields = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (fields.Length < 9 || fields[0].Equals("COMMAND", StringComparison.OrdinalIgnoreCase)) continue;
+
+            var protocol = fields[7].StartsWith("TCP", StringComparison.OrdinalIgnoreCase) ? "TCP" :
+                fields[7].StartsWith("UDP", StringComparison.OrdinalIgnoreCase) ? "UDP" : string.Empty;
+            if (string.IsNullOrEmpty(protocol)) continue;
+            var name = string.Join(' ', fields.Skip(8));
+            if (protocol == "TCP" && !name.Contains("(LISTEN)", StringComparison.OrdinalIgnoreCase)) continue;
+
+            result.Add(new ListenerInfo(protocol, fields[8], $"{fields[0]} pid={fields[1]}", "lsof"));
+        }
     }
 
     private static async Task<IReadOnlyList<ServiceInfo>> ReadServicesAsync(TimeSpan timeout, List<string> warnings, CancellationToken cancellationToken)

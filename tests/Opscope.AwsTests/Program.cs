@@ -52,6 +52,12 @@ try
     var partial = await new AwsProvider(new FakeRunner { Denied = "ec2 describe-volumes" }).CollectAsync("drift", Options(("region", "eu-west-1"), ("baseline", baselinePath)));
     Assert(!partial.Findings.Any(f => f.Code == "AWS_BASELINE_REMOVED" && f.Detail.Contains("vol-missing")) && partial.Warnings!.Any(w => w.Contains("absence could not be assessed")), "Failed inventory does not create a false removal");
     Assert(!partial.OperationSucceeded, "Required baseline inventory failure is unsuccessful");
+    foreach (var malformedJson in new[] { "{}", "null", "[null]", "[42]" })
+    {
+        var malformed = await new AwsProvider(new FakeRunner { OverrideCommand = "ec2 describe-volumes", OverrideJson = malformedJson }).CollectAsync("drift", Options(("region", "eu-west-1"), ("baseline", baselinePath)));
+        Assert(!malformed.OperationSucceeded && !malformed.Findings.Any(f => f.Code == "AWS_BASELINE_REMOVED" && f.Detail.Contains("vol-missing")), "Malformed successful response cannot establish resource absence: " + malformedJson);
+        Assert(malformed.Warnings!.Any(w => w.Contains("describe-volumes") && w.Contains("coverage unavailable")), "Malformed response exposes a bounded coverage warning");
+    }
     await File.WriteAllTextAsync(baselinePath, ReportSecurity.Serialize(inventory));
     var redacted = await provider.CollectAsync("drift", Options(("region", "eu-west-1"), ("baseline", baselinePath)));
     Assert(redacted.Warnings!.Any(w => w.Contains("redacted identifiers")) && !redacted.Findings.Any(f => f.Code.StartsWith("AWS_BASELINE_", StringComparison.Ordinal)), "Redacted baseline is explicitly incomplete and cannot create spurious changes");
@@ -80,6 +86,8 @@ Assert(Has(patches, "AWS_PATCH_NONCOMPLIANT") && Has(patches, "AWS_SSM_NODE_OFFL
 Assert(Text(patches.Data).Contains("HybridManagedInstance"), "Hybrid managed nodes included");
 var cost = await provider.CollectAsync("cost", Options(("region", "eu-west-1")));
 foreach (var code in new[] { "AWS_ORPHAN_EBS", "AWS_ORPHAN_EIP", "AWS_OLD_SNAPSHOT", "AWS_LOW_CPU_CANDIDATE" }) Assert(Has(cost, code), code);
+var missingCpu = await new AwsProvider(new FakeRunner { OverrideCommand = "cloudwatch get-metric-statistics", OverrideJson = "[{\"Samples\":288},{\"Samples\":288},{\"Samples\":288},{\"Samples\":288},{\"Samples\":288},{\"Samples\":288},{\"Samples\":288}]" }).CollectAsync("cost", Options(("region", "eu-west-1")));
+Assert(!Has(missingCpu, "AWS_LOW_CPU_CANDIDATE") && missingCpu.Warnings!.Any(w => w.Contains("get-metric-statistics")), "Missing CPU observations cannot be interpreted as zero utilization");
 Assert(runner.Calls.All(c => c[1].StartsWith("describe-", StringComparison.Ordinal) || c[1].StartsWith("get-", StringComparison.Ordinal) || c[1].StartsWith("list-", StringComparison.Ordinal) || c[1] == "lookup-events"), "All calls use explicit read-only operations");
 Assert(runner.Calls.All(c => !c.Any(a => a.Contains("credentials", StringComparison.OrdinalIgnoreCase) || a.Contains("user-data", StringComparison.OrdinalIgnoreCase) || a.Contains("console-output", StringComparison.OrdinalIgnoreCase))), "Credentials, user data and console output never requested");
 var roleRunner = new FakeRunner();
@@ -151,6 +159,8 @@ sealed class FakeRunner : ICloudCommandRunner
 {
     public List<List<string>> Calls { get; } = [];
     public string? Denied { get; init; }
+    public string? OverrideCommand { get; init; }
+    public string? OverrideJson { get; init; }
     public bool NoDetectors { get; init; }
     public bool InvalidIdentity { get; init; }
     public bool EmptyInventory { get; init; }
@@ -159,9 +169,11 @@ sealed class FakeRunner : ICloudCommandRunner
     public Task<JsonElement> RunAsync(string tool, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        _ = TrustedCloudCommandRunner.PrepareArguments(tool, arguments);
         if (tool != "aws") throw new InvalidOperationException("Unexpected tool");
         var a = arguments.ToList(); Calls.Add(a);
         var command = a[0] + " " + a[1];
+        if (command == OverrideCommand) return Task.FromResult(JsonDocument.Parse(OverrideJson!).RootElement.Clone());
         if (command == Denied) throw new InvalidOperationException("SECRET_FROM_STDERR");
         if (InvalidIdentity && command == "sts get-caller-identity") return Task.FromResult(JsonDocument.Parse("{}").RootElement.Clone());
         if ((EmptyInventory && a[0] == "ec2" && a[1] != "describe-regions") ||

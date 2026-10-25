@@ -558,6 +558,8 @@ public sealed class AwsProvider(ICloudCommandRunner runner) : ICloudProvider
             try
             {
                 var result = await commandRunner.RunAsync("aws", args, cancellationToken);
+                if (!HasExpectedShape(service + " " + command, result))
+                    throw new InvalidDataException("Unsupported projected AWS response shape.");
                 SuccessfulCalls.Add(Label(region ?? "") + "|" + service + " " + command);
                 return result;
             }
@@ -591,6 +593,30 @@ public sealed class AwsProvider(ICloudCommandRunner runner) : ICloudProvider
     private static double Number(JsonElement element, string name) => Property(element, name).TryGetDoubleSafe();
     private static IReadOnlyList<JsonElement> Elements(JsonElement element) => element.ValueKind == JsonValueKind.Array ? element.EnumerateArray().ToArray() : [];
     private static IReadOnlyList<JsonElement> Items(JsonElement? element) => element.HasValue ? Elements(element.Value) : [];
+    private static bool HasExpectedShape(string command, JsonElement response)
+    {
+        // A successful CLI exit is not evidence of a complete resource listing. In
+        // particular, null/objects cannot stand in for an empty projected array.
+        if (command == "sts get-caller-identity") return response.ValueKind == JsonValueKind.Object;
+        if (command == "s3api get-bucket-location") return response.ValueKind is JsonValueKind.Null or JsonValueKind.String;
+        if (command == "s3api get-bucket-policy-status") return Bool(response, "Public").HasValue;
+        if (command == "s3api get-public-access-block")
+            return new[] { "BlockPublicAcls", "IgnorePublicAcls", "BlockPublicPolicy", "RestrictPublicBuckets" }.All(field => Bool(response, field).HasValue);
+        if (command == "cloudwatch describe-alarms")
+            return ObjectRows(Property(response, "Metric"), requireId: true) && ObjectRows(Property(response, "Composite"), requireId: true);
+        if (command is "ec2 describe-regions" or "guardduty list-detectors" or "guardduty list-findings")
+            return response.ValueKind == JsonValueKind.Array && response.EnumerateArray().All(value => value.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(value.GetString()));
+        if (!ObjectRows(response, requireId: command is not ("cloudwatch get-metric-statistics" or "s3api get-bucket-acl" or "ec2 describe-addresses"))) return false;
+        if (command == "ec2 describe-addresses") return response.EnumerateArray().All(value => String(value, "Id").Length > 0 || String(value, "PublicIp").Length > 0);
+        if (command == "cloudwatch get-metric-statistics")
+            return response.EnumerateArray().All(value => DateTimeOffset.TryParse(String(value, "Time"), CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out _) &&
+                FiniteNumber(value, "Average", 0, 100) && FiniteNumber(value, "Maximum", 0, 100) && FiniteNumber(value, "Samples", double.Epsilon, double.MaxValue));
+        return true;
+    }
+    private static bool ObjectRows(JsonElement value, bool requireId) => value.ValueKind == JsonValueKind.Array && value.EnumerateArray().All(row =>
+        row.ValueKind == JsonValueKind.Object && (!requireId || Property(row, "Id").ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(String(row, "Id"))));
+    private static bool FiniteNumber(JsonElement value, string name, double minimum, double maximum) =>
+        Property(value, name) is var property && property.ValueKind == JsonValueKind.Number && property.TryGetDouble(out var number) && double.IsFinite(number) && number >= minimum && number <= maximum;
     // Defense in depth after the CLI's JMESPath projection: unexpected fields from a wrapper/fake are excluded.
     private static readonly HashSet<string> SafeFields = new(StringComparer.Ordinal)
     {

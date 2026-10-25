@@ -16,6 +16,7 @@ internal static class OpenApiContract
             ["/api/history/{id}"] = new { get = Operation("Retained redacted snapshot", "application/json", parameters: [Parameter("id", "path", true, "integer", "SQLite snapshot identifier.")]) },
             ["/api/collect"] = new { post = Operation("Collect through the shared read-only collector; no request body", "application/json") },
             ["/api/diff"] = new { post = Operation("Compare a validated baseline with current evidence; redacted result", "application/json", body: JsonBody("A complete Opscope snapshot JSON, bounded to 2 MiB and validated by the shared parser.")) },
+            ["/api/analyze"] = new { post = Operation("Stateless saved-snapshot inspection, triage, offline IoC comparison, or timeline; always redacted", "application/json", body: AnalyzeBody()) },
             ["/api/fleet"] = new { post = Operation("Stateless local fleet comparison; redacted indexed host labels and observed outliers", "application/json", body: JsonBody("An object with only snapshots: an array of 2–100 validated snapshots. Total request limit 2 MiB. Distinct host identities are required; generic redacted host labels cannot establish identity. No uploads or results are stored.")) },
             ["/api/settings"] = new { get = Operation("Read-only configuration without tokens or host paths", "application/json") },
             ["/api/capabilities"] = new { get = Operation("Configured cloud operation keys and policy-view availability", "application/json") },
@@ -24,13 +25,60 @@ internal static class OpenApiContract
             ["/api/timeline"] = new { get = Operation("Redacted observed boot, snapshot, failed-service observations, and retained-baseline drift; no invented event times", "application/json") },
             ["/api/cloud/{provider}/{operation}"] = new { post = Operation("Run an explicitly configured read-only cloud query; no request body", "application/json", parameters: [Parameter("provider", "path", true, "string", "Configured provider."), Parameter("operation", "path", true, "string", "Configured operation; arbitrary commands and options are not accepted.")]) },
             ["/api/bundle"] = new { get = Operation("Redacted custody ZIP; X-Checksum-Sha256 contains the archive digest", "application/zip") },
-            ["/api/report"] = new { get = Operation("Redacted HTML, PDF, or SARIF handoff report", "text/html", parameters: [Parameter("format", "query", false, "string", "html (default), pdf, or sarif.")]) },
+            ["/api/report"] = new
+            {
+                get = Operation("Redacted HTML, PDF, or SARIF handoff report", "text/html", parameters: [Parameter("format", "query", false, "string", "html (default), pdf, or sarif.")]),
+                post = Operation("Export the supplied saved snapshot as a redacted attachment; no collection or persistence", "application/octet-stream", body: new
+                {
+                    required = true,
+                    description = "Strict UTF-8 JSON, at most 2 MiB and a ten-second upload deadline. Unknown and duplicate fields are rejected. JSON output is a flat redacted Snapshot.",
+                    content = new Dictionary<string, object>
+                    {
+                        ["application/json"] = new { schema = ObjectSchema(["snapshot", "format"], new()
+                        {
+                            ["snapshot"] = SnapshotSchema(),
+                            ["format"] = new { type = "string", @enum = new[] { "json", "html", "pdf", "sarif", "junit", "csv", "jsonl", "cef" } }
+                        }) }
+                    }
+                })
+            },
             ["/metrics"] = new { get = Operation("Prometheus gauges from cached evidence; no identity labels", "text/plain") },
             ["/api/events"] = new { get = Operation("Redacted snapshot SSE events; at most four streams, two-minute reconnect limit", "text/event-stream") },
             ["/mcp"] = new { post = Operation("Read-only MCP JSON-RPC; initialize, ping, tools/list, tools/call", "application/json", body: JsonBody("One JSON-RPC 2.0 object bounded to 64 KiB. Only opscope_snapshot and opscope_findings accept tool calls, with empty arguments.")) },
             ["/api/openapi.json"] = new { get = Operation("This authenticated OpenAPI contract", "application/json") }
         }
     };
+    private static object SnapshotSchema() => new { type = "object", description = "Complete Opscope snapshot validated by Reporter.ParseSnapshot. No host paths, URLs, commands, or native-evidence requests are accepted as alternatives to snapshot data." };
+    private static object ObjectSchema(string[] required, Dictionary<string, object> properties) => new { type = "object", additionalProperties = false, required, properties };
+    private static object AnalyzeBody()
+    {
+        object Variant(string operation, params (string Name, object Schema, bool Required)[] fields)
+        {
+            var properties = new Dictionary<string, object> { ["snapshot"] = SnapshotSchema(), ["operation"] = new { type = "string", @enum = new[] { operation } } };
+            foreach (var field in fields) properties[field.Name] = field.Schema;
+            return ObjectSchema(new[] { "snapshot", "operation" }.Concat(fields.Where(field => field.Required).Select(field => field.Name)).ToArray(), properties);
+        }
+        var indicators = ObjectSchema(["format", "text"], new()
+        {
+            ["format"] = new { type = "string", @enum = new[] { "csv", "stix" } },
+            ["text"] = new { type = "string", description = "At most 128 KiB of UTF-8 indicator text; only recorded observables are compared. No live executable hashes, file scans, DNS queries, or remote feeds." }
+        });
+        return new
+        {
+            required = true,
+            description = "Strict UTF-8 JSON with a 2 MiB total limit and ten-second upload deadline. Unknown, duplicate, and operation-incompatible fields are rejected. Inspect returns a flat redacted Snapshot; all other operations return a redacted AnalysisReport. Uploads and results never overwrite live evidence or enter history.",
+            content = new Dictionary<string, object>
+            {
+                ["application/json"] = new { schema = new { oneOf = new[]
+                {
+                    Variant("inspect"),
+                    Variant("triage", ("scenario", new { type = "string", @enum = new[] { "high-cpu", "disk-full", "port-exposed" } }, true)),
+                    Variant("ioc", ("indicators", indicators, true)),
+                    Variant("timeline", ("baseline", SnapshotSchema(), false))
+                } } }
+            }
+        };
+    }
     private static object Parameter(string name, string location, bool required, string type, string description) => new { name, @in = location, required, description, schema = new { type } };
     private static object JsonBody(string description) => new { required = true, description, content = new Dictionary<string, object> { ["application/json"] = new { schema = new { type = "object", additionalProperties = true } } } };
     private static object Operation(string summary, string contentType, object[]? parameters = null, object? body = null)
@@ -42,7 +90,10 @@ internal static class OpenApiContract
             ["401"] = new { description = "Missing or invalid session token" },
             ["403"] = new { description = "Invalid Host, Origin, referrer, or Fetch Metadata" },
             ["404"] = new { description = "Unknown record or unconfigured capability" },
+            ["408"] = new { description = "Request upload deadline exceeded" },
             ["429"] = new { description = "Request, stream, or collection limit reached" },
+            ["502"] = new { description = "Cloud operation failed; the redacted AnalysisReport retains failure and coverage details" },
+            ["504"] = new { description = "Cloud operation exceeded its deadline" },
             ["503"] = new { description = "Evidence is unavailable" }
         } };
         if (parameters is not null) operation["parameters"] = parameters;

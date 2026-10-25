@@ -13,11 +13,24 @@ var azureReport = report with { Data = new { resources = new[] { new CloudResour
 Check(CloudIdentityLinker.Matches(azureReport, azure), "Matching Azure resource must link");
 Check(!CloudIdentityLinker.Matches(azureReport, azure with { ResourceId = azure.ResourceId + "other" }), "Different Azure resource must not link");
 Check(!CloudIdentityLinker.Matches(report, null), "Missing metadata must not link");
+Check(!CloudIdentityLinker.Matches(report with { OperationSucceeded = false }, identity), "Incomplete resource collection must not certify a host link");
+Check(!CloudIdentityLinker.Matches(report with { Data = new { extensions = new[] { resource } } }, identity), "An arbitrary embedded identity object must not certify a host link");
+Check(!CloudIdentityLinker.Matches(azureReport with { Data = new { resources = new[] { new CloudResource("azure", azure.SubscriptionId, azure.Location, azure.ResourceId, "Microsoft.Compute/disks", azure.Name) } } }, azure), "Azure host identity requires a VM resource type");
+Check(CloudIdentityLinker.Matches(report with { Data = new { reports = new[] { report } } }, identity), "An explicitly successful multi-profile resource report can link");
+Check(!CloudIdentityLinker.Matches(report with { Data = new { reports = new[] { report with { OperationSucceeded = false } } } }, identity), "An unsuccessful nested resource report must not certify a host link");
 var runner = new TrustedCloudCommandRunner();
-foreach (var request in new[] { ("aws", new[] { "ec2", "terminate-instances" }), ("az", new[] { "vm", "delete" }), ("aws", new[] { "ec2", "describe-instances", "--endpoint-url", "https://example.invalid" }), ("aws", new[] { "ec2", "describe-instances", "--endpoint-url=https://example.invalid" }), ("aws", new[] { "ec2", "describe-instances", "--cli-input-json={}" }), ("az", new[] { "account", "show", "--debug=true" }) })
+foreach (var request in new[] { ("aws", new[] { "ec2", "terminate-instances" }), ("az", new[] { "vm", "delete" }), ("aws", new[] { "ec2", "describe-instances", "--endpoint-url", "https://example.invalid" }), ("aws", new[] { "ec2", "describe-instances", "--endpoint-url=https://example.invalid" }), ("aws", new[] { "ec2", "describe-instances", "--cli-input-json={}" }), ("az", new[] { "account", "show", "--debug=true" }),
+    ("aws", new[] { "ec2", "describe-instances", "--endpoint", "https://example.invalid" }),
+    ("aws", new[] { "ec2", "describe-instances", "--ca-bundle", "/tmp/untrusted.pem" }),
+    ("aws", new[] { "ec2", "describe-instances", "--profile", "readonly", "--profile", "different-account" }),
+    ("aws", new[] { "ec2", "describe-instances", "--query", "file:///tmp/query" }),
+    ("az", new[] { "vm", "get-instance-view", "--ids", "@/tmp/resource-ids" }),
+    ("aws", new[] { "ec2", "describe-instances", "--output", "text" }),
+    ("aws", new[] { "ec2", "describe-instances", "--instance-ids", "--profile", "different-account" }),
+    ("az", new[] { "account", "show", "--subscription", "--debug" }) })
 {
     try { await runner.RunAsync(request.Item1, request.Item2, CancellationToken.None); throw new Exception("Unsafe query was accepted"); }
     catch (InvalidOperationException) { }
 }
-Console.WriteLine("Cloud identity and command-boundary checks passed (13 assertions)");
+Console.WriteLine("Cloud identity and command-boundary checks passed");
 static void Check(bool value, string message) { if (!value) throw new Exception(message); }

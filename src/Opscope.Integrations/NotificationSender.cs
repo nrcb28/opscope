@@ -67,9 +67,16 @@ public static class NotificationSender
         try
         {
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token);
-            var truncated = await ReadBoundedResponse(response, deadline.Token);
+            var discarded = false;
+            try { discarded = await ReadBoundedResponse(response, deadline.Token); }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex) when (ex is HttpRequestException or IOException or OperationCanceledException)
+            {
+                // The endpoint status is already known; discarded response contents cannot undo acceptance.
+                discarded = true;
+            }
             return new(target, response.IsSuccessStatusCode, (int)response.StatusCode,
-                response.IsSuccessStatusCode ? "Endpoint accepted the redacted notification." + (truncated ? " Response body exceeded the collection limit and was discarded." : "")
+                response.IsSuccessStatusCode ? "Endpoint accepted the redacted notification." + (discarded ? " Response body was unavailable or exceeded the collection limit and was discarded." : "")
                 : (int)response.StatusCode is >= 300 and < 400 ? "Endpoint returned a redirect. It was not followed; verify the configured endpoint before retrying."
                 : "Endpoint rejected the notification. Response contents were discarded to avoid exposing credentials or service details.");
         }
@@ -165,6 +172,7 @@ public static class NotificationSender
         try
         {
             using var response = JsonDocument.Parse(result.StandardOutput);
+            if (response.RootElement.ValueKind != JsonValueKind.Object) throw new JsonException();
             if (response.RootElement.TryGetProperty("rejectedLogEventsInfo", out _) || response.RootElement.TryGetProperty("rejectedEntityInfo", out _))
                 return new("cloudwatch", false, null, "CloudWatch rejected some log events; verify event age, destination and permissions before retrying.");
         }

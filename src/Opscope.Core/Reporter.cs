@@ -398,14 +398,13 @@ public static class Reporter
     {
         var identifiers = new[] { Environment.UserName, Environment.MachineName }
             .Concat(sensitiveIdentifiers ?? Array.Empty<string>());
-        foreach (var replacement in identifiers.Where(text => !string.IsNullOrWhiteSpace(text)).Distinct(StringComparer.OrdinalIgnoreCase))
+        foreach (var replacement in identifiers.Where(text => !string.IsNullOrWhiteSpace(text)).Distinct(StringComparer.OrdinalIgnoreCase).OrderByDescending(text => text.Length))
             value = value.Replace(replacement, "[redacted]", StringComparison.OrdinalIgnoreCase);
         value = Regex.Replace(value, @"(?i)([A-Z]:\\Users\\)[^\\\s]+", "$1[redacted]", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
         value = Regex.Replace(value, @"(?i)(?<![\w:])/(?:[^/\s,;]+/)*[^/\s,;]+", "[redacted-path]", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
         value = Regex.Replace(value, @"(?i)(?<![\w])(?:[A-Z]:\\|\\\\)[^\s,;]+", "[redacted-path]", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
         value = Regex.Replace(value, @"(?i)\bAuthorization\s*:\s*(Bearer|Basic)\s+[^\s,;]+", "Authorization=[redacted-secret]", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
-        value = Regex.Replace(value, @"(?i)\b(password|passwd|pwd|token|secret|api[_-]?key)\s*[=:]\s*[^\s,;]+", "$1=[redacted-secret]", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
-        value = Regex.Replace(value, "(?i)[\"']?(password|passwd|pwd|token|secret|api[_-]?key|authorization)[\"']?\\s*[=:]\\s*(?:\"[^\"]*\"|'[^']*'|[^\\s,;]+)", "$1=[redacted-secret]", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
+        value = Regex.Replace(value, """(?i)["']?(password|passwd|pwd|token|secret|api[_-]?key|connection[_-]?string|access[_-]?key|private[_-]?key|authorization)["']?\s*[=:]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;]+)""", "$1=[redacted-secret]", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
         value = Regex.Replace(value, @"(?i)\b(Bearer|Basic)\s+[A-Za-z0-9+/_.=-]+", "[redacted-authorization]", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(50));
         value = Regex.Replace(value, @"(?<![\w])(?<address>\[?[0-9A-Fa-f:.%]+\]?):(?<port>\d{1,5})(?![\w])", match =>
         {

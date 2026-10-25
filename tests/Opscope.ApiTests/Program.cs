@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Net;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Encodings.Web;
@@ -231,13 +232,15 @@ internal static class Program
         using var stop = new CancellationTokenSource();
         var historyPath = Path.Combine(Root, "server.sqlite");
         var collections = 0;
+        var failCollection = false;
         string? reflectedToken = null;
         var serverTask = LocalServer.RunAsync(new ServerOptions
         {
-            HistoryPath = historyPath, RetentionCount = 2, RefreshInterval = TimeSpan.FromSeconds(60),
+            HistoryPath = historyPath, RetentionCount = 3, RefreshInterval = TimeSpan.FromSeconds(60),
             CollectAsync = _ =>
             {
                 var call = Interlocked.Increment(ref collections);
+                if (failCollection) throw new InvalidOperationException("Fixture collection failure.");
                 var evidence = Fixture();
                 return Task.FromResult(evidence with
                 {
@@ -248,7 +251,12 @@ internal static class Program
                 });
             },
             OnStarted = address => { reflectedToken = address.Fragment[7..]; ready.TrySetResult(address); },
-            PolicyView = () => new { readOnly = true, ruleCount = 1 }
+            PolicyView = () => new { readOnly = true, ruleCount = 1 },
+            CloudActions = new Dictionary<string, Func<CancellationToken, Task<AnalysisReport>>>
+            {
+                ["fixture/success"] = _ => Task.FromResult(new AnalysisReport("cloud/fixture", DateTimeOffset.UtcNow, [], new { count = 1 }, ["A coverage limitation is not an operation failure."])),
+                ["fixture/failure"] = _ => Task.FromResult(new AnalysisReport("cloud/fixture", DateTimeOffset.UtcNow, [], new { detail = "reflected " + reflectedToken }, ["Provider coverage failed."]) { OperationSucceeded = false })
+            }
         }, stop.Token);
         try
         {
@@ -268,6 +276,11 @@ internal static class Program
             using (var response = await client.PostAsync("/mcp", new StringContent("{}", Encoding.UTF8, "application/json"))) Assert(response.StatusCode == HttpStatusCode.Unauthorized, "Unauthenticated MCP is rejected");
             using (var response = await client.PostAsync("/api/policy/preview", new StringContent("{}", Encoding.UTF8, "application/json"))) Assert(response.StatusCode == HttpStatusCode.Unauthorized, "Unauthenticated policy preview is rejected");
             using (var response = await client.PostAsync("/api/fleet", new StringContent("{}", Encoding.UTF8, "application/json"))) Assert(response.StatusCode == HttpStatusCode.Unauthorized, "Unauthenticated fleet comparison is rejected");
+            foreach (var path in new[] { "/api/analyze", "/api/report" })
+            {
+                using var response = await client.PostAsync(path, new StringContent("{}", Encoding.UTF8, "application/json"));
+                Assert(response.StatusCode == HttpStatusCode.Unauthorized, "Unauthenticated saved-evidence operation is rejected: " + path);
+            }
             using (var response = await client.GetAsync("/api/snapshot?token=" + token)) Assert(response.StatusCode == HttpStatusCode.Unauthorized, "Query-string token is not accepted as authentication");
             client.DefaultRequestHeaders.Add("X-Opscope-Token", token);
             using (var response = await client.GetAsync("/"))
@@ -334,6 +347,8 @@ internal static class Program
                 Assert(!text.Contains("api-private-host", StringComparison.Ordinal) && !text.Contains("private-failed.service", StringComparison.Ordinal) && !text.Contains(token, StringComparison.Ordinal), "Timeline redacts host, service identity, and session token");
             }
             await TestPolicyPreviewAsync(client, () => collections);
+            await TestOfflineAnalysisAsync(client, () => collections, token);
+            await TestUploadValidationAsync(client, bootstrap, token);
             using (var response = await client.PostAsync("/api/diff", new StringContent("{}", Encoding.UTF8, "application/json"))) Assert(response.StatusCode == HttpStatusCode.BadRequest, "Invalid baseline is rejected");
             using (var response = await client.PostAsync("/api/diff", new StringContent("{", Encoding.UTF8, "application/json"))) Assert(response.StatusCode == HttpStatusCode.BadRequest, "Malformed baseline JSON is rejected");
             using (var response = await client.PostAsync("/api/diff", new StringContent(Reporter.ToJson(Fixture()), Encoding.UTF8, "text/plain"))) Assert(response.StatusCode == HttpStatusCode.BadRequest, "Baseline upload requires JSON content type");
@@ -446,6 +461,35 @@ internal static class Program
                 Assert(events.Any(item => item.GetProperty("kind").GetString() == "baseline"), "Timeline includes retained baseline observation");
                 Assert(events.Any(item => item.GetProperty("kind").GetString() == "drift" && item.GetProperty("source").GetString() == "snapshot-diff"), "Timeline includes actual observed listener drift");
             }
+            await Task.Delay(2100);
+            using (var response = await client.PostAsync("/api/cloud/fixture/success", null))
+            {
+                Assert(response.IsSuccessStatusCode, "Successful cloud report with coverage warnings remains HTTP success");
+                using var report = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                Assert(report.RootElement.GetProperty("operationSucceeded").GetBoolean(), "Cloud report keeps its explicit success field");
+            }
+            await Task.Delay(2100);
+            using (var response = await client.PostAsync("/api/cloud/fixture/failure", null))
+            {
+                var text = await response.Content.ReadAsStringAsync();
+                using var report = JsonDocument.Parse(text);
+                Assert(response.StatusCode == HttpStatusCode.BadGateway && !report.RootElement.GetProperty("operationSucceeded").GetBoolean(), "Failed cloud coverage returns HTTP502 with its analysis report");
+                Assert(!text.Contains(token, StringComparison.Ordinal), "Cloud report free text cannot reflect the active session token");
+            }
+            await Task.Delay(2100);
+            DateTimeOffset previousObservation;
+            using (var previous = JsonDocument.Parse(await client.GetStringAsync("/api/snapshot"))) previousObservation = previous.RootElement.GetProperty("collectedAtUtc").GetDateTimeOffset();
+            using (var response = await client.PostAsync("/api/collect", null)) Assert(response.IsSuccessStatusCode, "A third observation is retained for nearest-baseline timeline comparison");
+            using (var response = await client.GetAsync("/api/timeline"))
+            {
+                using var report = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                var baselineEvent = report.RootElement.GetProperty("data").GetProperty("events").EnumerateArray().Single(item => item.GetProperty("kind").GetString() == "baseline");
+                Assert(response.IsSuccessStatusCode && baselineEvent.GetProperty("timestampUtc").GetDateTimeOffset() == previousObservation, "Live timeline chooses the nearest previous retained observation rather than the oldest history entry");
+            }
+            await Task.Delay(2100);
+            failCollection = true;
+            using (var response = await client.PostAsync("/api/collect", null)) Assert(response.StatusCode == HttpStatusCode.ServiceUnavailable, "Collection failure returns503 instead of being mislabeled as rate limiting");
+            using (var response = await client.GetAsync("/api/snapshot")) Assert(response.IsSuccessStatusCode, "Failed collection preserves the previous successful evidence");
         }
         finally
         {
@@ -456,6 +500,147 @@ internal static class Program
         // SQLite holds the database open while the server runs on Windows.
         // Inspect persisted bytes only after shutdown has disposed its connection.
         Assert(!Encoding.UTF8.GetString(File.ReadAllBytes(historyPath)).Contains(reflectedToken!, StringComparison.Ordinal), "History never stores session token");
+    }
+
+    private static async Task TestOfflineAnalysisAsync(HttpClient client, Func<int> collectionCount, string token)
+    {
+        var beforeCollections = collectionCount();
+        var beforeHistory = await client.GetStringAsync("/api/history");
+        var beforeLive = await client.GetStringAsync("/api/snapshot");
+        var snapshot = Fixture() with { CpuUsedPercent = 96, CollectionWarnings = ["Observed launch secret " + token] };
+        var baseline = snapshot with { CollectedAtUtc = snapshot.CollectedAtUtc.AddMinutes(-5), CpuUsedPercent = 10, Listeners = [] };
+        static StringContent Body(object value) => new(JsonSerializer.Serialize(value, new JsonSerializerOptions(JsonSerializerDefaults.Web)), Encoding.UTF8, "application/json");
+        using (var response = await client.PostAsync("/api/analyze", Body(new { snapshot, operation = "inspect" })))
+        {
+            var text = await response.Content.ReadAsStringAsync();
+            var inspected = Reporter.ParseSnapshot(text);
+            Assert(response.IsSuccessStatusCode && inspected.CpuUsedPercent == 96, "Saved snapshot inspection returns a validated flat Snapshot with uploaded observations");
+            Assert(inspected.Host.Hostname == "[redacted-host]" && !text.Contains("api-private-host", StringComparison.Ordinal) && !text.Contains("private-user", StringComparison.Ordinal) && !text.Contains("private-argument", StringComparison.Ordinal) && !text.Contains(token, StringComparison.Ordinal), "Saved inspection redacts identities, command arguments, and reflected session secrets");
+        }
+        foreach (var scenario in new[] { "high-cpu", "disk-full", "port-exposed" })
+        {
+            using var response = await client.PostAsync("/api/analyze", Body(new { snapshot, operation = "triage", scenario }));
+            var text = await response.Content.ReadAsStringAsync();
+            using var report = JsonDocument.Parse(text);
+            var data = report.RootElement.GetProperty("data");
+            Assert(response.IsSuccessStatusCode && report.RootElement.GetProperty("kind").GetString() == "triage" && data.GetProperty("scenario").GetString() == scenario && data.GetProperty("steps").GetArrayLength() == 3, "Saved triage uses shared guidance for " + scenario);
+            Assert(data.GetProperty("steps")[0].TryGetProperty("number", out _) && data.GetProperty("steps")[0].TryGetProperty("guidance", out _), "Triage result exposes numbered evidence and guidance");
+            Assert(!text.Contains("api-private-host", StringComparison.Ordinal) && !text.Contains("private-volume", StringComparison.Ordinal) && !text.Contains("192.0.2.35", StringComparison.Ordinal) && !text.Contains(token, StringComparison.Ordinal), "Saved triage redacts evidence for " + scenario);
+        }
+        var csv = "type,value,label\nprocess,worker,reflected " + token + "\nsha256," + new string('a', 64) + ",offline hash\n";
+        using (var response = await client.PostAsync("/api/analyze", Body(new { snapshot, operation = "ioc", indicators = new { format = "csv", text = csv } })))
+        {
+            var text = await response.Content.ReadAsStringAsync();
+            using var report = JsonDocument.Parse(text);
+            var data = report.RootElement.GetProperty("data");
+            Assert(response.IsSuccessStatusCode && data.GetProperty("indicatorCount").GetInt32() == 2 && data.GetProperty("matches").GetArrayLength() == 1, "Saved CSV IoCs compare exact recorded process evidence");
+            Assert(report.RootElement.GetProperty("warnings").EnumerateArray().Any(warning => warning.GetString()!.Contains("offline snapshots do not contain executable hashes", StringComparison.Ordinal)), "Offline IoC hash limitations are explicit without reading live executables");
+            Assert(!text.Contains(token, StringComparison.Ordinal) && !text.Contains("api-private-host", StringComparison.Ordinal), "Saved IoC labels and evidence cannot expose session token or host identity");
+        }
+        const string stix = """{"type":"bundle","objects":[{"type":"process","name":"worker"},{"type":"indicator","pattern":"[process:name = 'worker' OR process:name = 'other']"}]}""";
+        using (var response = await client.PostAsync("/api/analyze", Body(new { snapshot, operation = "ioc", indicators = new { format = "stix", text = stix } })))
+        {
+            using var report = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            Assert(response.IsSuccessStatusCode && report.RootElement.GetProperty("data").GetProperty("matches").GetArrayLength() == 1, "Saved STIX IoCs use the shared observable parser");
+            Assert(report.RootElement.GetProperty("warnings").EnumerateArray().Any(warning => warning.GetString()!.Contains("Unsupported STIX compound", StringComparison.Ordinal)), "Saved IoC results preserve import coverage warnings");
+        }
+        using (var response = await client.PostAsync("/api/analyze", Body(new { snapshot, operation = "timeline", baseline })))
+        {
+            using var report = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var events = report.RootElement.GetProperty("data").GetProperty("events").EnumerateArray().ToArray();
+            Assert(response.IsSuccessStatusCode && events.Any(item => item.GetProperty("kind").GetString() == "baseline") && events.Any(item => item.GetProperty("kind").GetString() == "drift"), "Saved timeline compares only the supplied baseline and observation");
+        }
+        foreach (var invalid in new object[]
+        {
+            new { snapshot, operation = "inspect", path = "/etc/passwd" },
+            new { snapshot, operation = "Inspect" },
+            new { snapshot, operation = "inspect", scenario = "high-cpu" },
+            new { snapshot, operation = "triage", scenario = "shell" },
+            new { snapshot, operation = "triage" },
+            new { snapshot, operation = "ioc", indicators = new { format = "json", text = stix } },
+            new { snapshot, operation = "ioc", indicators = new { format = "csv", text = csv, path = "/etc/passwd" } },
+            new { snapshot, operation = "ioc", indicators = new { format = "stix", text = "{\"type\":99}" } },
+            new { snapshot, operation = "ioc", indicators = new { format = "csv", text = "type,value\n" + new string('é', 65536) } },
+            new { snapshot, operation = "timeline", baseline = snapshot with { CollectedAtUtc = snapshot.CollectedAtUtc.AddMinutes(1) } },
+            new { snapshot = new { }, operation = "inspect" }
+        })
+        {
+            using var response = await client.PostAsync("/api/analyze", Body(invalid));
+            Assert(response.StatusCode == HttpStatusCode.BadRequest, "Saved analysis rejects malformed, extra, oversized, or operation-incompatible fields");
+        }
+        var validJson = JsonSerializer.Serialize(new { snapshot, operation = "inspect" }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        using (var response = await client.PostAsync("/api/analyze", new StringContent(validJson.Replace("\"operation\":\"inspect\"", "\"operation\":\"inspect\",\"operation\":\"inspect\"", StringComparison.Ordinal), Encoding.UTF8, "application/json")))
+            Assert(response.StatusCode == HttpStatusCode.BadRequest, "Saved analysis rejects duplicate request properties");
+        using (var response = await client.PostAsync("/api/analyze", new StringContent(validJson.Replace("\"operation\":\"inspect\"", "\"operation\":\"\\uD800\"", StringComparison.Ordinal), Encoding.UTF8, "application/json")))
+            Assert(response.StatusCode == HttpStatusCode.BadRequest, "Saved analysis rejects invalid escaped Unicode operation text");
+        using (var response = await client.PostAsync("/api/analyze", new StringContent(validJson[..^1] + ",\"\\uD800\":0}", Encoding.UTF8, "application/json")))
+            Assert(response.StatusCode == HttpStatusCode.BadRequest, "Saved analysis rejects invalid escaped Unicode property names");
+        await AssertOversizedJsonRejectedAsync(client, "/api/analyze", validJson, "Saved analysis total request is bounded to2MiB");
+        using (var document = JsonDocument.Parse(await client.GetStringAsync("/api/openapi.json")))
+        {
+            var paths = document.RootElement.GetProperty("paths");
+            var variants = paths.GetProperty("/api/analyze").GetProperty("post").GetProperty("requestBody").GetProperty("content").GetProperty("application/json").GetProperty("schema").GetProperty("oneOf");
+            Assert(variants.GetArrayLength() == 4 && variants.EnumerateArray().All(variant => !variant.GetProperty("additionalProperties").GetBoolean()), "OpenAPI documents each exact saved-analysis request variant");
+            Assert(paths.GetProperty("/api/report").TryGetProperty("post", out _), "OpenAPI exposes authenticated saved-snapshot export");
+        }
+        var contentTypes = new Dictionary<string, string> { ["json"] = "application/json", ["html"] = "text/html", ["pdf"] = "application/pdf", ["sarif"] = "application/sarif+json", ["junit"] = "application/xml", ["csv"] = "text/csv", ["jsonl"] = "application/x-ndjson", ["cef"] = "text/plain" };
+        foreach (var (format, contentType) in contentTypes)
+        {
+            using var response = await client.PostAsync("/api/report", Body(new { snapshot, format }));
+            var bytes = await response.Content.ReadAsByteArrayAsync();
+            var text = (format == "pdf" ? Encoding.Latin1 : Encoding.UTF8).GetString(bytes);
+            Assert(response.IsSuccessStatusCode && response.Content.Headers.ContentType?.MediaType == contentType && response.Content.Headers.ContentDisposition?.DispositionType == "attachment", "Saved snapshot exports as a typed attachment: " + format);
+            Assert(!text.Contains("api-private-host", StringComparison.Ordinal) && !text.Contains("private-user", StringComparison.Ordinal) && !text.Contains("private-argument", StringComparison.Ordinal) && !text.Contains(token, StringComparison.Ordinal), "Saved report export remains redacted and token-free: " + format);
+            if (format == "json") Assert(Reporter.ParseSnapshot(text).CpuUsedPercent == 96, "Saved JSON report exports the chosen uploaded snapshot instead of live evidence");
+            if (format == "pdf") Assert(text.StartsWith("%PDF-1.4", StringComparison.Ordinal), "Saved PDF report is an actual PDF document");
+        }
+        foreach (var value in new object[] { new { snapshot, format = "shell" }, new { snapshot, format = "html", path = "/tmp/report" }, new { snapshot = new { }, format = "html" } })
+        {
+            using var response = await client.PostAsync("/api/report", Body(value));
+            Assert(response.StatusCode == HttpStatusCode.BadRequest, "Saved report rejects unsupported formats, output paths, and invalid snapshots");
+        }
+        Assert(collectionCount() == beforeCollections && await client.GetStringAsync("/api/history") == beforeHistory, "Saved inspection, analysis, exports, and validation failures invoke no collectors and write no history");
+        Assert(await client.GetStringAsync("/api/snapshot") == beforeLive, "Saved evidence never overwrites the cached live snapshot");
+    }
+
+    private static async Task TestUploadValidationAsync(HttpClient client, Uri bootstrap, string token)
+    {
+        var json = Reporter.ToJson(Fixture());
+        var invalidUtf8 = Encoding.UTF8.GetBytes(json);
+        invalidUtf8[json.IndexOf("private-volume", StringComparison.Ordinal)] = 0xff;
+        using (var body = new ByteArrayContent(invalidUtf8))
+        {
+            body.Headers.ContentType = new("application/json");
+            using var response = await client.PostAsync("/api/diff", body);
+            Assert(response.StatusCode == HttpStatusCode.BadRequest, "Malformed UTF8 inside otherwise valid snapshot text is rejected rather than replaced");
+        }
+        using (var body = new StringContent(json, Encoding.UTF8, "application/json"))
+        {
+            body.Headers.ContentType!.CharSet = "utf-16";
+            using var response = await client.PostAsync("/api/diff", body);
+            Assert(response.StatusCode == HttpStatusCode.BadRequest, "JSON upload cannot claim a conflicting nonUTF8 charset");
+        }
+        using var connection = new TcpClient();
+        await connection.ConnectAsync(IPAddress.Loopback, bootstrap.Port);
+        using var stream = connection.GetStream();
+        var headers = $"POST /api/analyze HTTP/1.1\r\nHost: 127.0.0.1:{bootstrap.Port}\r\nX-Opscope-Token: {token}\r\nContent-Type: application/json\r\nContent-Length: 3\r\nConnection: close\r\n\r\n{{";
+        await stream.WriteAsync(Encoding.ASCII.GetBytes(headers));
+        await stream.FlushAsync();
+        using var reader = new StreamReader(stream, Encoding.ASCII);
+        using var secondConnection = new TcpClient();
+        await secondConnection.ConnectAsync(IPAddress.Loopback, bootstrap.Port);
+        using var secondStream = secondConnection.GetStream();
+        await secondStream.WriteAsync(Encoding.ASCII.GetBytes(headers.Replace("/api/analyze", "/api/report", StringComparison.Ordinal)));
+        await secondStream.FlushAsync();
+        await Task.Delay(100);
+        using (var response = await client.PostAsync("/api/analyze", new StringContent("{}", Encoding.UTF8, "application/json")))
+            Assert(response.StatusCode == HttpStatusCode.TooManyRequests, "Saved analysis and export share a two-operation concurrency limit");
+        using (var response = await client.GetAsync("/api/snapshot")) Assert(response.IsSuccessStatusCode, "Busy saved-evidence operations leave live evidence readable");
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var status = await reader.ReadLineAsync(deadline.Token);
+        Assert(status?.StartsWith("HTTP/1.1 408", StringComparison.Ordinal) == true, "Authenticated stalled uploads receive408 within the bounded upload deadline");
+        using var health = await client.GetAsync("/api/snapshot");
+        Assert(health.IsSuccessStatusCode, "Stalled upload timeout leaves live evidence available");
     }
 
     private static async Task TestPolicyPreviewAsync(HttpClient client, Func<int> collectionCount)

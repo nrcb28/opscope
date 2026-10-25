@@ -14,15 +14,19 @@ There is no elevation path in the application: it does not invoke `sudo`, `runas
 
 ## Added modules
 
-The local API listens only on 127.0.0.1 and uses a fresh session token, exact Host/Origin/referrer checks, Fetch Metadata checks, strict CSP and no CORS grant. Tokens are scrubbed from collected evidence, including full views. UI policy editing is preview/download only. History is private, bounded, retained by age/count and redacted before storage; uploaded baselines/fleets are validated and not saved. Metrics/SSE/HTTP MCP require authentication; stdio MCP has only narrow snapshot/finding tools.
+The local API listens only on 127.0.0.1 and uses a fresh session token, exact Host/Origin/referrer checks, Fetch Metadata checks, strict CSP and no CORS grant. Tokens are scrubbed from collected evidence, including full views. UI policy editing is preview/download only. History is private, bounded, retained by age/count and redacted before storage; uploaded baselines/fleets and saved-analysis inputs are validated and not saved. Saved analysis never replaces the live collector or reads native evidence. Its strict UTF-8 uploads have byte limits, a ten-second deadline and a shared bounded analysis/export gate. Metrics/SSE/HTTP MCP require authentication; stdio MCP has only narrow snapshot/finding tools.
 
 Cloud helpers use a separate read-operation allowlist and existing official CLI sessions. They never start login, install extensions, enable services, retrieve secret values, run commands on cloud hosts or patch resources. Azure child telemetry/dynamic installation/auto-upgrade and AWS interactive prompts are disabled. Authentication caches remain controlled by those CLIs and are never copied to evidence. Metadata is explicit, identity-only and bounded; AWS always uses IMDSv2 with no credential-path fallback.
+
+Cloud command options have exact names, arity and literal-value checks; unrecognized, repeated, endpoint/credential overrides and file/URL expansion are rejected. AWS response shapes must match the requested projection before an empty result is treated as successful. Azure resource IDs must agree with their subscription fields and the selected scope. Local/cloud linkage requires a successful normalized VM/instance report and matching identity, not an arbitrary embedded identifier.
 
 Notification/log delivery requires explicit confirmation, a configured existing destination and appropriate separate credentials. Preview is the default; only bounded redacted summaries can be sent. No notification path is exposed in the web UI. Paid services are not enabled automatically.
 
 Policies and packs reject arbitrary commands, unknown/duplicate keys, tags, anchors, aliases and escaping/cyclic inheritance. Bundles have bounded entry validation, SHA-256 manifests/checksums, optional RSA-PSS authentication with an independently trusted public key, and optional AES-GCM/RSA-OAEP encryption. Keys are not included. Hashes alone do not authenticate the origin. Keep selected input, output, key, history and configuration paths trusted when operating as Administrator/root.
 
 Redaction minimizes known identifiers and secret patterns, not every context-specific meaning. Counts, timing, package/runtime versions and retained operational context may still be sensitive. Coverage gaps are explicit; a password-required flag does not prove a blank password, and enabled firewall state does not prove every listener protected.
+
+Structured credential aliases and values repeated in findings/warnings enter the shared redaction context. If that bounded context cannot be collected completely, report text and non-schema dictionary keys are omitted with an explicit warning; numeric evidence and finding severity remain. This prevents a large report from silently falling back to incomplete text sanitization. Saved CLI inputs reject live-only commands and collection modifiers to prevent evidence from different hosts being mixed.
 
 ## Reporting a vulnerability
 

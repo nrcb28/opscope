@@ -79,6 +79,14 @@ Local collection does not contact cloud metadata or delivery endpoints by defaul
         {
             var token = cancellation.Token;
             var verb = options.Positionals.ElementAtOrDefault(1) ?? "";
+            var savedInput = options.Optional("input") ?? (command == "report" ? options.Positionals.ElementAtOrDefault(1) : null);
+            if (savedInput is not null)
+            {
+                if (command is not ("snapshot" or "doctor" or "collect" or "bundle" or "offline" or "report" or "triage" or "ioc" or "timeline" or "policy" or "plugins" or "notify" or "diff"))
+                    throw new CliException($"{command} cannot use a saved snapshot. Omit --input to collect the current host.");
+                if (options.Has("cloud-context") || options.Has("evidence") || options.Has("pack") || options.Has("no-processes") || options.Has("no-network") || options.Has("no-services") || options.Has("top"))
+                    throw new CliException("Collection options require a fresh local collection and cannot be combined with a saved snapshot. Analyze the evidence already stored in the snapshot instead.");
+            }
             if (command == "serve") return await ServeAsync(options, token);
             if (command == "mcp") { await McpServer.RunAsync(ct => CollectConfiguredAsync(options, ct), token); return 0; }
             if (command is "tui" or "watch") return await WatchAsync(options, token);
@@ -129,10 +137,8 @@ Local collection does not contact cloud metadata or delivery endpoints by defaul
             }
             if (command is not ("snapshot" or "doctor" or "collect" or "bundle" or "offline" or "report" or "triage" or "ioc" or "timeline" or "environment" or "policy" or "plugins" or "notify"))
                 throw new CliException($"Unsupported extended command '{command}'.");
-            var input = options.Optional("input") ?? (command == "report" ? options.Positionals.ElementAtOrDefault(1) : null);
+            var input = savedInput;
             var snapshot = input is null ? await CollectConfiguredAsync(options, token) : ApplyPolicies(await SnapshotIO.ReadAsync(input, token), options);
-            if (input is not null && (options.Has("evidence") || options.Optional("pack") is { } inputPack && CollectionPack.Load(inputPack).EvidenceGroups.Count > 0))
-                throw new CliException("Native evidence requires a fresh local collection. Omit --input, or analyze the reports already stored in the snapshot.");
             var extras = await ExtraReportsAsync(snapshot, options, token);
             if (command is "policy" or "plugins")
             {

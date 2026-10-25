@@ -15,6 +15,9 @@ import uuid
 import zipfile
 
 RIDS = ("linux-x64", "linux-arm64", "win-x64", "win-arm64", "osx-x64", "osx-arm64")
+VERSION_NUMBER = r"(?:0|[1-9][0-9]*)"
+PRERELEASE_IDENTIFIER = r"(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+VERSION_PATTERN = rf"{VERSION_NUMBER}\.{VERSION_NUMBER}\.{VERSION_NUMBER}(?:-{PRERELEASE_IDENTIFIER}(?:\.{PRERELEASE_IDENTIFIER})*)?"
 
 
 def digest(path, algorithm="sha256"):
@@ -26,13 +29,18 @@ def digest(path, algorithm="sha256"):
 
 
 def validate_version(version):
-    if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", version):
+    if not re.fullmatch(VERSION_PATTERN, version):
         raise ValueError("Version must be a concrete semantic version.")
     return version
 
 
 def files_in(directory):
-    directory = Path(directory).resolve()
+    directory = Path(directory)
+    if directory.is_symlink():
+        raise ValueError("Release input must not contain symbolic links.")
+    if not directory.is_dir():
+        raise ValueError("Release input must be an existing directory.")
+    directory = directory.resolve()
     files = sorted(directory.rglob("*"))
     if any(path.is_symlink() for path in files):
         raise ValueError("Release input must not contain symbolic links.")
@@ -113,7 +121,8 @@ def manifests(directory, output, version, repository):
     validate_version(version)
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ValueError("Repository must be owner/name.")
-    directory, output = Path(directory), Path(output)
+    directory, _ = files_in(directory)
+    output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     hashes = {}
     base = f"https://github.com/{repository}/releases/download/v{version}"
@@ -148,14 +157,17 @@ def manifests(directory, output, version, repository):
 
 
 def checksums(directory, output):
-    root = Path(directory).resolve()
+    root, files = files_in(directory)
     output = Path(output).resolve()
     lines = []
-    for path in sorted(root.rglob("*")):
-        if path.is_symlink():
-            raise ValueError("Checksum input must not contain symlinks.")
-        if path.is_file() and path.resolve() != output and not path.name.endswith(".sig"):
-            lines.append(f"{digest(path)}  {path.relative_to(root).as_posix()}")
+    for path in files:
+        if path.resolve() != output and not path.name.endswith(".sig"):
+            name = path.relative_to(root).as_posix()
+            escaped = any(character in name for character in "\\\r\n")
+            if escaped:
+                name = name.replace("\\", "\\\\").replace("\r", "\\r").replace("\n", "\\n")
+            # GNU checksum tools prefix escaped records with a backslash.
+            lines.append(("\\" if escaped else "") + f"{digest(path)}  {name}")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("\n".join(lines) + "\n", encoding="utf-8")
 

@@ -428,16 +428,23 @@ public sealed class AzureProvider(ICloudCommandRunner runner) : ICloudProvider
                     Warnings.Add($"Azure {evidence} returned an unsupported response shape; no resource evidence was inferred.");
                     return rows;
                 }
-                SuccessfulGraphQueries++;
+                var invalidScope = false;
                 var items = body.ValueKind == JsonValueKind.Array ? body.EnumerateArray().ToArray() : Array(body, "data").ToArray();
                 foreach (var item in items)
                 {
                     if (item.ValueKind != JsonValueKind.Object) continue;
                     var row = Project(item, fields);
+                    if (!HasConsistentSubscription(row)) { invalidScope = true; continue; }
                     if (!InScope(row)) continue;
                     rows.Add(row);
                     if (rows.Count >= MaxRows) break;
                 }
+                if (invalidScope)
+                {
+                    if (required) OperationSucceeded = false;
+                    Warnings.Add($"Azure {evidence} contained resource identities with missing, inconsistent or unrequested subscription scope; those rows were excluded and coverage is incomplete.");
+                }
+                else SuccessfulGraphQueries++;
                 token = ContinuationToken(body);
                 if (token.Length == 0)
                 {
@@ -448,6 +455,26 @@ public sealed class AzureProvider(ICloudCommandRunner runner) : ICloudProvider
                 if (page == 9 || rows.Count >= MaxRows) { Warnings.Add($"Azure {evidence} reached the 10,000-row collection limit; results are incomplete."); break; }
             }
             return rows;
+        }
+        private bool HasConsistentSubscription(Dictionary<string, object?> row)
+        {
+            var subscription = Text(row, "subscriptionId");
+            if (subscription.Length > 0 && (!Guid.TryParseExact(subscription, "D", out _) || !Subscriptions.Contains(subscription, StringComparer.OrdinalIgnoreCase))) return false;
+            foreach (var field in new[] { "id", "resourceId", "targetResource" })
+            {
+                var id = Text(row, field);
+                if (!id.StartsWith("/subscriptions", StringComparison.OrdinalIgnoreCase)) continue;
+                var parts = id.Split('/');
+                if (parts.Length < 4 || !parts[1].Equals("subscriptions", StringComparison.OrdinalIgnoreCase) || !Guid.TryParseExact(parts[2], "D", out _)
+                    || !Subscriptions.Contains(parts[2], StringComparer.OrdinalIgnoreCase)
+                    || subscription.Length > 0 && !subscription.Equals(parts[2], StringComparison.OrdinalIgnoreCase)) return false;
+                subscription = parts[2];
+            }
+            if (subscription.Length == 0) return false;
+            // Use the concrete ARM identity when projected subscription metadata is absent.
+            // Preserve that verified scope in exported CloudResource.Account as well.
+            row["subscriptionId"] = subscription;
+            return true;
         }
         private bool InScope(Dictionary<string, object?> row)
         {

@@ -50,6 +50,13 @@ internal static class Program
             var result = await NotificationSender.SendAsync(Report, new("teams", "https://example.com/", true), large);
             Check(result.Sent && result.Message.Contains("discarded", StringComparison.Ordinal), "oversized service body is discarded while preserving accepted status");
         }
+        foreach (var status in new[] { HttpStatusCode.Created, HttpStatusCode.BadRequest })
+        {
+            using var brokenBody = new BrokenBodyHandler(status);
+            var result = await NotificationSender.SendAsync(Report, new("teams", "https://example.com/", true), brokenBody);
+            Check(result.StatusCode == (int)status && result.Sent == (status == HttpStatusCode.Created), "Known delivery status survives an unreadable discarded response body");
+            Check(!JsonSerializer.Serialize(result).Contains(Secret, StringComparison.Ordinal), "Response-body failure exposes no exception detail");
+        }
         var aws = new FakeCommand();
         var awsOptions = new NotificationOptions("cloudwatch", ConfirmSend: true, LogGroup: "/opscope/reports", LogStream: "manual", Region: "us-east-1", Profile: "review");
         var cloudwatch = await NotificationSender.SendAsync(Report, awsOptions, aws);
@@ -58,6 +65,12 @@ internal static class Program
         Check(awsArguments.Contains("--profile") && awsArguments.Contains("--region") && !string.Join(" ", awsArguments).Contains(Secret, StringComparison.Ordinal), "CloudWatch uses requested scope and redacted inline events");
         var noSend = await NotificationSender.SendAsync(Report, awsOptions with { ConfirmSend = false }, aws);
         Check(!noSend.Sent && aws.Calls == 1, "CloudWatch preview never spawns CLI");
+        foreach (var response in new[] { "null", "[]", "\"unexpected\"", "true", "42" })
+        {
+            var malformed = new FakeCommand(response);
+            var result = await NotificationSender.SendAsync(Report, awsOptions, malformed);
+            Check(!result.Sent && malformed.Calls == 1 && result.Message.Contains("unknown", StringComparison.Ordinal), "CloudWatch rejects a non-object CLI response without crashing");
+        }
         using var cancellation = new CancellationTokenSource();
         cancellation.Cancel();
         try { await NotificationSender.SendAsync(Report, new("slack"), cancellation.Token); throw new InvalidOperationException("Cancelled delivery did not cancel."); }
@@ -82,7 +95,7 @@ internal static class Program
             return new(status) { Content = new StringContent(response), Headers = { Location = new Uri("https://never-follow.example/") } };
         }
     }
-    private sealed class FakeCommand : INotificationCommandRunner
+    private sealed class FakeCommand(string response = "{}") : INotificationCommandRunner
     {
         public int Calls { get; private set; }
         public IReadOnlyList<string>? Arguments { get; private set; }
@@ -90,7 +103,17 @@ internal static class Program
         {
             Check(tool == "aws", "Only AWS CLI is used for CloudWatch delivery.");
             Calls++; Arguments = arguments;
-            return Task.FromResult(new CommandResult(0, "{}", "", false));
+            return Task.FromResult(new CommandResult(0, response, "", false));
         }
+    }
+    private sealed class BrokenBodyHandler(HttpStatusCode status) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(status) { Content = new BrokenContent() });
+    }
+    private sealed class BrokenContent : HttpContent
+    {
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => Task.FromException(new IOException(Secret));
+        protected override bool TryComputeLength(out long length) { length = 0; return false; }
     }
 }

@@ -10,6 +10,7 @@
 <button class="nav-item" data-view="findings"><span aria-hidden="true">◇</span><span data-i18n="findings">Findings</span><span id="finding-badge" class="badge">—</span></button>
 <button class="nav-item" data-view="processes"><span aria-hidden="true">⌘</span><span data-i18n="processes">Processes & ports</span></button>
 <button class="nav-item" data-view="services"><span aria-hidden="true">≡</span><span data-i18n="services">Services</span></button>
+<button class="nav-item" data-view="analysis"><span aria-hidden="true">⌁</span><span data-i18n="analysis">Saved evidence lab</span></button>
 <button class="nav-item" data-view="drift"><span aria-hidden="true">⇄</span><span data-i18n="drift">Drift comparison</span></button>
 <button class="nav-item" data-view="fleet"><span aria-hidden="true">▦</span><span data-i18n="fleet">Fleet comparison</span></button>
 <button class="nav-item" data-view="history"><span aria-hidden="true">◷</span><span data-i18n="history">History & timeline</span></button>
@@ -19,6 +20,7 @@
 <button class="nav-item" data-view="settings"><span aria-hidden="true">⚙</span><span data-i18n="settings">Settings</span></button>
 </nav><div class="sidebar-foot"><span class="eyebrow">OPSCOPE</span><p data-i18n="sideNote">Local evidence.<br>Clear decisions.</p><small data-i18n="readOnlyNote">No host changes are available.</small></div></aside>
 <main id="content" tabindex="-1"><div class="page-head"><div><p class="eyebrow" data-i18n="observability">HOST OBSERVABILITY</p><h1 id="page-title">Overview</h1><p id="page-description" class="muted" data-i18n="description">A clear view of this host, from the evidence it provides.</p></div><button id="collect" class="primary"><span aria-hidden="true">↻</span><span data-i18n="collect">Collect now</span></button></div>
+<div id="source-context" class="source-context" aria-label="Evidence source"></div>
 <div class="search-wrap"><span aria-hidden="true">⌕</span><label class="sr-only" for="search" data-i18n="search">Search all evidence</label><input id="search" type="search" autocomplete="off" data-placeholder="search" placeholder="Search all evidence"><kbd>Ctrl K</kbd></div><div id="search-results" hidden aria-live="polite"></div>
 <p id="notice" class="notice" role="status" hidden></p><div id="view"></div><footer><span id="collected-at">—</span><span data-i18n="footer">Evidence stays on this device.</span></footer></main></div>
 </body></html>

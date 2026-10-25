@@ -14,6 +14,7 @@ internal static class Program
         await TestSafeFailures();
         await TestSubscriptionValidation();
         await TestSubscriptionScope();
+        await TestResourceScopeProvenance();
         await TestCancellation();
         await TestNsgExposureAndArcStatus();
         await TestCostCandidates();
@@ -97,6 +98,47 @@ internal static class Program
         var query = runner.Calls.First(call => call.Arguments.Take(2).SequenceEqual(new[] { "graph", "query" }));
         Assert(query.Arguments.Contains("--subscriptions") && query.Arguments.Contains(Subscription) && query.Arguments.Contains(secondSubscription), "Graph query explicitly scopes all subscriptions");
         runner.AssertReadOnly();
+    }
+
+    private static async Task TestResourceScopeProvenance()
+    {
+        const string outsideSubscription = "22222222-2222-2222-2222-222222222222";
+        var outsideId = VmId.Replace(Subscription, outsideSubscription, StringComparison.Ordinal);
+        var invalidRows = new object[]
+        {
+            new { id = outsideId, name = "vm-a", type = "microsoft.compute/virtualmachines", subscriptionId = Subscription },
+            new { id = outsideId, name = "vm-a", type = "microsoft.compute/virtualmachines" },
+            new { id = VmId, name = "vm-a", type = "microsoft.compute/virtualmachines", subscriptionId = outsideSubscription },
+            new { id = "unscoped-resource", name = "vm-a", type = "microsoft.compute/virtualmachines" },
+            new { id = VmId, name = "vm-a", type = "microsoft.compute/virtualmachines", subscriptionId = "not-a-guid" }
+        };
+        foreach (var row in invalidRows)
+        {
+            var runner = new FakeRunner((_, _) => GraphRows(row));
+            var inventory = await new AzureProvider(runner).CollectAsync("inventory", Options());
+            var resourceData = JsonSerializer.SerializeToElement(inventory.Data).GetProperty("resources");
+            Assert(!inventory.OperationSucceeded && resourceData.GetArrayLength() == 0 && inventory.Warnings is { Count: > 0 }, "inconsistent or missing subscription provenance cannot become successful empty inventory");
+            var options = Options();
+            options["resource"] = "vm-a";
+            var vm = await new AzureProvider(runner).CollectAsync("vm", options);
+            Assert(!vm.OperationSucceeded && runner.Calls.All(call => call.Arguments.Take(2).SequenceEqual(new[] { "graph", "query" })), "rejected resource scope cannot trigger VM follow-up queries");
+        }
+        var missingSubscription = await new AzureProvider(new FakeRunner((_, _) => GraphRows(new { id = VmId, name = "vm-a", type = "microsoft.compute/virtualmachines" }))).CollectAsync("inventory", Options());
+        var retained = JsonSerializer.SerializeToElement(missingSubscription.Data).GetProperty("resources");
+        Assert(missingSubscription.OperationSucceeded && retained.GetArrayLength() == 1 && retained[0].GetProperty("Account").GetString() == Subscription, "a valid scoped ARM ID supplies missing subscription metadata without losing provenance");
+
+        var multiScope = Options();
+        multiScope["subscriptions"] = Subscription + "," + outsideSubscription;
+        var mismatched = await new AzureProvider(new FakeRunner((_, _) => GraphRows(invalidRows[0]))).CollectAsync("inventory", multiScope);
+        Assert(!mismatched.OperationSucceeded, "two individually allowed subscriptions cannot disagree within one resource identity");
+
+        var healthRunner = new FakeRunner((_, args) => GraphQuery(args).StartsWith("Resources", StringComparison.Ordinal)
+            ? GraphRows()
+            : GraphQuery(args).StartsWith("ServiceHealthResources", StringComparison.Ordinal)
+                ? GraphRows(new { id = outsideId, subscriptionId = Subscription, status = "Active" })
+                : GraphRows(new { id = "health-event", subscriptionId = Subscription, resourceId = outsideId, targetResource = outsideId, availabilityState = "Unavailable", monitorCondition = "Fired", alertState = "New", severity = "Sev0" }));
+        var health = await new AzureProvider(healthRunner).CollectAsync("health", Options());
+        Assert(!health.OperationSucceeded && health.Findings.Count == 0, "out-of-scope related resource IDs cannot generate local-scope health findings or successful coverage");
     }
 
     private static async Task TestCancellation()
@@ -360,6 +402,7 @@ internal static class Program
         public Task<JsonElement> RunAsync(string tool, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            _ = TrustedCloudCommandRunner.PrepareArguments(tool, arguments);
             Calls.Add((tool, arguments.ToArray()));
             using var document = JsonDocument.Parse(answer(tool, arguments));
             return Task.FromResult(document.RootElement.Clone());

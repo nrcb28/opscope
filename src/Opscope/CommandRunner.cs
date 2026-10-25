@@ -122,7 +122,7 @@ internal static class CommandRunner
     {
         if (Path.IsPathFullyQualified(fileName)) return fileName;
 
-        if (OperatingSystem.IsWindows() && fileName is "netstat" or "netsh" or "sc.exe")
+        if (OperatingSystem.IsWindows() && fileName is "netstat" or "netsh" or "sc.exe" or "tasklist.exe" or "wevtutil.exe")
             return Path.Combine(Environment.SystemDirectory, fileName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? fileName : $"{fileName}.exe");
 
         if (OperatingSystem.IsLinux())
@@ -226,6 +226,9 @@ internal static class CommandRunner
         "ss" => ["/usr/bin/ss", "/usr/sbin/ss", "/bin/ss"],
         "systemctl" => ["/usr/bin/systemctl", "/bin/systemctl"],
         "ip" => ["/usr/bin/ip", "/usr/sbin/ip", "/bin/ip"],
+        "lsof" => ["/usr/bin/lsof", "/usr/sbin/lsof", "/bin/lsof"],
+        "journalctl" => ["/usr/bin/journalctl", "/bin/journalctl"],
+        "resolvectl" => ["/usr/bin/resolvectl", "/bin/resolvectl"],
         "ufw" => ["/usr/sbin/ufw", "/usr/bin/ufw"],
         "firewall-cmd" => ["/usr/bin/firewall-cmd", "/bin/firewall-cmd"],
         "nft" => ["/usr/sbin/nft", "/usr/bin/nft"],

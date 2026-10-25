@@ -152,6 +152,9 @@ tests.Add(("redaction context overflow omits text with an explicit coverage warn
     Check(json.RootElement.GetProperty("warnings").EnumerateArray().Any(warning => warning.GetString()!.Contains("Redaction context", StringComparison.Ordinal)), "Context overflow lacks an explicit coverage warning");
     var complete = ReportSecurity.Redact(report with { Data = new { resources }, Findings = [], Warnings = [] });
     Check(complete.Warnings?.Count == 0, "Exactly 1024 fully collected identifiers were reported as incomplete");
+    var ordinary = ReportSecurity.Redact(report with { Data = new { tags = new { environment = "QA" } },
+        Findings = [new(FindingSeverity.Warning, "CONTROL", "Review", "Review collected evidence", "Review")], Warnings = [] });
+    Check(ordinary.Warnings?.Count == 0 && ordinary.Findings[0].Code == "CONTROL", "Short metadata caused a spurious context limit or discarded finding text");
     return Task.CompletedTask;
 }));
 tests.Add(("manifest tampering detected after recomputing outer hash", async () =>

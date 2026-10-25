@@ -73,7 +73,7 @@ public static class ReportSecurity
         }
         else if ((secret || identifier) && node is JsonValue value && value.TryGetValue<string>(out var text))
         {
-            if (text.Length > 16384 || secret && text.Length is > 0 and < 3) return false;
+            if (text.Length > 16384) return false;
             if (text.Length >= 3 && !identifiers.Contains(text))
             {
                 if (identifiers.Count >= 1024) return false;

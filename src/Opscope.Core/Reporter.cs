@@ -8,6 +8,8 @@ namespace Opscope;
 
 public static class Reporter
 {
+    // EN: Presentation sanitization and identifier redaction are separate; detailed snapshots remain an explicit local mode.
+    // ES: El saneado de presentación y la redacción de identidades son distintos; los snapshots detallados conservan su uso local explícito.
     private static readonly string[] BundleFiles = ["snapshot.json", "findings.json", "README.txt", "manifest.json"];
     private static readonly IReadOnlyList<string> RedactedAddresses = ["[redacted-addresses]"];
     private static readonly JsonSerializerOptions JsonOptions = new()

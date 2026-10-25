@@ -1,4 +1,6 @@
 'use strict';
+// EN: Session tokens and evidence stay in memory; only language/theme preferences may persist.
+// ES: Los tokens de sesión y la evidencia permanecen en memoria; solo se guardan idioma y tema.
 (() => {
 const $ = id => document.getElementById(id);
 const token = new URLSearchParams(location.hash.slice(1)).get('token');
@@ -60,6 +62,7 @@ let cloudAction = null, cloudBusy = false, cloudError = null, cloudVersion = 0;
 let analysisExportFormat = 'json', policyBusy = false, collectionBusy = false, cooldownUntil = 0, snapshotVersion = 0;
 const tablePages = new Map();
 let lastBundleChecksum = null, fleetSnapshots = [], fleetReport = null, fleetError = null, fleetBusy = false;
+let driftBusy = false, driftVersion = 0;
 let privacyVersion = 0, safeSnapshot = null, timelineReport = null, policyPreview = null, policyError = null, policyValidatedText = null;
 let policyYaml = 'version: 1\nthresholds:\n  cpuWarningPercent: 85\n  cpuCriticalPercent: 95\n  memoryWarningPercent: 85\n  memoryCriticalPercent: 95\n  diskWarningPercent: 85\n  diskCriticalPercent: 95\nrequiredServices: []\nrules: []\n';
 let lang = 'en', view = 'overview', snapshot = null, entries = [], settings = null, capabilities = {cloud:[],policy:false}, baseline = null, diff = null, selectedSample = null, severity = 'all', sort = 'memorySort', cloudResult = null, policyResult = null, disposed = false;
@@ -76,6 +79,8 @@ const match = value => !String($('search').value).trim() || JSON.stringify(value
 function notice(message){$('notice').textContent=message;$('notice').hidden=!message;}
 function translate(){document.documentElement.lang=lang;$('language').value=lang;document.querySelectorAll('[data-i18n]').forEach(node=>node.textContent=t(node.dataset.i18n));document.querySelectorAll('[data-placeholder]').forEach(node=>node.placeholder=t(node.dataset.placeholder));$('privacy').textContent=t($('full').checked?'fullWarning':'redacted');$('connection').textContent=t(snapshot?'connected':token?'connecting':'disconnected');$('page-title').textContent=t(view);render();}
 async function api(path, options = {}) {
+    // EN: Authenticate local requests and expose bounded failure details without automatic write retries.
+    // ES: Se autentican las peticiones locales y se muestran errores acotados sin reintentar escrituras automáticamente.
     const response = await fetch(path, {...options, headers:{'X-Opscope-Token':token || '', ...options.headers}, credentials:'omit', cache:'no-store', referrerPolicy:'no-referrer'});
     if (response.ok) return response;
     let message = response.status === 429 ? t('busy') : t('error'), failureReport = null;
@@ -111,6 +116,8 @@ function navigate(next){view=next;document.querySelectorAll('.nav-item').forEach
 function panel(title){const node=el('section',null,'panel');node.append(el('h2',title));return node;}
 function empty(parent,message='noData'){parent.append(el('p',t(message),'empty'));}
 function paginate(items, renderItems, key) {
+    // EN: Mount only one page of rows so large evidence sets do not flood the DOM.
+    // ES: Solo se monta una página de filas para que grandes conjuntos de evidencia no saturen el DOM.
     const wrap = el('div'), size = 50, total = Math.max(1, Math.ceil(items.length / size));
     let page = Math.min(tablePages.get(key) || 0, total - 1);
     const body = el('div'), controls = el('div', null, 'pagination');
@@ -180,8 +187,107 @@ function parseDuration(value){const parts=String(value||'0').split(':');return p
 function showFindings(){const wrap=panel(t('findings')),controls=el('div',null,'control-row'),label=el('label',t('severity')),select=el('select');select.id='severity-filter';label.htmlFor=select.id;['all','critical','warning','info'].forEach(level=>{const option=el('option',t(level));option.value=level;select.append(option);});select.value=severity;select.addEventListener('change',()=>{severity=select.value;tablePages.clear();render();});append(controls,label,select);append(wrap,controls,findingsList(snapshot.findings.filter(f=>match(f)&&(severity==='all'||severityName(f.severity)===severity))));$('view').append(wrap);}
 function showProcesses(){const wrap=panel(t('processList')),controls=el('div',null,'control-row'),label=el('label',t('sort')),select=el('select');select.id='process-sort';label.htmlFor=select.id;['memorySort','cpuSort','nameSort'].forEach(key=>{const option=el('option',t(key));option.value=key;select.append(option);});select.value=sort;select.addEventListener('change',()=>{sort=select.value;tablePages.clear();render();});append(controls,label,select);const data=snapshot.processes.filter(match).sort((a,b)=>sort==='nameSort'?a.name.localeCompare(b.name):sort==='cpuSort'?parseDuration(b.cpuTime)-parseDuration(a.cpuTime):b.workingSetBytes-a.workingSetBytes);append(wrap,controls,table(['pid','name','user','workingSet','cpuTime','command'],data.map(p=>[p.id,p.name,p.user,number(p.workingSetMb),p.cpuTime,p.commandLine])));const ports=panel(t('portList'));ports.append(table(['protocol','address','process','source'],snapshot.listeners.filter(match).map(p=>[p.protocol,p.localAddress,p.process,p.source])));$('view').append(wrap,ports);}
 function showServices(){const wrap=panel(t('services'));wrap.append(table(['name','state','serviceDescription','source'],snapshot.services.filter(match).map(s=>[s.name,s.state,s.description,s.source])));$('view').append(wrap);}
-function historySelect(callback){const select=el('select');select.setAttribute('aria-label',t('selectHistory'));const first=el('option',t('choose'));first.value='';select.append(first);entries.forEach(item=>{const option=el('option',`${date(item.collectedAtUtc)} · ${item.findingCount} ${t('sampleFindings')}`);option.value=item.id;select.append(option);});select.addEventListener('change',async()=>{if(!select.value)return;try{await callback(await json(`/api/history/${encodeURIComponent(select.value)}`));}catch(error){notice(error.message);}});return select;}
-function showDrift(){const wrap=panel(t('drift')),controls=el('div',null,'control-row'),file=el('input');file.type='file';file.accept='.json,application/json';file.id='baseline-upload';const label=el('label',t('upload'));label.htmlFor=file.id;file.addEventListener('change',async()=>{const chosen=file.files[0];if(!chosen||chosen.size>2*1024*1024){notice(t('maxFile'));return;}try{const content=await chosen.text();const parsed=JSON.parse(content);await json('/api/diff',{method:'POST',headers:{'Content-Type':'application/json'},body:content});baseline=parsed;diff=null;notice(t('comparisonReady'));render();}catch{notice(t('invalidFile'));}});append(controls,label,file,historySelect(async value=>{baseline=value;diff=null;notice(t('comparisonReady'));render();}),button(t('compare'),async()=>{if(!baseline)return;try{diff=await json('/api/diff',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(baseline)});notice('');render();}catch(error){notice(error.message);}},'primary'));wrap.append(controls,el('p',t('uploadNote'),'muted'));if(!baseline)empty(wrap,'noBaseline');else{const split=el('div',null,'split-evidence');[['baseline',baseline],['current',snapshot]].forEach(([title,s])=>{const side=el('section');append(side,el('h3',t(title)),el('p',date(s.collectedAtUtc),'muted'),facts([['cpu',`${number(s.cpuUsedPercent)}%`],['memory',`${number(s.memory.usedPercent)}%`],['listeners',s.listeners.length],['services',s.services.length],['findings',s.findings.length]]));split.append(side);});wrap.append(split);if(diff){if(diff.warnings?.length){const limitations=el('ul',null,'warning-text');diff.warnings.forEach(warning=>limitations.append(el('li',warning)));wrap.append(limitations);}wrap.append(el('h3',t(diff.significant?'significant':'noSignificant')),table(['metric','baseline','current','delta'],diff.metrics.map(m=>[m.name,`${number(m.baseline)} ${m.unit}`,`${number(m.current)} ${m.unit}`,`${m.delta>0?'+':''}${number(m.delta)} ${m.unit}`])),el('h3',t('changes')),table(['category','identity','change','details'],diff.changes.map(c=>[c.category,c.identity,c.change,c.details])));}}$('view').append(wrap);}
+function historySelect(callback) {
+    const select = el('select'), first = el('option', t('choose'));
+    select.setAttribute('aria-label', t('selectHistory'));
+    first.value = '';
+    select.append(first);
+    entries.forEach(item => {
+        const option = el('option', `${date(item.collectedAtUtc)} · ${item.findingCount} ${t('sampleFindings')}`);
+        option.value = item.id;
+        select.append(option);
+    });
+    select.addEventListener('change', () => callback(select.value));
+    return select;
+}
+async function loadDriftBaseline(load) {
+    // EN: Clear old evidence before any await; only the latest selection may become ready.
+    // ES: Se borra la evidencia anterior antes de esperar; solo la última selección puede quedar lista.
+    const version = ++driftVersion;
+    baseline = diff = null;
+    driftBusy = Boolean(load);
+    notice(load ? t('loading') : '');
+    render();
+    if (!load) return;
+    try {
+        const next = await load();
+        if (version !== driftVersion) return;
+        baseline = next;
+        notice(t('comparisonReady'));
+    } catch (error) {
+        if (version === driftVersion) notice(error.message);
+    } finally {
+        if (version === driftVersion) { driftBusy = false; render(); }
+    }
+}
+async function compareDrift() {
+    if (!baseline || driftBusy) return;
+    const version = driftVersion, selected = baseline;
+    driftBusy = true;
+    diff = null;
+    notice(t('loading'));
+    render();
+    try {
+        const result = await json('/api/diff', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(selected)});
+        if (version !== driftVersion) return;
+        diff = result;
+        notice('');
+    } catch (error) {
+        if (version === driftVersion) notice(error.message);
+    } finally {
+        if (version === driftVersion) { driftBusy = false; render(); }
+    }
+}
+function showDrift() {
+    // EN: Readiness lives outside the DOM so live SSE renders cannot enable a pending comparison.
+    // ES: El estado vive fuera del DOM para que las actualizaciones SSE no habiliten una comparación pendiente.
+    const wrap = panel(t('drift')), controls = el('div', null, 'control-row'), file = el('input');
+    file.type = 'file';
+    file.accept = '.json,application/json';
+    file.id = 'baseline-upload';
+    const label = el('label', t('upload'));
+    label.htmlFor = file.id;
+    file.addEventListener('change', () => {
+        const chosen = file.files[0];
+        loadDriftBaseline(async () => {
+            if (!chosen || chosen.size > 2 * 1024 * 1024) throw new Error(t('maxFile'));
+            try {
+                const content = await chosen.text(), parsed = JSON.parse(content);
+                await json('/api/diff', {method:'POST', headers:{'Content-Type':'application/json'}, body:content});
+                return parsed;
+            } catch { throw new Error(t('invalidFile')); }
+        });
+    });
+    const retained = historySelect(id => loadDriftBaseline(id ? () => json(`/api/history/${encodeURIComponent(id)}`) : null));
+    const compare = button(t('compare'), compareDrift, 'primary');
+    compare.disabled = !baseline || driftBusy;
+    append(controls, label, file, retained, compare);
+    wrap.append(controls, el('p', t('uploadNote'), 'muted'));
+    if (!baseline) empty(wrap, 'noBaseline');
+    else {
+        const split = el('div', null, 'split-evidence');
+        [['baseline', baseline], ['current', snapshot]].forEach(([title, evidence]) => {
+            const side = el('section');
+            append(side, el('h3', t(title)), el('p', date(evidence.collectedAtUtc), 'muted'), facts([
+                ['cpu', `${number(evidence.cpuUsedPercent)}%`], ['memory', `${number(evidence.memory.usedPercent)}%`],
+                ['listeners', evidence.listeners.length], ['services', evidence.services.length], ['findings', evidence.findings.length]
+            ]));
+            split.append(side);
+        });
+        wrap.append(split);
+        if (diff) {
+            if (diff.warnings?.length) {
+                const limitations = el('ul', null, 'warning-text');
+                diff.warnings.forEach(warning => limitations.append(el('li', warning)));
+                wrap.append(limitations);
+            }
+            wrap.append(el('h3', t(diff.significant ? 'significant' : 'noSignificant')),
+                table(['metric','baseline','current','delta'], diff.metrics.map(metric => [metric.name, `${number(metric.baseline)} ${metric.unit}`, `${number(metric.current)} ${metric.unit}`, `${metric.delta > 0 ? '+' : ''}${number(metric.delta)} ${metric.unit}`])),
+                el('h3', t('changes')), table(['category','identity','change','details'], diff.changes.map(change => [change.category, change.identity, change.change, change.details])));
+        }
+    }
+    $('view').append(wrap);
+}
 function showFleet(){const wrap=panel(t('fleet'));append(wrap,el('p',t('fleetLocal'),'muted'),el('p',t('fleetLimit'),'muted'));const controls=el('div',null,'control-row'),label=el('label',t('fleetUpload')),upload=el('input');upload.type='file';upload.multiple=true;upload.accept='.json,application/json';upload.id='fleet-upload';label.htmlFor=upload.id;upload.disabled=fleetBusy;upload.addEventListener('change',async()=>{const files=[...upload.files];fleetReport=null;fleetError=null;fleetSnapshots=[];if(files.length<2||files.length>100||files.reduce((total,file)=>total+file.size,0)>2*1024*1024){fleetError=t('fleetLimit');render();return;}try{const snapshots=[];for(const file of files)snapshots.push(JSON.parse(await file.text()));const body=JSON.stringify({snapshots});if(new TextEncoder().encode(body).byteLength>2*1024*1024)throw new Error();fleetSnapshots=snapshots;}catch{fleetError=t('fleetInvalid');}render();});const compare=button(t('fleetCompare'),async()=>{if(fleetBusy||fleetSnapshots.length<2)return;fleetBusy=true;fleetError=null;render();try{fleetReport=await json('/api/fleet',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({snapshots:fleetSnapshots})});}catch(error){fleetReport=null;fleetError=error.message;}finally{fleetBusy=false;render();}},'primary');compare.disabled=fleetBusy||fleetSnapshots.length<2;append(controls,label,upload,compare);wrap.append(controls,el('p',`${fleetSnapshots.length} ${t('fleetSelected')}`,'muted'));if(fleetError)wrap.append(el('p',fleetError,'notice'));if(!fleetReport){empty(wrap,'fleetEmpty');$('view').append(wrap);return;}const data=fleetReport.data,cards=el('div',null,'cards');[['fleetHosts',data.hosts.length],['fleetSnapshots',data.hosts.reduce((total,host)=>total+host.snapshotCount,0)],['fleetMedianCpu',`${number(data.medianCpuUsedPercent)}%`],['fleetMedianMemory',`${number(data.medianMemoryUsedPercent)}%`]].forEach(([label,value])=>{const card=el('article',null,'card');append(card,el('div',t(label),'card-label'),el('p',value,'card-value'));cards.append(card);});append(wrap,cards,el('p',`${t('fleetMedianDisk')}: ${data.medianMaximumDiskUsedPercent===null||data.medianMaximumDiskUsedPercent===undefined?'—':number(data.medianMaximumDiskUsedPercent)+'%'} · ${t('fleetFindings')}: ${fleetReport.findings.length}`,'muted'),table(['host','fleetSnapshots','cpu','memory','disk','findings','failedServices'],data.hosts.map(host=>[host.host,host.snapshotCount,`${number(host.cpuUsedPercent)}%`,`${number(host.memoryUsedPercent)}%`,host.maximumDiskUsedPercent===null||host.maximumDiskUsedPercent===undefined?'—':`${number(host.maximumDiskUsedPercent)}%`,host.findings,host.failedServices])),el('h2',t('fleetOutliers')),findingsList(fleetReport.findings));if(fleetReport.warnings?.length){const warnings=el('ul',null,'warning-text');fleetReport.warnings.forEach(warning=>warnings.append(el('li',warning)));wrap.append(warnings);}$('view').append(wrap);}
 
 function showHistory() {
@@ -296,6 +402,8 @@ function invalidateAnalysis() {
     if (download) download.disabled = analysisOperation !== 'inspect' || !analysisSafe;
 }
 function clearAnalysis() {
+    // EN: Invalidate pending responses before discarding data so a late request cannot restore cleared evidence.
+    // ES: Se invalidan las respuestas pendientes antes de borrar datos para que una petición tardía no restaure la evidencia.
     analysisVersion++;
     analysisController?.abort();
     analysisController = null;
@@ -338,6 +446,8 @@ async function openAnalysisSnapshot(file, isBaseline = false) {
     }
 }
 async function runAnalysis() {
+    // EN: Send the selected saved source; live refresh must not substitute host data or overwrite this draft.
+    // ES: Se envía la fuente guardada seleccionada; el refresco en vivo no debe sustituirla ni sobrescribir el borrador.
     if (analysisBusy || !analysisSafe) return;
     const version = ++analysisVersion;
     analysisController = new AbortController();
@@ -576,6 +686,8 @@ function render() {
     searchResults();
 }
 function applyLiveSample(next, history, timeline, generation, version, wantsFull) {
+    // EN: Recheck privacy and request generations after every await before showing identifiers.
+    // ES: Se vuelven a comprobar la privacidad y las generaciones de petición tras cada await antes de mostrar identidades.
     if (generation !== privacyVersion || version !== snapshotVersion || wantsFull !== $('full').checked) return;
     snapshot = next;
     if (!wantsFull) safeSnapshot = next;

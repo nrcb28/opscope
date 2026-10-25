@@ -24,6 +24,8 @@ public interface INotificationCommandRunner
 /// <summary>Explicit delivery of a bounded redacted summary. Merely collecting a report never sends it.</summary>
 public static class NotificationSender
 {
+    // EN: Build a bounded redacted preview before side effects; delivery requires explicit per-call confirmation.
+    // ES: Se prepara una vista previa redactada y acotada antes de cualquier envío; cada envío exige confirmación explícita.
     private const int MaximumPayloadBytes = 16 * 1024;
     private const int MaximumResponseBytes = 64 * 1024;
     private static readonly JsonSerializerOptions Json = new() { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };

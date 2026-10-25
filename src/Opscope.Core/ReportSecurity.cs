@@ -5,6 +5,8 @@ namespace Opscope;
 
 public static class ReportSecurity
 {
+    // EN: If the shared context is truncated, omit text rather than treating partial sanitization as complete.
+    // ES: Si se trunca el contexto compartido, se omite el texto en vez de considerar completo un saneado parcial.
     private static readonly string[] ContextLimitWarnings = ["Redaction context exceeded its safety limit; text and non-schema keys were omitted. Numeric evidence and finding severity remain available."];
     public static JsonSerializerOptions JsonOptions { get; } = new()
     {
@@ -20,6 +22,8 @@ public static class ReportSecurity
         var source = JsonSerializer.SerializeToNode(report.Data, JsonOptions);
         var identifiers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var visited = 0;
+        // EN: Keep the context budget bounded and expose any omission instead of leaking unvisited identifiers.
+        // ES: Se acota el contexto y se avisa de las omisiones para no filtrar identidades que no se hayan recorrido.
         var complete = CollectIdentifiers(source, identifiers, 0, ref visited);
         var sensitive = identifiers.ToArray();
         const string omitted = "[redacted-context-limit]";

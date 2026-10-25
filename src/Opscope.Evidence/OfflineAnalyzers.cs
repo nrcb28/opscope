@@ -5,6 +5,8 @@ namespace Opscope.Evidence;
 
 public static class TimelineBuilder
 {
+    // EN: Date differences at observation time and disclose the interval instead of inventing an event onset.
+    // ES: Los cambios se fechan en la observación y declaran su intervalo en vez de inventar el inicio del evento.
     public static AnalysisReport Build(Snapshot snapshot, Snapshot? baseline = null, IReadOnlyList<EvidenceRecord>? records = null)
     {
         var events = new List<TimelineEvent>();
@@ -56,6 +58,8 @@ public static class TimelineBuilder
 
 public static class FleetAnalyzer
 {
+    // EN: Median outliers are observations, not proof that hosts have comparable roles or workloads.
+    // ES: Las desviaciones de la mediana son observaciones, no una prueba de que los hosts tengan funciones o cargas comparables.
     public static AnalysisReport Compare(IReadOnlyList<Snapshot> snapshots)
     {
         ArgumentNullException.ThrowIfNull(snapshots);
@@ -114,6 +118,8 @@ public static class FleetAnalyzer
 
 public static class TriageAdvisor
 {
+    // EN: Recommend the next observations; these steps never execute repairs or alter the investigated host.
+    // ES: Se recomiendan nuevas observaciones; estos pasos nunca ejecutan reparaciones ni alteran el host investigado.
     public static AnalysisReport Analyze(Snapshot snapshot, string scenario)
     {
         var steps = new List<TriageStep>();

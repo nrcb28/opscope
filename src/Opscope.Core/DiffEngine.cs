@@ -2,6 +2,8 @@ namespace Opscope;
 
 public static class DiffEngine
 {
+    // EN: Compare identities before output redaction; anonymized baselines need explicitly limited comparisons.
+    // ES: Se comparan identidades antes de redactar la salida; las baselines anónimas requieren comparaciones con límites explícitos.
     public static DiffReport Compare(Snapshot baseline, Snapshot current)
     {
         // Compare normalized evidence instead of raw JSON so ordering and formatting do not create false changes.

@@ -12,6 +12,8 @@ public sealed record CustodyManifest(string Format, DateTimeOffset CreatedAtUtc,
 
 public static class CustodyBundle
 {
+    // EN: Hashes establish content integrity; signer identity requires verification against an independently trusted key.
+    // ES: Los hashes comprueban integridad; la identidad del firmante exige verificar con una clave confiable obtenida por otro canal.
     private const int MaximumArchiveBytes = 32 * 1024 * 1024;
     private const int MaximumFileBytes = 48 * 1024 * 1024;
     private const string Format = "opscope-custody/v1";

@@ -7,6 +7,8 @@ public sealed record HistoryEntry(long Id, DateTimeOffset CollectedAtUtc, double
 /// <summary>Versioned, size-bounded local SQLite history. Only redacted evidence enters the store.</summary>
 public sealed class HistoryStore : IDisposable
 {
+    // EN: Store only redacted bounded evidence; dispose SQLite before inspecting its file on Windows.
+    // ES: Solo se guarda evidencia redactada y acotada; en Windows se cierra SQLite antes de inspeccionar su archivo.
     private readonly SqliteConnection connection;
     private readonly object gate = new();
     private readonly int retentionCount;

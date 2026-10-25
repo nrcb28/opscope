@@ -8,6 +8,8 @@ namespace Opscope.Api;
 internal sealed record OfflineAnalysis(Snapshot Snapshot, string Operation, string? Scenario = null,
     IocImport? Indicators = null, Snapshot? Baseline = null)
 {
+    // EN: The envelope accepts data, not paths or commands, and keeps saved analysis stateless.
+    // ES: El sobre acepta datos, no rutas ni comandos, y mantiene el análisis guardado sin persistencia.
     internal const int MaximumIndicatorBytes = 128 * 1024;
 
     internal static OfflineAnalysis Parse(JsonElement root)

@@ -53,12 +53,16 @@ public static class ReportSecurity
         "hostname" or "host" or "members" or "user" or "username" or "currentuser" or "name" or "ipaddress" or "localaddress" or
         "privateip" or "publicip" or "arn" or "profile" or "instanceid" or "tenantid" or "groupid" or "vmid" or "resourcegroup" or
         "accounts" or "subscriptions" or "profiles" or "resourceids" or "addresses" or "scopes" or
-        "resource" or "resourcename" or "vmname" or "image" or "vpc" or "subnet" or "volume" or "instance" or "interface" or "association" or "groups" or "logicalid";
+        "resource" or "resourcename" or "vmname" or "image" or "vpc" or "subnet" or "volume" or "instance" or "interface" or "association" or "groups" or "logicalid" or
+        "project" or "projectid" or "projects" or "projectnumber" or "compartment" or "compartmentid" or "compartments" or
+        "tenancy" or "tenancyid" or "tenant" or "organization" or "organizationid" or "accountname" or "cloudname" or
+        "zoneid" or "resourcegroupid" or "networkid" or "serviceid" or "clusterid" or "serverid" or "dropletid" or "clientemail";
 
     private static bool IsSecret(string key) => key.Contains("password", StringComparison.Ordinal) || key.Contains("secret", StringComparison.Ordinal) ||
         key.Contains("token", StringComparison.Ordinal) || key.Contains("credential", StringComparison.Ordinal) ||
         key.Contains("accesskey", StringComparison.Ordinal) || key is "passwd" or "pwd" or "apikey" or "connectionstring" or "privatekey" or
-        "authorization" or "environment" or "parameters" or "tags" or "commandline" or "arguments" or "args";
+        "authorization" or "environment" or "parameters" or "tags" or "commandline" or "arguments" or "args" or
+        "userdata" or "cloudinit" or "startupscript" or "sshkeys" or "sshkey" or "serviceaccountkey" or "cookie" or "setcookie" or "jwt" or "signedurl";
 
     private static bool CollectIdentifiers(JsonNode? node, HashSet<string> identifiers, int depth, ref int visited, bool secret = false, bool identifier = false)
     {
@@ -82,6 +86,15 @@ public static class ReportSecurity
             {
                 if (identifiers.Count >= 1024) return false;
                 identifiers.Add(text);
+            }
+        }
+        else if ((secret || identifier) && node is JsonValue scalar)
+        {
+            var literal = scalar.ToJsonString();
+            if (literal.Length >= 3 && literal is not ("true" or "false" or "null") && !identifiers.Contains(literal))
+            {
+                if (identifiers.Count >= 1024) return false;
+                identifiers.Add(literal);
             }
         }
         return true;
@@ -136,6 +149,7 @@ public static class ReportSecurity
             }
             return JsonValue.Create(Reporter.RedactEvidenceText(text, sensitive));
         }
+        if (node is JsonValue && IsIdentifier(lower)) return JsonValue.Create("[redacted-identifier]");
         return node?.DeepClone();
     }
 }

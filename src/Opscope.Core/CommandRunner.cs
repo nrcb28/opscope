@@ -244,6 +244,10 @@ public static class CommandRunner
     private static string[] TrustedLinuxCandidates(string fileName) => Path.GetFileName(fileName) switch
     {
         "aws" => ["/usr/local/bin/aws", "/usr/bin/aws", "/opt/aws-cli/bin/aws"],
+        "gcloud" => ["/usr/bin/gcloud", "/usr/local/bin/gcloud", "/opt/google-cloud-sdk/bin/gcloud", "/usr/lib/google-cloud-sdk/bin/gcloud"],
+        "oci" => ["/usr/local/bin/oci", "/usr/bin/oci", "/opt/oci/bin/oci"],
+        "openstack" => ["/usr/bin/openstack", "/usr/local/bin/openstack"],
+        "aliyun" => ["/usr/local/bin/aliyun", "/usr/bin/aliyun"],
         "azcmagent" => ["/opt/azcmagent/bin/azcmagent", "/usr/bin/azcmagent"],
         "az" => ["/usr/bin/az", "/usr/local/bin/az", "/opt/az/bin/az"],
         "dpkg-query" => ["/usr/bin/dpkg-query", "/bin/dpkg-query"],
@@ -271,6 +275,8 @@ public static class CommandRunner
     {
         var binary = Path.GetFileName(name);
         var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        if (binary is "gcloud" or "oci" or "openstack" or "aliyun")
+            return [Path.Combine(programFiles, "Opscope", "CloudTools", binary + ".exe")];
         if (binary is "aws" or "aws.exe") return [Path.Combine(programFiles, "Amazon", "AWSCLIV2", "aws.exe")];
         if (binary is "azcmagent" or "azcmagent.exe") return [Path.Combine(programFiles, "AzureConnectedMachineAgent", "azcmagent.exe")];
         if (binary == "azure-python") return [Path.Combine(programFiles, "Microsoft SDKs", "Azure", "CLI2", "python.exe")];
@@ -286,6 +292,10 @@ public static class CommandRunner
         "lsof" => ["/usr/sbin/lsof"], "launchctl" => ["/bin/launchctl"], "sw_vers" => ["/usr/bin/sw_vers"],
         "system_profiler" => ["/usr/sbin/system_profiler"], "pkgutil" => ["/usr/sbin/pkgutil"], "softwareupdate" => ["/usr/sbin/softwareupdate"],
         "dscl" => ["/usr/bin/dscl"], "crontab" => ["/usr/bin/crontab"], "openssl" => ["/usr/bin/openssl"],
+        "gcloud" => ["/usr/local/bin/gcloud", "/opt/homebrew/bin/gcloud", "/opt/google-cloud-sdk/bin/gcloud"],
+        "oci" => ["/usr/local/bin/oci", "/opt/homebrew/bin/oci"],
+        "openstack" => ["/usr/local/bin/openstack", "/opt/homebrew/bin/openstack"],
+        "aliyun" => ["/usr/local/bin/aliyun", "/opt/homebrew/bin/aliyun"],
         "aws" => ["/usr/local/bin/aws", "/opt/homebrew/bin/aws"], "az" => ["/usr/local/bin/az", "/opt/homebrew/bin/az"],
         _ => []
     };

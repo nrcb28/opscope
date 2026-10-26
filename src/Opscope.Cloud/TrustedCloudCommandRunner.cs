@@ -40,6 +40,8 @@ public sealed class TrustedCloudCommandRunner : ICloudCommandRunner
 
     public async Task<JsonElement> RunAsync(string tool, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {
+        if (AdditionalCloudProviders.SupportsTool(tool) || tool == "gcloud")
+            return await new AdditionalCloudCommandRunner().RunAsync(tool, arguments, cancellationToken);
         var args = PrepareArguments(tool, arguments);
         var executable = tool;
         if (tool == "az" && OperatingSystem.IsWindows())

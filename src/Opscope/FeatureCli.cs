@@ -31,7 +31,11 @@ Extended commands:
   decrypt <bundle> --private-key <pem> --out <zip>
   azure inventory|posture|health|vm|bundle|drift|patches|cost|arc
   aws inventory|posture|health|instance|bundle|drift|patches|cost
-  cloud inventory|posture|health|patches|metadata [--provider azure|aws]
+  gcp inventory|posture|health|metrics|vm|bundle --project <project-id>
+  oci|digitalocean|hetzner|cloudflare|openstack|alibaba|ibm|scaleway <operation>
+  cloud catalog                         Describe providers and actual capabilities
+  cloud <operation> --provider <id>      Query a configured read-only provider
+  cloud metadata [--provider azure|aws] Explicit identity-only metadata lookup
   serve [--port 0] [--history <sqlite>]   Authenticated loopback web UI
   tui [--interval 5] [--page summary]  Five-page read-only terminal dashboard
   history list|show <id>|prune           Private redacted SQLite history
@@ -49,20 +53,28 @@ Extended options:
   --public-key <pem> --private-key <pem>  Verification/decryption keys
   --subscription <id> --subscriptions <ids> --profile <name> --profiles <names>
   --region <name> --regions <names|all> --accounts <ids> --resource <id>
-  --account <12-digit-id>                Required with region for ASFF import
+  --project <id> --projects <ids>         Explicit Google Cloud/project scopes
+  --compartment <ocid> --compartments <ocids> --zone <name> --zones <names>
+  --cloud-name <name>                    Existing OpenStack clouds.yaml entry
+  --<provider>-projects <ids>            Provider-specific server scope allowlist
+  --oci-compartments <ocids> --cloudflare-accounts <ids>
+  --alibaba-accounts <ids> --ibm-accounts <ids>
+  --account <id>                        Cloud scope (12 digits for AWS/ASFF)
   --cloud-context                       Explicit local metadata lookup
   --confirm-send                        Required for any external delivery
   --endpoint <https-url> --credential-env <variable-name>
   --target slack|teams|jira|azure-devops|azure-monitor|cloudwatch
   --quiet --require-complete
 
-Cloud modules require an installed, authenticated Azure CLI or AWS CLI v2.
+Cloud modules require an existing authenticated CLI or scoped API credential.
+Use cloud catalog and docs/cloud.md for actual operations, scopes and permissions.
 They query existing services only and never enable paid services or fetch secrets.
 Local collection does not contact cloud metadata or delivery endpoints by default.
 """;
 
-    private static readonly HashSet<string> Commands = new(StringComparer.Ordinal)
-        { "collect", "policy", "plugins", "pack", "triage", "ioc", "timeline", "fleet", "environment", "report", "verify", "decrypt", "azure", "aws", "cloud", "serve", "tui", "history", "mcp", "notify", "offline", "bundle" };
+    private static readonly HashSet<string> Commands = new(new[]
+        { "collect", "policy", "plugins", "pack", "triage", "ioc", "timeline", "fleet", "environment", "report", "verify", "decrypt", "cloud", "serve", "tui", "history", "mcp", "notify", "offline", "bundle" }
+        .Concat(CloudProviderRegistry.Descriptors.Select(descriptor => descriptor.ProviderId)), StringComparer.Ordinal);
     private static readonly HashSet<string> FeatureFlags = new(StringComparer.Ordinal)
         { "--format", "--policy", "--plugins", "--pack", "--fail-on", "--evidence", "--ioc", "--full", "--cloud-context", "--seal", "--sign-private-key", "--encrypt-public-key", "--require-complete", "--input", "--baseline", "--quiet", "--page", "--samples" };
 
@@ -117,7 +129,7 @@ Local collection does not contact cloud metadata or delivery endpoints by defaul
                 await CustodyBundle.DecryptAsync(RequirePositional(options, 1, "bundle path"), options.Required("out"), options.Required("private-key"), token);
                 return 0;
             }
-            if (command is "azure" or "aws" or "cloud") return await CloudAsync(command, verb, options, token);
+            if (command == "cloud" || CloudProviderRegistry.IsKnownProvider(command)) return await CloudAsync(command, verb, options, token);
             if (command == "fleet")
             {
                 if (options.Positionals.Count is < 3 or > 101) throw new CliException("fleet requires 2–100 saved snapshots.");
@@ -276,8 +288,31 @@ Local collection does not contact cloud metadata or delivery endpoints by defaul
 
     private static async Task<int> CloudAsync(string provider, string operation, Options options, CancellationToken token)
     {
-        if (operation.Length == 0) throw new CliException("A cloud operation is required.");
-        if (operation == "metadata") return await EmitAsync(await MetadataAsync(provider == "cloud" ? options.Optional("provider") : provider, token), options, token);
+        if (operation.Length == 0) throw new CliException("A cloud operation is required. Use cloud catalog to inspect available capabilities.");
+        if (operation == "catalog")
+        {
+            if (provider != "cloud") throw new CliException("Use cloud catalog [--provider <id>].");
+            var selected = options.Optional("provider");
+            if (selected is not null && !CloudProviderRegistry.IsKnownProvider(selected)) throw new CliException("Unknown cloud provider. Use cloud catalog.");
+            var descriptors = CloudProviderRegistry.Descriptors.Where(descriptor => selected is null || descriptor.ProviderId == selected)
+                .Select(descriptor => new
+                {
+                    descriptor.ProviderId, descriptor.DisplayName, descriptor.Category, descriptor.Version,
+                    capabilities = descriptor.Capabilities.Select(capability => new
+                    {
+                        operation = capability.Operation.ToString().ToLowerInvariant(), capability.ResourceTypes,
+                        capability.RequiredPermissions, capability.IsExperimental,
+                        minimumFreshnessSeconds = capability.MinimumFreshness?.TotalSeconds
+                    }).ToArray()
+                }).ToArray();
+            return await EmitAsync(new("cloud/catalog", DateTimeOffset.UtcNow, [], new { providers = descriptors, remoteRequestsMade = false }), options, token);
+        }
+        if (operation == "metadata")
+        {
+            var selected = provider == "cloud" ? options.Optional("provider") : provider;
+            if (selected is not (null or "auto" or "azure" or "aws")) throw new CliException("Identity metadata lookup supports azure or aws. Other provider queries require explicit configured scopes.");
+            return await EmitAsync(await MetadataAsync(selected, token), options, token);
+        }
         if (provider == "cloud")
         {
             provider = options.Get("provider", "auto");
@@ -285,13 +320,14 @@ Local collection does not contact cloud metadata or delivery endpoints by defaul
             {
                 var detected = await MetadataAsync(null, token);
                 provider = detected.Kind.Split('/').ElementAtOrDefault(1) ?? "unknown";
-                if (provider is not ("aws" or "azure")) throw new CliException("Cloud provider was not detected. Select --provider azure or aws explicitly.");
+                if (provider is not ("aws" or "azure")) throw new CliException("Cloud provider was not detected. Select --provider <id> and an explicit scope. Use cloud catalog for available providers.");
             }
         }
         var settings = new Dictionary<string, string>(options.Values, StringComparer.Ordinal);
         if (options.Positionals.ElementAtOrDefault(2) is { } resource) settings["resource"] = resource;
-        var runner = new TrustedCloudCommandRunner();
-        ICloudProvider cloud = provider switch { "aws" => new AwsProvider(runner), "azure" => new AzureProvider(runner), _ => throw new CliException("Provider must be azure or aws.") };
+        if (!CloudProviderRegistry.IsKnownProvider(provider)) throw new CliException("Unknown cloud provider. Use cloud catalog.");
+        if (!CloudProviderRegistry.SupportsOperation(provider, operation)) throw new CliException($"Operation '{operation}' is not available for {provider}. Use cloud catalog --provider {provider}.");
+        ICloudProvider cloud = CloudProviderRegistry.Create(provider, new TrustedCloudCommandRunner());
         AnalysisReport report;
         var profiles = options.List("profiles");
         if (provider == "aws" && profiles.Count > 0)
@@ -362,23 +398,41 @@ Local collection does not contact cloud metadata or delivery endpoints by defaul
     private static async Task<int> ServeAsync(Options options, CancellationToken token)
     {
         var actions = new Dictionary<string, Func<CancellationToken, Task<AnalysisReport>>>(StringComparer.Ordinal);
-        foreach (var provider in options.List("cloud"))
+        var providers = options.List("cloud");
+        if (providers.Count > 11 || providers.Distinct(StringComparer.Ordinal).Count() != providers.Count)
+            throw new CliException("Configure at most eleven distinct cloud providers per session.");
+        var configuredScopeCount = 0;
+        foreach (var provider in providers)
         {
-            ICloudProvider client = provider switch { "azure" => new AzureProvider(new TrustedCloudCommandRunner()), "aws" => new AwsProvider(new TrustedCloudCommandRunner()), _ => throw new CliException("--cloud supports azure,aws.") };
-            var scopes = provider == "aws" ? options.List("profiles") : options.List("subscriptions");
-            if (scopes.Count > 20) throw new CliException("At most 20 configured cloud scopes may be exposed in one local session.");
-            if (scopes.Count == 0) scopes.Add(string.Empty);
+            if (!CloudProviderRegistry.IsKnownProvider(provider)) throw new CliException("--cloud contains an unknown provider. Use cloud catalog.");
+            var client = CloudProviderRegistry.Create(provider, new TrustedCloudCommandRunner());
+            var (singular, plural) = CloudScopeOptions(provider);
+            var scopedPlural = $"{provider}-{plural}";
+            var scopes = options.List(options.Has(scopedPlural) ? scopedPlural : plural);
+            if (scopes.Count == 0) scopes.Add(options.Get(singular, string.Empty));
+            if (provider is not ("azure" or "aws") && scopes.Any(string.IsNullOrWhiteSpace))
+                throw new CliException($"{provider} requires an explicit --{singular} or --{scopedPlural} scope before it can be exposed in the UI.");
+            configuredScopeCount += scopes.Count;
+            if (configuredScopeCount > 20) throw new CliException("At most 20 configured cloud scopes may be exposed in one local session.");
+            if (scopes.Distinct(StringComparer.Ordinal).Count() != scopes.Count)
+                throw new CliException($"Duplicate scopes are not permitted for {provider}.");
             for (var index = 0; index < scopes.Count; index++)
             {
                 var scope = scopes[index];
                 var settings = new Dictionary<string, string>(options.Values, StringComparer.Ordinal);
                 if (scope.Length > 0)
                 {
-                    settings[provider == "aws" ? "profile" : "subscription"] = scope;
-                    settings.Remove(provider == "aws" ? "profiles" : "subscriptions");
+                    settings[singular] = scope;
+                    settings.Remove(plural);
                 }
+                // EN: The browser gets anonymous labels and can only invoke these server-bound scopes.
+                // ES: El navegador recibe etiquetas anónimas y solo puede consultar estos ámbitos fijados.
                 var label = scopes.Count == 1 && scope.Length == 0 ? provider : $"{provider}-scope-{index + 1}";
-                foreach (var operation in new[] { "inventory", "posture", "health", "patches", "cost" })
+                var operations = CloudProviderRegistry.GetDescriptor(provider).Capabilities
+                    .Select(capability => capability.Operation.ToString().ToLowerInvariant())
+                    .Where(operation => operation is not ("vm" or "instance" or "bundle" or "drift" or "arc" or "metadata"))
+                    .Distinct(StringComparer.Ordinal);
+                foreach (var operation in operations)
                 {
                     var verb = operation;
                     actions[$"{label}/{verb}"] = async ct =>
@@ -407,6 +461,15 @@ Local collection does not contact cloud metadata or delivery endpoints by defaul
         }, token);
         return 0;
     }
+
+    private static (string Singular, string Plural) CloudScopeOptions(string provider) => provider switch
+    {
+        "azure" => ("subscription", "subscriptions"),
+        "aws" => ("profile", "profiles"),
+        "oci" => ("compartment", "compartments"),
+        "cloudflare" or "alibaba" or "ibm" => ("account", "accounts"),
+        _ => ("project", "projects")
+    };
 
     private static async Task<int> HistoryAsync(Options options, CancellationToken token)
     {
@@ -526,7 +589,7 @@ Local collection does not contact cloud metadata or delivery endpoints by defaul
     private sealed class Options
     {
         private static readonly HashSet<string> Flags = new(StringComparer.Ordinal) { "json", "redact", "full", "help", "no-processes", "no-network", "no-services", "quiet", "require-complete", "seal", "confirm-send", "cloud-context", "imds", "metadata" };
-        private static readonly HashSet<string> Arguments = new(StringComparer.Ordinal) { "format", "policy", "plugins", "pack", "fail-on", "evidence", "ioc", "baseline", "input", "bundle", "out", "top", "interval", "page", "samples", "scenario", "sign-private-key", "encrypt-public-key", "public-key", "private-key", "provider", "cloud", "subscription", "subscriptions", "profile", "profiles", "region", "regions", "account", "accounts", "resource", "role-arn", "port", "history", "retention", "retention-days", "target", "endpoint", "credential-env", "project", "issue-type", "dcr", "stream", "log-group", "log-stream", "window-hours", "resource-group" };
+        private static readonly HashSet<string> Arguments = new(StringComparer.Ordinal) { "format", "policy", "plugins", "pack", "fail-on", "evidence", "ioc", "baseline", "input", "bundle", "out", "top", "interval", "page", "samples", "scenario", "sign-private-key", "encrypt-public-key", "public-key", "private-key", "provider", "cloud", "subscription", "subscriptions", "profile", "profiles", "region", "regions", "account", "accounts", "resource", "role-arn", "port", "history", "retention", "retention-days", "target", "endpoint", "credential-env", "project", "issue-type", "dcr", "stream", "log-group", "log-stream", "window-hours", "resource-group", "projects", "compartment", "compartments", "zone", "zones", "cloud-name", "gcp-projects", "digitalocean-projects", "hetzner-projects", "openstack-projects", "scaleway-projects", "oci-compartments", "cloudflare-accounts", "alibaba-accounts", "ibm-accounts" };
         public Dictionary<string, string> Values { get; } = new(StringComparer.Ordinal);
         public List<string> Positionals { get; } = [];
         public static Options Parse(string[] args)

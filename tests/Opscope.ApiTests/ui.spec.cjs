@@ -147,7 +147,7 @@ async function main() {
   browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || (fs.existsSync('/usr/bin/chromium') ? '/usr/bin/chromium' : undefined), headless: true, args: ['--no-sandbox'] });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, acceptDownloads: true });
   const page = await context.newPage(), errors = [], external = []; activePage = page;
-  page.on('pageerror', error => errors.push(error.message));
+  page.on('pageerror', error => { errors.push(error.message); console.error('Browser runtime error: ' + error.message.replace(/#token=\S+/g, '#token=[redacted]')); });
   page.on('request', request => { if (!request.url().startsWith(origin + '/') && !request.url().startsWith('blob:')) external.push(request.url()); });
   await page.goto(bootstrap);
   await page.getByRole('heading', { name: 'Host evidence', exact: true }).waitFor();
@@ -232,7 +232,8 @@ async function main() {
     await validation.wait();
     check(await compareDrift.isDisabled() && await page.locator('.split-evidence').count() === 0, 'A pending baseline validation keeps comparison disabled and evidence unselected');
     const pendingButton = await compareDrift.elementHandle();
-    await page.waitForFunction(button => !button.isConnected, pendingButton, { timeout: 15000 });
+    await page.locator('#show-latest').waitFor({ state: 'visible', timeout: 15000 });
+    check(await pendingButton.evaluate(button => button.isConnected), 'Live evidence preserves the actual pending comparison control instead of replacing its DOM node');
     await pendingButton.dispose();
     check(await compareDrift.isDisabled() && driftRequests === 1, 'Live SSE rendering preserves pending baseline readiness without starting a comparison');
     validation.release();
@@ -256,7 +257,8 @@ async function main() {
     lateValidation.release();
     await lateResponseFinished;
     const latestButton = await compareDrift.elementHandle();
-    await page.waitForFunction(button => !button.isConnected, latestButton, { timeout: 15000 });
+    await page.locator('#show-latest').waitFor({ state: 'visible', timeout: 15000 });
+    check(await latestButton.evaluate(button => button.isConnected), 'Superseded-baseline feedback remains stable when a newer sample arrives');
     await latestButton.dispose();
     check(await compareDrift.isDisabled() && await page.locator('.split-evidence').count() === 0, 'A late validation response cannot restore a superseded baseline after live rendering');
   } finally {
@@ -291,6 +293,10 @@ async function main() {
   await page.getByRole('heading', { name: 'Retained redacted evidence', exact: true }).waitFor();
   check(!await page.locator('pre').innerText().then(text => text.includes('api-private-host')), 'Historical evidence remains redacted after full-view use');
   await page.locator('[data-view="cloud"]').click();
+  check(await page.locator('#cloud-provider option').count() === 12, 'Cloud provider selector exposes the eleven catalog providers plus its all-provider choice');
+  await page.locator('#cloud-provider').selectOption('scaleway');
+  check(await page.locator('#view').innerText().then(text => /not configured|not-configured|no configured/i.test(text)) && await page.locator('#view button').filter({ hasText: /scaleway.*inventory/ }).count() === 0, 'Unconfigured Scaleway remains discoverable without advertising an executable empty inventory');
+  await page.locator('#cloud-provider').selectOption('all');
   check(await page.getByRole('button', { name: /azure-scope-1\/inventory$/ }).count() === 1 && await page.getByRole('button', { name: /aws-scope-20\/health$/ }).count() === 1, 'Configured anonymous Azure and AWS scope aliases render as query actions');
   async function invokeFixtureCloud(action, expectedCount) {
     let response;
@@ -327,6 +333,37 @@ async function main() {
   check(loadingCloudSource, 'Pending cloud query names its selected scope and disables competing query controls');
   check(JSON.parse(await page.locator('#view pre').innerText()).operationSucceeded === false && !await page.locator('#view pre').innerText().then(text => text.includes('resourceCount')), 'An unsuccessful next cloud query replaces the earlier result with its actual failure and coverage report');
   await page.unroute('**/api/cloud/aws-scope-20/health');
+  for (const [provider, expectedValue] of [['gcp', '37.5'], ['hetzner', '67.1']]) {
+    await page.locator('#cloud-provider').selectOption(provider);
+    const action = provider + '-scope-1/metrics';
+    let response;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const received = page.waitForResponse(result => result.url() === origin + '/api/cloud/' + action);
+      await page.getByRole('button').filter({ hasText: action }).click();
+      response = await received;
+      if (response.status() !== 429) break;
+      await page.waitForTimeout(2100);
+    }
+    assert.equal(response.status(), 200);
+    await page.locator('.ops-cloud-series').waitFor();
+    check(await page.locator('.ops-cloud-result-summary>.ops-cloud-status[data-state="complete"]').count() === 1 && await page.locator('.ops-cloud-series svg[role="img"]').count() === 1, provider + ' metrics preserve their complete coverage and expose a provider-specific chart');
+    check(await page.locator('.ops-cloud-series').textContent().then(text => text.includes('percent') && text.includes('60 s') && text.includes(expectedValue)), provider + ' metrics preserve their real percentages, sixty-second interval and alternative data table');
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForFunction(() => { const text = document.querySelector('.ops-cloud-series svg text'), matrix = text?.getScreenCTM(); return matrix && parseFloat(getComputedStyle(text).fontSize) * Math.hypot(matrix.a, matrix.b) >= 11; });
+    check(await page.locator('.ops-cloud-series svg').evaluate(svg => svg.viewBox.baseVal.width <= 390), provider + ' cloud chart retains readable axis labels on mobile');
+    await page.setViewportSize({ width: 1440, height: 1000 });
+  }
+  await page.locator('#cloud-provider').selectOption('azure');
+  let deniedCoverage = false;
+  await page.route('**/api/cloud/azure-scope-1/inventory', route => route.fulfill({ status: deniedCoverage ? 502 : 200, contentType: 'application/json', body: JSON.stringify({ kind: 'cloud/azure/inventory', collectedAtUtc: new Date().toISOString(), findings: [], data: { resources: [{ provider: 'azure', type: 'compute.vm', properties: { status: 'running' } }], coverage: { state: deniedCoverage ? 'PermissionDenied' : 'Partial', enumeratedResources: 1 } }, warnings: ['Synthetic limited coverage.'], operationSucceeded: !deniedCoverage }) }));
+  const partialResponse = page.waitForResponse(response => response.url() === origin + '/api/cloud/azure-scope-1/inventory');
+  await page.getByRole('button').filter({ hasText: 'azure-scope-1/inventory' }).click(); await partialResponse;
+  check(await page.locator('.ops-cloud-result-summary>.ops-cloud-status[data-state="partial"]').count() === 1 && await page.locator('.ops-cloud-result-summary').textContent().then(text => text.includes('observed only; incomplete coverage')), 'Partial inventories label their count as observed evidence instead of complete coverage');
+  deniedCoverage = true;
+  const deniedResponse = page.waitForResponse(response => response.url() === origin + '/api/cloud/azure-scope-1/inventory');
+  await page.getByRole('button').filter({ hasText: 'azure-scope-1/inventory' }).click(); await deniedResponse;
+  check(await page.locator('.ops-cloud-result-summary>.ops-cloud-status[data-state="denied"]').count() === 1 && await page.locator('.ops-cloud-result-summary').textContent().then(text => text.includes('Unknown')), 'Permission-denied inventory presents an unknown resource count and its specific coverage failure');
+  await page.unroute('**/api/cloud/azure-scope-1/inventory');
   await page.locator('[data-view="policy"]').click();
   check(await page.locator('#policy-editor').count() === 1 && await page.locator('#view').innerText().then(text => text.includes('never applies policy')), 'Policy editor clearly limits its behavior to preview and download');
   await page.locator('#policy-editor').fill('version: 2\n');
@@ -381,6 +418,16 @@ async function main() {
   const storage = await page.evaluate(() => ({ local: JSON.stringify(localStorage), session: JSON.stringify(sessionStorage) }));
   check(!storage.local.includes(token) && !storage.session.includes(token) && !storage.local.includes('api-private-host'), 'Browser storage contains no token or snapshot evidence');
   await page.locator('[data-view="overview"]').click();
+  check(await page.locator('#navigation .nav-group').count() === 6 && await page.locator('#navigation [data-view]').count() === 12, 'Task groups preserve access to all twelve evidence sections');
+  check(await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize) >= 16), 'The interface uses a readable sixteen-pixel base font');
+  await page.locator('section.ops-chart').waitFor();
+  check(await page.locator('section.ops-chart svg[role="img"]').count() === 1 && await page.locator('section.ops-chart details').count() === 1, 'Realtime host chart exposes a labelled visual and an alternative sample table');
+  const chartWindow = page.locator('section.ops-chart select');
+  await chartWindow.selectOption('5');
+  check(await chartWindow.inputValue() === '5', 'Realtime chart window can be changed without replacing evidence');
+  await page.locator('section.ops-chart button').filter({ hasText: /Pause/ }).click();
+  check(await page.locator('section.ops-chart button').filter({ hasText: /Resume/ }).count() === 1, 'Realtime chart pause presents an explicit resumable state');
+  await page.locator('section.ops-chart button').filter({ hasText: /Resume/ }).click();
   await page.screenshot({ path: path.join(results, 'overview-desktop.png'), fullPage: true });
   await page.evaluate(fs.readFileSync(require.resolve('axe-core/axe.min.js'), 'utf8'));
   const accessibility = await page.evaluate(async () => axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } }));
@@ -392,8 +439,27 @@ async function main() {
   fs.writeFileSync(path.join(results, 'accessibility-dark.json'), JSON.stringify(darkAccessibility.violations, null, 2));
   check(darkAccessibility.violations.length === 0, 'Dark theme also passes automated WCAG A/AA accessibility checks');
   await page.screenshot({ path: path.join(results, 'overview-dark.png'), fullPage: true });
+  const emulation = await context.newCDPSession(page);
+  await emulation.send('Emulation.setDeviceMetricsOverride', { width: 720, height: 500, deviceScaleFactor: 2, mobile: false });
+  check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1) && await page.locator('#navigation-toggle').isVisible() && await page.locator('#collect').isVisible(), 'A 1440px display at a 200-percent equivalent layout keeps collection and section controls available without horizontal overflow');
+  await page.screenshot({ path: path.join(results, 'overview-zoom200.png'), fullPage: true });
+  await emulation.send('Emulation.clearDeviceMetricsOverride'); await emulation.detach();
+  for (const width of [320, 390, 720, 768, 1024, 1440, 1920]) {
+    await page.setViewportSize({ width, height: 1000 });
+    check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'Overview fits the viewport without horizontal page scrolling at ' + width + 'px');
+  }
   await page.setViewportSize({ width: 390, height: 844 });
-  check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'Mobile overview fits the viewport without horizontal page scrolling');
+  const menu = page.locator('#navigation-toggle');
+  check(await menu.isVisible() && await menu.getAttribute('aria-expanded') === 'false' && await page.locator('#navigation').isHidden(), 'Mobile sections menu starts collapsed with an explicit accessible state');
+  await menu.focus(); await page.keyboard.press('Enter');
+  check(await menu.getAttribute('aria-expanded') === 'true' && await page.locator('#navigation').isVisible(), 'Keyboard activation exposes every mobile navigation group');
+  await page.locator('#navigation [data-view="history"]').focus(); await page.keyboard.press('Escape');
+  check(await menu.getAttribute('aria-expanded') === 'false' && await page.locator('#navigation').isHidden() && await menu.evaluate(node => node === document.activeElement), 'Escape closes the mobile menu and restores focus to its toggle');
+  await menu.click(); await page.locator('#navigation [data-view="findings"]').click();
+  check(await menu.getAttribute('aria-expanded') === 'false' && await page.locator('#navigation').isHidden(), 'Choosing a section closes the mobile menu');
+  await menu.click(); await page.locator('#navigation [data-view="overview"]').click();
+  await page.waitForFunction(() => { const text = document.querySelector('section.ops-chart svg text'), matrix = text?.getScreenCTM(); return matrix && parseFloat(getComputedStyle(text).fontSize) * Math.hypot(matrix.a, matrix.b) >= 11; });
+  check(await page.locator('section.ops-chart svg').evaluate(svg => svg.viewBox.baseVal.width <= 390), 'Host chart axes retain readable text after resizing to a mobile viewport');
   await page.screenshot({ path: path.join(results, 'overview-mobile.png'), fullPage: true });
   check(errors.length === 0, 'Browser reports no JavaScript runtime errors');
   check(external.length === 0, 'All UI resources and evidence requests remain on the authenticated local origin');

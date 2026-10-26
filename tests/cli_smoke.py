@@ -62,8 +62,32 @@ class CliTests(unittest.TestCase):
 
     def test_help_lists_new_commands(self):
         text = self.run_cli("--help").decode()
-        for command in ["policy", "serve", "azure", "aws", "verify", "mcp", "notify"]:
+        for command in ["policy", "serve", "azure", "aws", "gcp", "cloud catalog", "verify", "mcp", "notify"]:
             self.assertIn(command, text)
+
+    def test_cloud_catalog_is_complete_local_and_readable_after_redaction(self):
+        catalog = json.loads(self.run_cli("cloud", "catalog"))
+        self.assertFalse(catalog["data"]["remoteRequestsMade"])
+        providers = catalog["data"]["providers"]
+        self.assertEqual({provider["providerId"] for provider in providers},
+                         {"azure", "aws", "gcp", "oci", "digitalocean", "hetzner", "cloudflare", "openstack", "alibaba", "ibm", "scaleway"})
+        self.assertEqual(len(providers), 11)
+        for provider in providers:
+            self.assertTrue(provider["capabilities"])
+            self.assertTrue(all(isinstance(capability["operation"], str) for capability in provider["capabilities"]))
+        gcp = json.loads(self.run_cli("cloud", "catalog", "--provider", "gcp"))
+        self.assertEqual([provider["providerId"] for provider in gcp["data"]["providers"]], ["gcp"])
+        self.assertFalse(catalog.get("warnings"))
+
+    def test_cloud_configuration_rejects_unknown_unsupported_and_ambiguous_scopes(self):
+        for args in [("cloud", "catalog", "--provider", "unknown"),
+                     ("gcp", "metadata"),
+                     ("gcp", "cost", "--project", "example-project"),
+                     ("serve", "--cloud", "gcp"),
+                     ("serve", "--cloud", "gcp,gcp", "--gcp-projects", "example-project"),
+                     ("serve", "--cloud", "gcp", "--gcp-projects", "example-project,example-project")]:
+            with self.subTest(args=args):
+                self.run_cli(*args, expected=2)
 
     def test_shared_extended_options_dispatch_without_format_or_policy(self):
         self.assertEqual(json.loads(self.run_cli("snapshot", "--input", self.snapshot, "--json", expected=1))["host"]["hostname"], "cli-private-host")

@@ -8,6 +8,7 @@ using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Opscope;
 using Opscope.Api;
+using Opscope.Cloud;
 
 internal static class Program
 {
@@ -38,7 +39,9 @@ internal static class Program
                     CloudActions = new Dictionary<string, Func<CancellationToken, Task<AnalysisReport>>>
                     {
                         ["azure-scope-1/inventory"] = _ => Task.FromResult(new AnalysisReport("cloud/azure/inventory", DateTimeOffset.UtcNow, [], new { resourceCount = 3 })),
-                        ["aws-scope-20/health"] = _ => Task.FromResult(new AnalysisReport("cloud/aws/health", DateTimeOffset.UtcNow, [], new { resourceCount = 5 }))
+                        ["aws-scope-20/health"] = _ => Task.FromResult(new AnalysisReport("cloud/aws/health", DateTimeOffset.UtcNow, [], new { resourceCount = 5 })),
+                        ["gcp-scope-1/metrics"] = _ => Task.FromResult(CloudMetricFixture("gcp")),
+                        ["hetzner-scope-1/metrics"] = _ => Task.FromResult(CloudMetricFixture("hetzner"))
                     }
                 }, shutdown.Token);
                 return 0;
@@ -72,6 +75,21 @@ internal static class Program
         new ToolingPosture([]),
         [new Finding(FindingSeverity.Warning, "TEST_WARNING", "Test evidence", "Check api-private-host and 192.0.2.35", "Review the evidence.")],
         [], TimeSpan.FromMilliseconds(150));
+
+    private static AnalysisReport CloudMetricFixture(string provider)
+    {
+        var now = DateTimeOffset.UtcNow;
+        object series = provider == "gcp"
+            ? new GcpCpuSeries("[redacted-account]", "[redacted-id]", "[redacted-region]", "cpu_utilization", "percent", "ALIGN_MEAN", 60, "Google Cloud Monitoring",
+                [new GcpMetricPoint(now.AddMinutes(-2), 37.5), new GcpMetricPoint(now.AddMinutes(-1), 42)])
+            : new { resourceId = "[redacted-id]", metric = "cpu", unit = "percent", aggregation = "provider", periodSeconds = 60, source = "Hetzner Cloud server metrics", observedAtUtc = now, state = "available",
+                samples = new[] { new { timestampUtc = now.AddMinutes(-2), value = 67.125 }, new { timestampUtc = now.AddMinutes(-1), value = 61.5 } } };
+        return new AnalysisReport($"cloud/{provider}/metrics", now, [], new
+        {
+            provider, metrics = new[] { series },
+            coverage = new CloudCoverage(CoverageState.Complete, now, 1, 1, 1, [])
+        });
+    }
 
     private static void TestHistory()
     {
@@ -232,6 +250,7 @@ internal static class Program
         using var stop = new CancellationTokenSource();
         var historyPath = Path.Combine(Root, "server.sqlite");
         var collections = 0;
+        var successfulCloudCalls = 0;
         var failCollection = false;
         string? reflectedToken = null;
         var serverTask = LocalServer.RunAsync(new ServerOptions
@@ -254,8 +273,12 @@ internal static class Program
             PolicyView = () => new { readOnly = true, ruleCount = 1 },
             CloudActions = new Dictionary<string, Func<CancellationToken, Task<AnalysisReport>>>
             {
-                ["fixture/success"] = _ => Task.FromResult(new AnalysisReport("cloud/fixture", DateTimeOffset.UtcNow, [], new { count = 1 }, ["A coverage limitation is not an operation failure."])),
-                ["fixture/failure"] = _ => Task.FromResult(new AnalysisReport("cloud/fixture", DateTimeOffset.UtcNow, [], new { detail = "reflected " + reflectedToken }, ["Provider coverage failed."]) { OperationSucceeded = false })
+                ["azure-scope-2/inventory"] = _ =>
+                {
+                    Interlocked.Increment(ref successfulCloudCalls);
+                    return Task.FromResult(new AnalysisReport("cloud/azure", DateTimeOffset.UtcNow, [], new { count = 1 }, ["A coverage limitation is not an operation failure."]));
+                },
+                ["azure-scope-2/health"] = _ => Task.FromResult(new AnalysisReport("cloud/azure", DateTimeOffset.UtcNow, [], new { detail = "reflected " + reflectedToken }, ["Provider coverage failed."]) { OperationSucceeded = false })
             }
         }, stop.Token);
         try
@@ -268,7 +291,7 @@ internal static class Program
             Assert(bootstrap.Fragment.StartsWith("#token=", StringComparison.Ordinal) && bootstrap.Fragment.Length == 71, "Bootstrap token has 256 bits and only appears in fragment");
             var token = bootstrap.Fragment[7..];
             using var client = new HttpClient(new SocketsHttpHandler { UseProxy = false, Expect100ContinueTimeout = TimeSpan.FromSeconds(10) }) { BaseAddress = new Uri(bootstrap.GetLeftPart(UriPartial.Authority)), Timeout = TimeSpan.FromSeconds(15) };
-            foreach (var path in new[] { "/api/snapshot", "/api/findings", "/api/history", "/api/history/1", "/api/settings", "/api/capabilities", "/api/policy", "/api/timeline", "/api/bundle", "/api/report", "/api/report?format=pdf", "/api/report?format=sarif", "/api/openapi.json", "/api/events", "/metrics" })
+            foreach (var path in new[] { "/api/snapshot", "/api/findings", "/api/history", "/api/history/1", "/api/settings", "/api/capabilities", "/api/cloud/catalog", "/api/cloud/coverage", "/api/metrics/capabilities", "/api/metrics/history", "/api/policy", "/api/timeline", "/api/bundle", "/api/report", "/api/report?format=pdf", "/api/report?format=sarif", "/api/openapi.json", "/api/events", "/metrics" })
             {
                 using var response = await client.GetAsync(path, HttpCompletionOption.ResponseHeadersRead);
                 Assert(response.StatusCode == HttpStatusCode.Unauthorized, $"Unauthenticated {path} is rejected");
@@ -282,7 +305,21 @@ internal static class Program
                 Assert(response.StatusCode == HttpStatusCode.Unauthorized, "Unauthenticated saved-evidence operation is rejected: " + path);
             }
             using (var response = await client.GetAsync("/api/snapshot?token=" + token)) Assert(response.StatusCode == HttpStatusCode.Unauthorized, "Query-string token is not accepted as authentication");
+            using (var response = await client.GetAsync("/realtime-charts.js"))
+            {
+                Assert(response.IsSuccessStatusCode && response.Content.Headers.ContentType?.MediaType == "text/javascript", "Only the explicitly registered local chart asset is available without an evidence token");
+                Assert(!(await response.Content.ReadAsStringAsync()).Contains(token, StringComparison.Ordinal), "Local chart source embeds no session secret");
+            }
             client.DefaultRequestHeaders.Add("X-Opscope-Token", token);
+            await TestCloudCatalogAsync(client, token);
+            await TestMetricsHistoryAsync(client, () => collections, token);
+            foreach (var cursor in new[] { "-1", "not-a-sequence", "9223372036854775807" })
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, "/api/events");
+                request.Headers.Add("Last-Event-ID", cursor);
+                using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+                Assert(response.StatusCode == HttpStatusCode.BadRequest, "SSE rejects malformed and future resume cursors before allocating a stream: " + cursor);
+            }
             using (var response = await client.GetAsync("/"))
             {
                 Assert(response.IsSuccessStatusCode, "Embedded shell is served locally");
@@ -335,6 +372,24 @@ internal static class Program
                 var dataLine = await reader.ReadLineAsync(deadline.Token);
                 Assert(eventLine == "event: snapshot" && dataLine?.StartsWith("data: ", StringComparison.Ordinal) == true, "SSE sends the current evidence sample");
                 Assert(!dataLine!.Contains("api-private-host", StringComparison.Ordinal) && !dataLine.Contains(token, StringComparison.Ordinal), "SSE evidence is always redacted");
+            }
+            using (var response = await client.GetAsync("/api/events", HttpCompletionOption.ResponseHeadersRead))
+            {
+                using var stream = await response.Content.ReadAsStreamAsync();
+                using var reader = new StreamReader(stream);
+                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                string? eventName = null, eventId = null, metricData = null;
+                while (metricData is null)
+                {
+                    var line = await reader.ReadLineAsync(deadline.Token);
+                    Assert(line is not null, "Metrics stream remains open until its current sample is delivered");
+                    if (line!.StartsWith("event: ", StringComparison.Ordinal)) eventName = line[7..];
+                    else if (line.StartsWith("id: ", StringComparison.Ordinal)) eventId = line[4..];
+                    else if (line.StartsWith("data: ", StringComparison.Ordinal) && eventName == "metrics") metricData = line[6..];
+                }
+                using var metric = JsonDocument.Parse(metricData);
+                Assert(eventId == metric.RootElement.GetProperty("sequence").GetInt64().ToString(System.Globalization.CultureInfo.InvariantCulture), "Metrics SSE supplies an ID matching its sample sequence");
+                Assert(metric.RootElement.GetProperty("source").GetString() == "local-lightweight" && !metricData.Contains(token, StringComparison.Ordinal) && !metricData.Contains("api-private-host", StringComparison.Ordinal), "Metrics SSE contains only aggregate local counters without fixture identity or token");
             }
             using (var response = await client.GetAsync("/api/timeline"))
             {
@@ -462,14 +517,18 @@ internal static class Program
                 Assert(events.Any(item => item.GetProperty("kind").GetString() == "drift" && item.GetProperty("source").GetString() == "snapshot-diff"), "Timeline includes actual observed listener drift");
             }
             await Task.Delay(2100);
-            using (var response = await client.PostAsync("/api/cloud/fixture/success", null))
+            using (var response = await client.PostAsync("/api/cloud/azure-scope-2/inventory", null))
             {
                 Assert(response.IsSuccessStatusCode, "Successful cloud report with coverage warnings remains HTTP success");
                 using var report = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
                 Assert(report.RootElement.GetProperty("operationSucceeded").GetBoolean(), "Cloud report keeps its explicit success field");
             }
+            using (var response = await client.PostAsync("/api/cloud/azure-scope-2/inventory", null))
+            {
+                Assert(response.IsSuccessStatusCode && response.Headers.GetValues("X-Opscope-Cache").Single() == "hit" && successfulCloudCalls == 1, "Repeated cloud reads reuse their bounded redacted cache without another provider call or cooldown error");
+            }
             await Task.Delay(2100);
-            using (var response = await client.PostAsync("/api/cloud/fixture/failure", null))
+            using (var response = await client.PostAsync("/api/cloud/azure-scope-2/health", null))
             {
                 var text = await response.Content.ReadAsStringAsync();
                 using var report = JsonDocument.Parse(text);
@@ -500,6 +559,77 @@ internal static class Program
         // SQLite holds the database open while the server runs on Windows.
         // Inspect persisted bytes only after shutdown has disposed its connection.
         Assert(!Encoding.UTF8.GetString(File.ReadAllBytes(historyPath)).Contains(reflectedToken!, StringComparison.Ordinal), "History never stores session token");
+    }
+
+    private static async Task TestCloudCatalogAsync(HttpClient client, string token)
+    {
+        using var response = await client.GetAsync("/api/cloud/catalog");
+        var text = await response.Content.ReadAsStringAsync();
+        using var catalog = JsonDocument.Parse(text);
+        Assert(response.IsSuccessStatusCode && catalog.RootElement.GetProperty("version").GetInt32() == 2, "Authenticated cloud catalog declares its versioned contract");
+        var providers = catalog.RootElement.GetProperty("providers").EnumerateArray().ToArray();
+        var expected = new[] { "azure", "aws", "gcp", "oci", "digitalocean", "hetzner", "cloudflare", "openstack", "alibaba", "ibm", "scaleway" };
+        Assert(providers.Select(provider => provider.GetProperty("id").GetString()).Order(StringComparer.Ordinal).SequenceEqual(expected.Order(StringComparer.Ordinal)), "Catalog exposes all eleven unique canonical providers without requiring configured credentials");
+        var gcp = providers.Single(provider => provider.GetProperty("id").GetString() == "gcp");
+        Assert(gcp.GetProperty("scopes").GetArrayLength() == 0 && gcp.GetProperty("operations").EnumerateArray().Any(operation => operation.GetProperty("name").GetString() == "inventory" && operation.GetProperty("availability").GetString() == "not-configured"), "Known unconfigured providers expose their missing scope instead of an empty successful inventory");
+        var actions = catalog.RootElement.GetProperty("actions").EnumerateArray().ToArray();
+        Assert(actions.Any(action => action.GetProperty("actionKey").GetString() == "azure-scope-2/inventory") && actions.All(action => action.GetProperty("readOnly").GetBoolean()), "Catalog preserves explicitly configured action aliases as read-only actions");
+        Assert(!text.Contains(token, StringComparison.Ordinal) && !text.Contains("api-private-host", StringComparison.Ordinal), "Cloud discovery reveals no host evidence or session secret");
+        foreach (var (path, status) in new[]
+        {
+            ("/api/cloud/gcp/inventory", HttpStatusCode.Conflict),
+            ("/api/cloud/gcp/delete", HttpStatusCode.NotImplemented),
+            ("/api/cloud/not-a-provider/inventory", HttpStatusCode.NotFound)
+        })
+        {
+            using var result = await client.PostAsync(path, null);
+            Assert(result.StatusCode == status, "Cloud dispatch distinguishes unknown, unsupported, and unconfigured operations: " + path);
+        }
+        using (var coverageResponse = await client.GetAsync("/api/cloud/coverage"))
+        {
+            var coverage = await coverageResponse.Content.ReadAsStringAsync();
+            Assert(coverageResponse.IsSuccessStatusCode && coverage.Contains("not-requested", StringComparison.Ordinal) && !coverage.Contains(token, StringComparison.Ordinal), "Coverage starts as not-requested and carries no session token");
+        }
+    }
+
+    private static async Task TestMetricsHistoryAsync(HttpClient client, Func<int> collectionCount, string token)
+    {
+        var initialCollections = collectionCount();
+        using (var response = await client.GetAsync("/api/metrics/capabilities"))
+        {
+            using var capabilities = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            Assert(response.IsSuccessStatusCode && capabilities.RootElement.GetProperty("capacity").GetInt32() <= 720 && capabilities.RootElement.GetProperty("sampleIntervalSeconds").GetDouble() >= 5, "Metrics capabilities describe the bounded lightweight sampler independently of full evidence refresh");
+        }
+        using (var response = await client.GetAsync("/api/metrics/history?window=5m&limit=1"))
+        {
+            var text = await response.Content.ReadAsStringAsync();
+            using var history = JsonDocument.Parse(text);
+            var root = history.RootElement;
+            Assert(response.IsSuccessStatusCode && root.GetProperty("schemaVersion").GetInt32() == 1 && root.GetProperty("source").GetString() == "local-lightweight", "Metrics history names its version and aggregate source");
+            var points = root.GetProperty("points").EnumerateArray().ToArray();
+            Assert(points.Length <= 1 && root.GetProperty("capacity").GetInt32() <= 720, "Metrics history applies the requested response bound and retention capacity");
+            foreach (var point in points)
+            {
+                Assert(point.GetProperty("sequence").GetInt64() > 0 && point.GetProperty("sampledAtUtc").GetDateTimeOffset() <= DateTimeOffset.UtcNow, "Each metric has an actual UTC observation and positive sequence");
+                foreach (var name in new[] { "cpuPercent", "memoryPercent" })
+                {
+                    var value = point.GetProperty(name);
+                    Assert(value.ValueKind == JsonValueKind.Null || value.GetDouble() is >= 0 and <= 100, "Metrics use null for unavailable counters and bounded percentages for observations: " + name);
+                }
+            }
+            Assert(!text.Contains(token, StringComparison.Ordinal) && !text.Contains("api-private-host", StringComparison.Ordinal) && !text.Contains("private-user", StringComparison.Ordinal), "Session metrics expose no identity or session secret");
+        }
+        using (var response = await client.GetAsync("/api/metrics/history?window=1h&afterSequence=9223372036854775807"))
+        {
+            using var history = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            Assert(response.IsSuccessStatusCode && history.RootElement.GetProperty("points").GetArrayLength() == 0, "Metrics cursor beyond the last observation returns an empty interval without fabricated samples");
+        }
+        foreach (var query in new[] { "window=2m", "window=5m&window=15m", "limit=0", "limit=721", "limit=invalid", "afterSequence=-1", "afterSequence=999999999999999999999", "path=/etc/passwd" })
+        {
+            using var response = await client.GetAsync("/api/metrics/history?" + query);
+            Assert(response.StatusCode == HttpStatusCode.BadRequest, "Metrics history rejects malformed, duplicate, unknown, or out-of-range query values: " + query);
+        }
+        Assert(collectionCount() == initialCollections, "Metrics capabilities and history never invoke full evidence collection");
     }
 
     private static async Task TestOfflineAnalysisAsync(HttpClient client, Func<int> collectionCount, string token)

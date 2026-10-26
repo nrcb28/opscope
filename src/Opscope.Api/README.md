@@ -34,12 +34,95 @@ automatic refresh defaults to 30 seconds. The server accepts bounded requests,
 limits connection/header counts, and permits at most four bounded SSE streams.
 JSON uploads require strict UTF-8 and complete within ten seconds. Collection
 failures return HTTP 503 while preserving the last successful snapshot; HTTP 429
-indicates an actual cooldown or concurrency limit. Failed cloud reports return
-HTTP 502 with their redacted report and `operationSucceeded: false`; coverage
-warnings alone do not turn a successful operation into a failure.
+indicates an actual cooldown or concurrency limit, with `Retry-After` where supplied.
+Failed cloud reports return HTTP 502 with their redacted report and
+`operationSucceeded: false`; coverage warnings alone do not turn a successful
+operation into a failure. Provider-reported permission/rate-limit coverage remains
+in that report rather than being confused with the local session's authorization.
 Cloud callbacks are allowlisted provider/operation pairs and their reports pass
 through `ReportSecurity` before being returned. A policy callback supplies only a
 read-only view; no editor writes configuration or host state.
+
+## Cloud catalog, fixed scopes and report cache
+
+`GET /api/cloud/catalog` returns version 2 of the closed eleven-provider catalog:
+`providers[]` contain an `id`, display name, category, adapter version, anonymous
+configured `scopes[]` and actually supported `operations[]`. Operations identify
+read-only status, experimental coverage, resource types, required permissions,
+minimum freshness and whether an action is configured. `actions[]` supplies exact
+`actionKey`, `providerId`, `scopeAlias` and `operation` values that the UI may call.
+The catalog does not query credentials, expand scopes or contact providers.
+
+`GET /api/cloud/coverage` returns schema version 1 and the last observed status of
+each configured action: initially `not-requested`, then successful/partial, failed
+or timed out. This observation does not certify all services in an account.
+`GET /api/capabilities` remains compatible and includes the configured action keys.
+
+`POST /api/cloud/{scopeAlias}/{operation}` accepts no body. The alias is either a
+configured provider ID or an anonymous `provider-scope-N`, never a raw remote
+account or project. Provider and operation must be in the registry, and the exact
+action must already be bound in `ServerOptions.CloudActions`. The server rejects
+unknown providers with 404, unsupported operations with **501**
+(`OPERATION_UNSUPPORTED`), and supported operations without a configured action
+with **409** (`SCOPE_NOT_CONFIGURED`). A query that cannot complete returns 502
+with a sanitized error/report; a server-side sixty-second cancellation deadline
+returns 504. The existing gate/cooldown returns 429. These responses are distinct
+from a successful empty inventory.
+
+Completed report responses are cached **after redaction and session-token
+scrubbing** in this server session only. The cache holds at most 32 entries of
+512 KiB each (16 MiB payload ceiling); larger reports are returned but not cached.
+TTL is thirty seconds for successful ordinary reads, sixty seconds for successful
+`metrics` reads, and fifteen seconds for failed report responses. A cache hit
+returns the original status/report and observation time; it does not imply a new
+provider query. `X-Opscope-Cache: hit|miss` identifies reuse, and hits include
+`X-Opscope-Cache-Age-Seconds`. Timeout/exception responses are not report-cache
+entries. The cache is not written to SQLite or browser storage.
+
+## Aggregate host metrics and SSE
+
+One lightweight sampler per server observes aggregate host CPU and RAM every
+five seconds independently of full snapshots. It does not enumerate processes,
+services, disks or network interfaces. CPU uses deltas of cumulative counters;
+the first CPU value and unavailable/reset readings are `null`, not zero.
+Linux `/proc` and Windows native counters are supported; unsupported platforms
+remain explicitly unavailable. The session retains at most 720 identity-free
+observations in RAM, with sequence and elapsed-monotonic time ordering and a
+`clockAdjusted` marker for UTC corrections.
+
+`GET /api/metrics/capabilities` describes schema version, source, interval,
+capacity, supported windows and memory-only persistence.
+`GET /api/metrics/history` accepts only `window`, `limit`, and `afterSequence`:
+
+```text
+/api/metrics/history?window=15m&limit=720&afterSequence=0
+```
+
+Windows are `5m`, `15m`, `30m` or `1h` (default); `limit` is 1–720 (default 720),
+and `afterSequence` is a nonnegative integer (default 0). Unknown or repeated
+fields and invalid bounds return 400. Results contain only retained observations,
+with nullable CPU/RAM values, timestamps, source and coverage. Both routes use
+the same session/header checks as evidence endpoints. `/metrics` remains the
+existing Prometheus snapshot endpoint, separate from the in-memory series.
+
+The single authenticated `GET /api/events` connection carries these SSE events:
+
+| Event | Meaning |
+| --- | --- |
+| `snapshot` | Latest redacted full snapshot, preserving the existing contract. |
+| `metrics` | Latest identity-free aggregate sample with a monotonic `id`. |
+| `metrics-gap` | `{ "droppedSamples": N }` reports skipped metric observations. |
+| Comment heartbeat | Keeps idle transport observable without fabricating a sample. |
+
+Reconnect with `Last-Event-ID` in a header, not a token/sequence URL parameter.
+It must be one nonnegative integer no greater than the current sample sequence;
+invalid values return 400. A reconnect continues with the latest observation and
+explicit gap count; it does not promise an unlimited replay. Use bounded history
+for retained points. At most four streams run concurrently; each stream reconnects
+after two minutes, and **every write/flush has a ten-second cancellation deadline**.
+Slow readers receive only the latest available aggregate rather than building an
+unbounded pending queue. The client keeps its session token in the fetch header
+and uses one stream for both full snapshots and lightweight metrics.
 
 The web interface provides English/Spanish, light/dark themes, keyboard navigation
 and Ctrl+K global search, findings filters, process sorting and port evidence,

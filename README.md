@@ -52,9 +52,9 @@ Los informes admiten JSON, SARIF, JUnit, HTML, PDF, CSV, JSONL y CEF; ASFF exige
 
 ### Cloud, seguridad y desarrollo
 
-Azure y AWS requieren sus CLI oficiales instaladas, autenticación previa y permisos de lectura sobre los ámbitos elegidos. La consulta de metadatos es explícita. La recolección local funciona sin credenciales cloud; no activa servicios ni inicia sesión. Las notificaciones producen una vista previa y requieren `--confirm-send`; no hay envío desde la web.
+El catálogo incluye Azure, AWS, Google Cloud, OCI, DigitalOcean, Hetzner, Cloudflare, OpenStack, Alibaba, IBM y Scaleway. `opscope cloud catalog` muestra sus operaciones y permisos sin consultar credenciales. Los proveedores necesitan sus CLI autenticadas o un token de API de lectura y ámbitos explícitos; los nueve adaptadores nuevos son experimentales con cobertura limitada. La consulta de metadatos es explícita. La recolección local funciona sin credenciales cloud; no activa servicios ni inicia sesión. Las notificaciones producen una vista previa y requieren `--confirm-send`; no hay envío desde la web.
 
-La recolección no detiene procesos, cambia servicios, modifica el firewall ni eleva privilegios. La redacción es acotada: si no puede completar su contexto, omite texto y lo indica conservando cifras y severidades. Consulta la [política de seguridad](SECURITY.md), los [permisos cloud](docs/cloud.md), los [contratos de la API](src/Opscope.Api/README.md) y los [límites de las propuestas](docs/proposals.md).
+La recolección no detiene procesos, cambia servicios, modifica el firewall ni eleva privilegios. La redacción es acotada: si no puede completar su contexto, omite texto y lo indica conservando cifras y severidades. Consulta la [política de seguridad](SECURITY.md), los [permisos cloud](docs/cloud.md), los [contratos de la API](src/Opscope.Api/README.md) y los [límites de las propuestas](docs/proposals.md) y la [matriz de la auditoría UI/multicloud v4](docs/engineering-review-v4.md).
 
 ```bash
 python3 tests/cli_smoke.py
@@ -66,7 +66,7 @@ npx playwright install --with-deps chromium
 npm test
 ```
 
-Compila primero la CLI en Release para las pruebas Python. En Windows puedes usar `python` o `py` si `python3` no está disponible. CI ejecuta los diez proyectos de regresión .NET, CLI y pruebas de humo en Linux/Windows/macOS, y el navegador en Linux/Windows. Los comentarios explican las decisiones clave en **EN/ES**; los identificadores, comandos y esquemas públicos mantienen sus nombres para conservar compatibilidad. La preparación de releases genera artefactos y borradores; no publica automáticamente paquetes ni convierte un borrador en release pública.
+Compila primero la CLI en Release para las pruebas Python. En Windows puedes usar `python` o `py` si `python3` no está disponible. CI ejecuta todos los proyectos de regresión .NET, CLI y pruebas de humo en Linux/Windows/macOS, y el navegador en Linux/Windows. Los comentarios explican las decisiones clave en **EN/ES**; los identificadores, comandos y esquemas públicos mantienen sus nombres para conservar compatibilidad. La preparación de releases genera artefactos y borradores; no publica automáticamente paquetes ni convierte un borrador en release pública.
 
 ## English
 
@@ -84,7 +84,7 @@ Compila primero la CLI en Release para las pruebas Python. En Windows puedes usa
 - Snapshot drift detection across metrics, processes, services, disks, listeners, firewall/tool trust and coverage.
 - Stable snapshot JSON plus SARIF, JUnit, HTML/PDF, CSV, JSONL, CEF and real-context ASFF exports.
 - Strict YAML policies, declarative plugins and bounded scenario packs.
-- Optional Azure/AWS inventory, posture, health, patches, cost and supported baseline drift.
+- Optional catalog-driven collection across eleven cloud providers; established Azure/AWS operations plus experimental scoped Google Cloud, OCI, DigitalOcean, Hetzner, Cloudflare, OpenStack, Alibaba, IBM and Scaleway adapters.
 - IoC matching, observed timelines, fleet outliers and contextual triage.
 - Authenticated loopback UI, redacted SQLite history, Prometheus, SSE and narrow MCP tools.
 - Custody manifests, SHA-256, optional RSA-PSS signatures and AES-GCM/RSA-OAEP encryption.
@@ -160,7 +160,7 @@ Collection is local and read-only. External commands are launched without a shel
 ```text
 src/Opscope/       CLI and command dispatch
 src/Opscope.Core/  Collection, models, drift, redaction and bounded input
-src/Opscope.Cloud/ Optional official-CLI-backed Azure/AWS providers
+src/Opscope.Cloud/ Optional read-only cloud registry, CLI and bounded HTTPS adapters
 src/Opscope.Reporting/ Policies, packs, exports and protected bundles
 src/Opscope.Evidence/ Optional evidence, IoCs, timeline and fleet
 src/Opscope.Api/   Embedded local UI, history, metrics and MCP
@@ -225,6 +225,9 @@ opscope mcp
 opscope azure inventory --subscription <subscription-id>
 opscope aws posture --profile audit --region eu-west-1
 opscope cloud patches --provider aws --profile audit --region eu-west-1
+opscope cloud catalog
+opscope gcp inventory --project <project-id>
+opscope serve --cloud gcp --gcp-projects <project-id>
 ```
 
 The embedded English/Spanish UI has light/dark themes, keyboard search, findings, processes/ports, services, drift, observed timeline, history/trends, fleet upload, policy validation/download and verified report/bundle downloads. No assets come from a CDN. Policy editing is preview/download only and never applies host configuration. The server listens only on `127.0.0.1`, on a random port by default, with a fresh session token, exact Host/Origin checks and no CORS grant. Full identifiers require an explicit toggle; history and exports stay redacted.
@@ -239,11 +242,11 @@ CLI commands that analyze `--input` or a saved `report` snapshot reject collecti
 
 For SSH forwarding, preserve the same local and remote port so Host/Origin checks remain valid: for example, `serve --port 48321` and `ssh -L 48321:127.0.0.1:48321 host`. Prometheus, SSE and HTTP MCP require the session token. Stdio MCP exposes only snapshots/findings. [API details](src/Opscope.Api/README.md).
 
-Cloud queries require an installed authenticated Azure CLI (Resource Graph extension preinstalled) or AWS CLI v2. The implementation uses official CLIs instead of adding the proposed modular cloud SDKs. It disables telemetry, dynamic extension installation, auto-upgrade and interactive prompts in child processes. Existing authentication caches remain under the CLIs' control and are not included in evidence.
+Cloud queries require an existing authenticated provider CLI or a scoped read-only API token. `cloud catalog` lists eleven providers and their actual operations without contacting a cloud service; the nine new adapters are experimental. Google Cloud uses an existing `gcloud` session and explicit projects. DigitalOcean, Hetzner, Cloudflare and Scaleway use fixed HTTPS endpoints and server-side token environment variables. See [provider setup and actual coverage](docs/cloud.md). Established Azure/AWS queries use Azure CLI (Resource Graph extension preinstalled) or AWS CLI v2 instead of modular cloud SDKs. It disables telemetry, dynamic extension installation, auto-upgrade and interactive prompts in child processes. Existing authentication caches remain under the CLIs' control and are not included in evidence.
 
-Cloud operations are inventory, posture, health, VM/instance context, bundle, drift, patches and cost; Azure also exposes Arc. Multiple scopes are fixed when a UI session starts and appear as anonymous numbered choices. Identity-only IMDS/IMDSv2 lookup occurs only through explicit cloud commands or `--cloud-context`. Local-to-cloud identity is asserted only when metadata matches the selected resource; SSM service state never proves cloud Online status. No agent or paid service is enabled.
+Azure/AWS operations are inventory, posture, health, VM/instance context, bundle, drift, patches and cost; Azure also exposes Arc. New adapters advertise only implemented operations; reported machine/zone state and configuration do not prove application health or complete security posture. Multiple scopes are fixed when a UI session starts and appear as anonymous numbered choices. Identity-only IMDS/IMDSv2 lookup occurs only through explicit cloud commands or `--cloud-context`. Local-to-cloud identity is asserted only when metadata matches the selected resource; SSM service state never proves cloud Online status. No agent or paid service is enabled.
 
-See [cloud commands, permissions and limits](docs/cloud.md), [Azure drift formats](docs/azure-drift.md), and the [read-only AWS IAM policy example](docs/cloud-readonly-iam.json). Raw Bicep/HCL is not executed; use compiled ARM or supported Terraform JSON. Cost evidence is observational and does not delete/resize resources or promise savings.
+See the [v4 engineering implementation matrix](docs/engineering-review-v4.md), [cloud commands, permissions and limits](docs/cloud.md), [Azure drift formats](docs/azure-drift.md), and the [read-only AWS IAM policy example](docs/cloud-readonly-iam.json). Raw Bicep/HCL is not executed; use compiled ARM or supported Terraform JSON. Cost evidence is observational and does not delete/resize resources or promise savings.
 
 `notify` previews bounded redacted summaries for Slack, Teams, Jira, Azure DevOps, Azure Monitor or CloudWatch. Only `--confirm-send` enables delivery to an existing destination with separately supplied credentials. Neither local collection nor the web UI sends notifications. [Delivery and release setup](docs/delivery.md).
 

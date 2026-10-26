@@ -20,6 +20,10 @@ internal static class OpenApiContract
             ["/api/fleet"] = new { post = Operation("Stateless local fleet comparison; redacted indexed host labels and observed outliers", "application/json", body: JsonBody("An object with only snapshots: an array of 2–100 validated snapshots. Total request limit 2 MiB. Distinct host identities are required; generic redacted host labels cannot establish identity. No uploads or results are stored.")) },
             ["/api/settings"] = new { get = Operation("Read-only configuration without tokens or host paths", "application/json") },
             ["/api/capabilities"] = new { get = Operation("Configured cloud operation keys and policy-view availability", "application/json") },
+            ["/api/cloud/catalog"] = new { get = Operation("Version 2 closed provider catalog with implemented read capabilities and anonymous configured action aliases; no remote credential discovery", "application/json") },
+            ["/api/cloud/coverage"] = new { get = Operation("Per-action last execution state and observation timestamp; not-requested is distinct from succeeded or partial", "application/json") },
+            ["/api/metrics/capabilities"] = new { get = Operation("Lightweight aggregate host metrics support, sampling interval, and memory-only retention bounds", "application/json") },
+            ["/api/metrics/history"] = new { get = Operation("At most 720 aggregate samples from the in-memory host ring; unknown or repeated query fields rejected", "application/json", parameters: [Parameter("window", "query", false, "string", "5m, 15m, 30m, or 1h (default); only available observations are returned."), Parameter("limit", "query", false, "integer", "1–720; default 720."), Parameter("afterSequence", "query", false, "integer", "Nonnegative monotonic sequence cursor.")]) },
             ["/api/policy"] = new { get = Operation("Configured read-only policy view; 404 when unavailable", "application/json") },
             ["/api/policy/preview"] = new { post = Operation("Validate and evaluate in-memory YAML against current evidence; no policy or host writes", "application/json", body: JsonBody("An object with only a text string containing at most 128 KiB of strict policy YAML. The JSON body is capped at 512 KiB.")) },
             ["/api/timeline"] = new { get = Operation("Redacted observed boot, snapshot, failed-service observations, and retained-baseline drift; no invented event times", "application/json") },
@@ -43,7 +47,7 @@ internal static class OpenApiContract
                 })
             },
             ["/metrics"] = new { get = Operation("Prometheus gauges from cached evidence; no identity labels", "text/plain") },
-            ["/api/events"] = new { get = Operation("Redacted snapshot SSE events; at most four streams, two-minute reconnect limit", "text/event-stream") },
+            ["/api/events"] = new { get = Operation("Single authenticated SSE stream: redacted snapshot and aggregate metrics events, monotonic metric IDs, metrics-gap dropped-sample notices and comment heartbeats. At most four streams, two-minute reconnect and ten-second write deadlines; optional Last-Event-ID cursor", "text/event-stream") },
             ["/mcp"] = new { post = Operation("Read-only MCP JSON-RPC; initialize, ping, tools/list, tools/call", "application/json", body: JsonBody("One JSON-RPC 2.0 object bounded to 64 KiB. Only opscope_snapshot and opscope_findings accept tool calls, with empty arguments.")) },
             ["/api/openapi.json"] = new { get = Operation("This authenticated OpenAPI contract", "application/json") }
         }
@@ -94,6 +98,8 @@ internal static class OpenApiContract
             ["429"] = new { description = "Request, stream, or collection limit reached" },
             ["502"] = new { description = "Cloud operation failed; the redacted AnalysisReport retains failure and coverage details" },
             ["504"] = new { description = "Cloud operation exceeded its deadline" },
+            ["409"] = new { description = "Known cloud operation has no configured scope in this session" },
+            ["501"] = new { description = "Known provider does not support the requested operation" },
             ["503"] = new { description = "Evidence is unavailable" }
         } };
         if (parameters is not null) operation["parameters"] = parameters;

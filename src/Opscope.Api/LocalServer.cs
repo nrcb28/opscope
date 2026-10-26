@@ -13,6 +13,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Hosting;
 using Opscope.Evidence;
+using Opscope.Cloud;
 
 namespace Opscope.Api;
 
@@ -47,6 +48,9 @@ public static class LocalServer
         using var store = new HistoryStore(historyPath, options.RetentionCount, options.RetentionDays);
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var state = new EvidenceState(options, store, token);
+        var cloudWorkspace = new CloudWorkspace(options.CloudActions);
+        await using var metrics = new HostMetricsSampler();
+        metrics.Start();
         await state.RefreshAsync(lifetime.Token, force: true);
         var builder = WebApplication.CreateSlimBuilder(new WebApplicationOptions { Args = [], ApplicationName = typeof(LocalServer).Assembly.FullName });
         builder.Logging.ClearProviders();
@@ -80,7 +84,7 @@ public static class LocalServer
                 !string.Equals(context.Request.Host.Value, origin[7..], StringComparison.Ordinal) ||
                 !ValidSource(context.Request, origin))
             { context.Response.StatusCode = 403; return; }
-            var shell = context.Request.Method == "GET" && context.Request.Path.Value is "/" or "/app.js" or "/app.css";
+            var shell = context.Request.Method == "GET" && context.Request.Path.Value is "/" or "/app.js" or "/app.css" or "/realtime-charts.js";
             if (!shell && !ValidToken(context.Request.Headers["X-Opscope-Token"].ToString(), token))
             { context.Response.StatusCode = 401; return; }
             if (!requests.Allow()) { context.Response.StatusCode = 429; context.Response.Headers.RetryAfter = "1"; return; }
@@ -98,6 +102,29 @@ public static class LocalServer
         app.MapGet("/", () => Asset("index.html", "text/html; charset=utf-8"));
         app.MapGet("/app.js", () => Asset("app.js", "text/javascript; charset=utf-8"));
         app.MapGet("/app.css", () => Asset("app.css", "text/css; charset=utf-8"));
+        app.MapGet("/realtime-charts.js", () => Asset("realtime-charts.js", "text/javascript; charset=utf-8"));
+        app.MapGet("/api/metrics/capabilities", () => Results.Json(metrics.Capabilities));
+        app.MapGet("/api/metrics/history", (HttpContext context) =>
+        {
+            var query = context.Request.Query;
+            if (query.Any(item => item.Key is not ("window" or "limit" or "afterSequence") || item.Value.Count != 1))
+                return Results.BadRequest(new { error = "Unknown or repeated metrics query field." });
+            var window = query["window"].ToString() switch
+            {
+                "" or "1h" => TimeSpan.FromHours(1),
+                "5m" => TimeSpan.FromMinutes(5),
+                "15m" => TimeSpan.FromMinutes(15),
+                "30m" => TimeSpan.FromMinutes(30),
+                _ => TimeSpan.Zero
+            };
+            var limit = 720;
+            long afterSequence = 0;
+            if (window == TimeSpan.Zero ||
+                query.ContainsKey("limit") && (!int.TryParse(query["limit"], NumberStyles.None, CultureInfo.InvariantCulture, out limit) || limit is < 1 or > 720) ||
+                query.ContainsKey("afterSequence") && (!long.TryParse(query["afterSequence"], NumberStyles.None, CultureInfo.InvariantCulture, out afterSequence) || afterSequence < 0))
+                return Results.BadRequest(new { error = "Use window 5m, 15m, 30m or 1h; limit 1–720; afterSequence >= 0." });
+            return Results.Json(metrics.History(window, limit, afterSequence));
+        });
         app.MapGet("/api/snapshot", (HttpContext context) => state.Latest is { } snapshot
             ? Results.Text(Reporter.ToJson(snapshot, redact: context.Request.Query["full"] != "true"), "application/json") : Results.StatusCode(503));
         app.MapGet("/api/findings", () => state.Latest is { } snapshot ? Results.Json(Reporter.RedactForOutput(snapshot).Findings) : Results.StatusCode(503));
@@ -150,7 +177,9 @@ public static class LocalServer
             return ReportResult(report, token);
         });
         app.MapGet("/api/settings", () => Results.Json(new { readOnly = true, redactedByDefault = true, historyRedacted = true, retentionCount = options.RetentionCount, retentionDays = options.RetentionDays, refreshSeconds = options.RefreshInterval.TotalSeconds, maxUploadBytes = HistoryStore.MaximumSnapshotBytes, telemetry = false, notifications = false, listener = "127.0.0.1", mcpTransport = "authenticated HTTP JSON-RPC at /mcp; stdio through opscope mcp" }));
-        app.MapGet("/api/capabilities", () => Results.Json(new { cloud = options.CloudActions?.Keys.Order(StringComparer.Ordinal).ToArray() ?? [], policy = options.PolicyView is not null }));
+        app.MapGet("/api/capabilities", () => Results.Json(new { cloud = options.CloudActions?.Keys.Where(cloudWorkspace.IsConfigured).Order(StringComparer.Ordinal).ToArray() ?? [], policy = options.PolicyView is not null }));
+        app.MapGet("/api/cloud/catalog", () => Results.Json(cloudWorkspace.Catalog()));
+        app.MapGet("/api/cloud/coverage", () => Results.Json(cloudWorkspace.Coverage()));
         app.MapGet("/api/policy", () => options.PolicyView is null ? Results.NotFound() : Results.Json(options.PolicyView()));
         app.MapPost("/api/policy/preview", async (HttpContext context) =>
         {
@@ -182,14 +211,37 @@ public static class LocalServer
         app.MapPost("/api/cloud/{provider}/{operation}", async (string provider, string operation, HttpContext context) =>
         {
             if (context.Request.ContentLength is > 0 || context.Request.Headers.ContainsKey("Transfer-Encoding")) return Results.BadRequest();
-            if (options.CloudActions is null || !options.CloudActions.TryGetValue($"{provider}/{operation}", out var action)) return Results.NotFound();
+            var providerId = CloudWorkspace.ProviderId(provider);
+            if (providerId is null) return Results.NotFound(new { error = "Unknown provider.", code = "PROVIDER_UNKNOWN" });
+            if (!CloudProviderRegistry.SupportsOperation(providerId, operation)) return Results.Json(new { error = "This read operation is unsupported by the adapter.", code = "OPERATION_UNSUPPORTED" }, statusCode: 501);
+            var actionKey = $"{provider}/{operation}";
+            if (!cloudWorkspace.IsConfigured(actionKey) || options.CloudActions is null || !options.CloudActions.TryGetValue(actionKey, out var action))
+                return Results.Conflict(new { error = "This operation has no configured scope in this session.", code = "SCOPE_NOT_CONFIGURED" });
+            if (cloudWorkspace.Cached(actionKey) is { } cached)
+            {
+                context.Response.Headers["X-Opscope-Cache"] = "hit";
+                context.Response.Headers["X-Opscope-Cache-Age-Seconds"] = Math.Max(0, (int)(DateTimeOffset.UtcNow - cached.CachedAtUtc).TotalSeconds).ToString(CultureInfo.InvariantCulture);
+                return Results.Text(cached.Json, "application/json", statusCode: cached.StatusCode);
+            }
             if (!await state.TryEnterActionAsync(context.RequestAborted)) return Results.StatusCode(429);
             try
             {
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);
                 timeout.CancelAfter(TimeSpan.FromSeconds(60));
-                try { return ReportResult(await action(timeout.Token), token); }
-                catch (OperationCanceledException) when (timeout.IsCancellationRequested && !context.RequestAborted.IsCancellationRequested) { return Results.StatusCode(504); }
+                try
+                {
+                    var report = await action(timeout.Token);
+                    cloudWorkspace.Record(actionKey, report);
+                    var json = ScrubSessionToken(ReportSecurity.Serialize(report), token);
+                    var statusCode = report.OperationSucceeded ? 200 : 502;
+                    cloudWorkspace.Cache(actionKey, json, statusCode);
+                    context.Response.Headers["X-Opscope-Cache"] = "miss";
+                    return Results.Text(json, "application/json", statusCode: statusCode);
+                }
+                catch (OperationCanceledException) when (timeout.IsCancellationRequested && !context.RequestAborted.IsCancellationRequested)
+                { cloudWorkspace.RecordFailure(actionKey, "timed-out"); return Results.StatusCode(504); }
+                catch (Exception error) when (error is IOException or InvalidOperationException or System.ComponentModel.Win32Exception or JsonException)
+                { cloudWorkspace.RecordFailure(actionKey, "failed"); return Results.Json(new { error = "Read-only cloud query failed. Check the local credential setup and scope permissions.", code = "PROVIDER_UNAVAILABLE" }, statusCode: 502); }
             }
             finally { state.ExitAction(); }
         });
@@ -246,6 +298,10 @@ public static class LocalServer
         var streams = 0;
         app.MapGet("/api/events", async (HttpContext context) =>
         {
+            long sequence = 0;
+            if (context.Request.Headers.TryGetValue("Last-Event-ID", out var lastId) &&
+                (lastId.Count != 1 || !long.TryParse(lastId, NumberStyles.None, CultureInfo.InvariantCulture, out sequence) || sequence < 0 || sequence > (metrics.Latest?.Sequence ?? 0)))
+            { context.Response.StatusCode = 400; return; }
             if (Interlocked.Increment(ref streams) > 4) { Interlocked.Decrement(ref streams); context.Response.StatusCode = 429; return; }
             try
             {
@@ -256,15 +312,26 @@ public static class LocalServer
                 using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
                 do
                 {
+                    // Keep only the latest aggregate when a reader falls behind. Socket writes have a bounded deadline.
+                    using var write = CancellationTokenSource.CreateLinkedTokenSource(timeout.Token);
+                    write.CancelAfter(TimeSpan.FromSeconds(10));
                     var snapshot = state.Latest;
                     if (snapshot is not null && previous != snapshot.CollectedAtUtc)
                     {
                         previous = snapshot.CollectedAtUtc;
                         var json = JsonSerializer.Serialize(Reporter.RedactForOutput(snapshot), JsonOptions);
-                        await context.Response.WriteAsync($"event: snapshot\ndata: {json}\n\n", timeout.Token);
+                        await context.Response.WriteAsync($"event: snapshot\ndata: {json}\n\n", write.Token);
                     }
-                    else await context.Response.WriteAsync(": heartbeat\n\n", timeout.Token);
-                    await context.Response.Body.FlushAsync(timeout.Token);
+                    if (metrics.Latest is { } sample && sample.Sequence > sequence)
+                    {
+                        if (sequence > 0 && sample.Sequence > sequence + 1)
+                            await context.Response.WriteAsync($"event: metrics-gap\ndata: {{\"droppedSamples\":{sample.Sequence - sequence - 1}}}\n\n", write.Token);
+                        sequence = sample.Sequence;
+                        var json = JsonSerializer.Serialize(sample, JsonOptions);
+                        await context.Response.WriteAsync($"id: {sequence}\nevent: metrics\ndata: {json}\n\n", write.Token);
+                    }
+                    await context.Response.WriteAsync(": heartbeat\n\n", write.Token);
+                    await context.Response.Body.FlushAsync(write.Token);
                 } while (await timer.WaitForNextTickAsync(timeout.Token));
             }
             catch (OperationCanceledException) { }

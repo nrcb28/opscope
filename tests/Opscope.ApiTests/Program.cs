@@ -41,7 +41,11 @@ internal static class Program
                         ["azure-scope-1/inventory"] = _ => Task.FromResult(new AnalysisReport("cloud/azure/inventory", DateTimeOffset.UtcNow, [], new { resourceCount = 3 })),
                         ["aws-scope-20/health"] = _ => Task.FromResult(new AnalysisReport("cloud/aws/health", DateTimeOffset.UtcNow, [], new { resourceCount = 5 })),
                         ["gcp-scope-1/metrics"] = _ => Task.FromResult(CloudMetricFixture("gcp")),
-                        ["hetzner-scope-1/metrics"] = _ => Task.FromResult(CloudMetricFixture("hetzner"))
+                        ["hetzner-scope-1/metrics"] = _ => Task.FromResult(CloudMetricFixture("hetzner")),
+                        ["gcp-scope-1/scc"] = _ => Task.FromResult(AdvancedCloudFixture("scc")),
+                        ["gcp-scope-1/cost"] = _ => Task.FromResult(AdvancedCloudFixture("cost")),
+                        ["kubernetes-scope-1/inventory"] = _ => Task.FromResult(AdvancedCloudFixture("kubernetes-inventory")),
+                        ["kubernetes-scope-1/metrics"] = _ => Task.FromResult(AdvancedCloudFixture("kubernetes-metrics"))
                     }
                 }, shutdown.Token);
                 return 0;
@@ -89,6 +93,43 @@ internal static class Program
             provider, metrics = new[] { series },
             coverage = new CloudCoverage(CoverageState.Complete, now, 1, 1, 1, [])
         });
+    }
+
+    private static AnalysisReport AdvancedCloudFixture(string operation)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var coverage = new CloudCoverage(CoverageState.Partial, now, 1, 1, 1, ["Synthetic bounded observation; no account or cluster was queried."]);
+        if (operation == "scc") return new("cloud/gcp/scc", now,
+            [new(FindingSeverity.Warning, "GCP_SCC_ACTIVE", "Existing SCC finding", "Observed active finding from the configured project.", "Review the existing finding in Security Command Center.")],
+            new { provider = "gcp", coverage, scc = new { findingsCount = 1, scopeKind = "project", location = "global", source = "Security Command Center", findings = new[] { new { category = "SYNTHETIC_FINDING", severity = "HIGH", state = "ACTIVE", eventTimeUtc = now.AddMinutes(-10) } } } }, coverage.Warnings);
+        if (operation == "cost") return new("cloud/gcp/cost", now, [], new
+        {
+            provider = "gcp", coverage,
+            billing = new
+            {
+                currencySubtotals = new[]
+                {
+                    new { currency = "EUR", observedCost = 12.5m, observedCredits = -2m, observedNetCost = 10.5m, observedRows = 2 },
+                    new { currency = "USD", observedCost = 4m, observedCredits = -1m, observedNetCost = 3m, observedRows = 1 }
+                },
+                rowsRead = 4, matchedRows = 3, periodStartUtc = now.AddDays(-1), periodEndUtc = now, isComplete = false
+            }
+        }, ["Only observed export rows contribute to these subtotals. They are not the total bill."]);
+        var cluster = new { scopeKind = "cluster", relation = "unverified", cloudCorrelationVerified = false, namespacesQueried = 1, includesNodes = false };
+        if (operation == "kubernetes-metrics") return new("cloud/kubernetes/metrics", now, [], new
+        {
+            provider = "kubernetes", coverage, cluster,
+            metrics = new[]
+            {
+                new { metric = "pod.cpu", unit = "millicores", aggregation = "instantaneous", samplingPeriodSeconds = (int?)null, source = "metrics-server", points = new[] { new { timeUtc = now, value = 230d } } },
+                new { metric = "pod.memory", unit = "bytes", aggregation = "instantaneous", samplingPeriodSeconds = (int?)null, source = "metrics-server", points = new[] { new { timeUtc = now, value = 33554432d } } }
+            }
+        }, coverage.Warnings);
+        return new("cloud/kubernetes/inventory", now, [], new
+        {
+            provider = "kubernetes", coverage, cluster,
+            resources = new[] { new CloudResource("kubernetes", "[redacted-account]", "[redacted-region]", "[redacted-id]", "kubernetes.pod", "[redacted-name]", new { state = "Running", readyContainers = 1, containerCount = 1, restartCount = 0 }) }
+        }, coverage.Warnings);
     }
 
     private static void TestHistory()
@@ -278,7 +319,12 @@ internal static class Program
                     Interlocked.Increment(ref successfulCloudCalls);
                     return Task.FromResult(new AnalysisReport("cloud/azure", DateTimeOffset.UtcNow, [], new { count = 1 }, ["A coverage limitation is not an operation failure."]));
                 },
-                ["azure-scope-2/health"] = _ => Task.FromResult(new AnalysisReport("cloud/azure", DateTimeOffset.UtcNow, [], new { detail = "reflected " + reflectedToken }, ["Provider coverage failed."]) { OperationSucceeded = false })
+                ["azure-scope-2/health"] = _ => Task.FromResult(new AnalysisReport("cloud/azure", DateTimeOffset.UtcNow, [], new { detail = "reflected " + reflectedToken }, ["Provider coverage failed."]) { OperationSucceeded = false }),
+                ["gcp-scope-3/scc"] = _ => Task.FromResult(AdvancedCloudFixture("scc")),
+                ["gcp-scope-3/cost"] = _ => Task.FromResult(AdvancedCloudFixture("cost")),
+                ["kubernetes-scope-2/inventory"] = _ => Task.FromResult(AdvancedCloudFixture("kubernetes-inventory")),
+                ["kubernetes-scope-2/metrics"] = _ => Task.FromResult(AdvancedCloudFixture("kubernetes-metrics")),
+                ["kubernetes-scope-2/health"] = _ => Task.FromResult(new AnalysisReport("cloud/kubernetes/health", DateTimeOffset.UtcNow, [], new { coverage = new { state = "no_data" } }))
             }
         }, stop.Token);
         try
@@ -535,6 +581,7 @@ internal static class Program
                 Assert(response.StatusCode == HttpStatusCode.BadGateway && !report.RootElement.GetProperty("operationSucceeded").GetBoolean(), "Failed cloud coverage returns HTTP502 with its analysis report");
                 Assert(!text.Contains(token, StringComparison.Ordinal), "Cloud report free text cannot reflect the active session token");
             }
+            await TestAdvancedCloudActionsAsync(client, token);
             await Task.Delay(2100);
             DateTimeOffset previousObservation;
             using (var previous = JsonDocument.Parse(await client.GetStringAsync("/api/snapshot"))) previousObservation = previous.RootElement.GetProperty("collectedAtUtc").GetDateTimeOffset();
@@ -568,17 +615,23 @@ internal static class Program
         using var catalog = JsonDocument.Parse(text);
         Assert(response.IsSuccessStatusCode && catalog.RootElement.GetProperty("version").GetInt32() == 2, "Authenticated cloud catalog declares its versioned contract");
         var providers = catalog.RootElement.GetProperty("providers").EnumerateArray().ToArray();
-        var expected = new[] { "azure", "aws", "gcp", "oci", "digitalocean", "hetzner", "cloudflare", "openstack", "alibaba", "ibm", "scaleway" };
-        Assert(providers.Select(provider => provider.GetProperty("id").GetString()).Order(StringComparer.Ordinal).SequenceEqual(expected.Order(StringComparer.Ordinal)), "Catalog exposes all eleven unique canonical providers without requiring configured credentials");
+        var expected = new[] { "azure", "aws", "gcp", "oci", "digitalocean", "hetzner", "cloudflare", "openstack", "alibaba", "ibm", "scaleway", "kubernetes" };
+        Assert(providers.Select(provider => provider.GetProperty("id").GetString()).Order(StringComparer.Ordinal).SequenceEqual(expected.Order(StringComparer.Ordinal)), "Catalog exposes eleven cloud providers and a separate canonical Kubernetes adapter without requiring credentials");
+        Assert(providers.Single(provider => provider.GetProperty("id").GetString() == "kubernetes").GetProperty("category").GetString() == "cluster" && providers.Count(provider => provider.GetProperty("category").GetString() != "cluster") == 11, "Kubernetes is classified as a cluster adapter rather than a twelfth infrastructure cloud");
         var gcp = providers.Single(provider => provider.GetProperty("id").GetString() == "gcp");
-        Assert(gcp.GetProperty("scopes").GetArrayLength() == 0 && gcp.GetProperty("operations").EnumerateArray().Any(operation => operation.GetProperty("name").GetString() == "inventory" && operation.GetProperty("availability").GetString() == "not-configured"), "Known unconfigured providers expose their missing scope instead of an empty successful inventory");
+        Assert(gcp.GetProperty("scopes").GetArrayLength() == 1 && gcp.GetProperty("operations").EnumerateArray().Any(operation => operation.GetProperty("name").GetString() == "inventory" && operation.GetProperty("availability").GetString() == "not-configured"), "Configuring an advanced GCP action does not implicitly enable other operations in that scope");
+        var unconfigured = providers.Single(provider => provider.GetProperty("id").GetString() == "scaleway");
+        Assert(unconfigured.GetProperty("scopes").GetArrayLength() == 0 && unconfigured.GetProperty("operations").EnumerateArray().Any(operation => operation.GetProperty("name").GetString() == "inventory" && operation.GetProperty("availability").GetString() == "not-configured"), "Known unconfigured providers expose their missing scope instead of an empty successful inventory");
         var actions = catalog.RootElement.GetProperty("actions").EnumerateArray().ToArray();
         Assert(actions.Any(action => action.GetProperty("actionKey").GetString() == "azure-scope-2/inventory") && actions.All(action => action.GetProperty("readOnly").GetBoolean()), "Catalog preserves explicitly configured action aliases as read-only actions");
+        foreach (var action in new[] { "gcp-scope-3/scc", "gcp-scope-3/cost", "kubernetes-scope-2/inventory", "kubernetes-scope-2/metrics" })
+            Assert(actions.Any(item => item.GetProperty("actionKey").GetString() == action), "Catalog exposes only the explicitly configured advanced action: " + action);
         Assert(!text.Contains(token, StringComparison.Ordinal) && !text.Contains("api-private-host", StringComparison.Ordinal), "Cloud discovery reveals no host evidence or session secret");
         foreach (var (path, status) in new[]
         {
             ("/api/cloud/gcp/inventory", HttpStatusCode.Conflict),
             ("/api/cloud/gcp/delete", HttpStatusCode.NotImplemented),
+            ("/api/cloud/kubernetes/exec", HttpStatusCode.NotImplemented),
             ("/api/cloud/not-a-provider/inventory", HttpStatusCode.NotFound)
         })
         {
@@ -590,6 +643,38 @@ internal static class Program
             var coverage = await coverageResponse.Content.ReadAsStringAsync();
             Assert(coverageResponse.IsSuccessStatusCode && coverage.Contains("not-requested", StringComparison.Ordinal) && !coverage.Contains(token, StringComparison.Ordinal), "Coverage starts as not-requested and carries no session token");
         }
+    }
+
+    private static async Task TestAdvancedCloudActionsAsync(HttpClient client, string token)
+    {
+        foreach (var (action, expectedKind) in new[]
+        {
+            ("gcp-scope-3/scc", "cloud/gcp/scc"), ("gcp-scope-3/cost", "cloud/gcp/cost"),
+            ("kubernetes-scope-2/inventory", "cloud/kubernetes/inventory"), ("kubernetes-scope-2/metrics", "cloud/kubernetes/metrics")
+        })
+        {
+            await Task.Delay(2100);
+            using var response = await client.PostAsync("/api/cloud/" + action, null);
+            var text = await response.Content.ReadAsStringAsync();
+            using var report = JsonDocument.Parse(text);
+            Assert(response.IsSuccessStatusCode && report.RootElement.GetProperty("kind").GetString() == expectedKind, "Advanced cloud dispatch calls its exact preconfigured scope and operation: " + action);
+            Assert(!text.Contains(token, StringComparison.Ordinal) && !text.Contains("api-private-host", StringComparison.Ordinal), "Advanced report remains separate from live host identity and session secrets: " + action);
+            var data = report.RootElement.GetProperty("data");
+            if (action.EndsWith("/cost", StringComparison.Ordinal))
+                Assert(!data.GetProperty("billing").GetProperty("isComplete").GetBoolean() && data.GetProperty("billing").GetProperty("currencySubtotals")[0].GetProperty("observedNetCost").GetDecimal() == 10.5m, "Billing fixture preserves the observed currency subtotal and explicitly denies a complete-bill claim");
+            if (action.StartsWith("kubernetes", StringComparison.Ordinal))
+                Assert(!data.GetProperty("cluster").GetProperty("cloudCorrelationVerified").GetBoolean(), "Kubernetes observations cannot infer a cloud identity match from a context name");
+            if (action == "kubernetes-scope-2/metrics")
+                Assert(data.GetProperty("metrics")[0].GetProperty("unit").GetString() == "millicores" && data.GetProperty("metrics")[0].GetProperty("points")[0].GetProperty("value").GetDouble() == 230, "Kubernetes usage preserves millicores rather than converting an instantaneous sample to a percentage or history");
+        }
+        await Task.Delay(2100);
+        using (var emptyResponse = await client.PostAsync("/api/cloud/kubernetes-scope-2/health", null))
+            Assert(emptyResponse.IsSuccessStatusCode, "A successful read with no observations remains distinct from a failed request");
+        using var coverageResponse = await client.GetAsync("/api/cloud/coverage");
+        using var coverage = JsonDocument.Parse(await coverageResponse.Content.ReadAsStringAsync());
+        var observations = coverage.RootElement.GetProperty("actions").EnumerateArray().ToArray();
+        Assert(observations.Single(action => action.GetProperty("actionKey").GetString() == "kubernetes-scope-2/health").GetProperty("status").GetString() == "no-data", "Coverage preserves no-data rather than presenting successful transport as complete observation");
+        Assert(observations.Where(action => action.GetProperty("actionKey").GetString()!.StartsWith("gcp-scope-3", StringComparison.Ordinal) || action.GetProperty("actionKey").GetString()!.StartsWith("kubernetes-scope-2", StringComparison.Ordinal) && !action.GetProperty("actionKey").GetString()!.EndsWith("/health", StringComparison.Ordinal)).All(action => action.GetProperty("status").GetString() == "partial"), "Advanced coverage preserves declared partial observations despite successful callback execution");
     }
 
     private static async Task TestMetricsHistoryAsync(HttpClient client, Func<int> collectionCount, string token)

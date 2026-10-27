@@ -6,13 +6,14 @@ namespace Opscope.Cloud;
 
 /// <summary>Optional Google Cloud read-only collector using the caller's existing gcloud session.</summary>
 /// <remarks>gcloud credentials are separate from Application Default Credentials. This collector never logs in.</remarks>
-public sealed class GcpProvider(ICloudCommandRunner runner, IGcpMonitoringReader? monitoring = null) : ICloudProvider
+public sealed class GcpProvider(ICloudCommandRunner runner, IGcpMonitoringReader? monitoring = null, IGcpAdvancedReader? advanced = null) : ICloudProvider
 {
     private const int MaxRowsPerRead = 500;
     private const int MaxResources = 10000;
     private const int MaxQueries = 60;
     private const string AssetTypes = "compute.googleapis.com/Instance,compute.googleapis.com/Disk,compute.googleapis.com/Address,compute.googleapis.com/Network,compute.googleapis.com/Firewall,container.googleapis.com/Cluster,sqladmin.googleapis.com/Instance,run.googleapis.com/Service,storage.googleapis.com/Bucket";
     private readonly IGcpMonitoringReader metrics = monitoring ?? new GcpMonitoringReader();
+    private readonly IGcpAdvancedReader advancedReads = advanced ?? new GcpAdvancedReader();
     public string Name => "gcp";
 
     public async Task<AnalysisReport> CollectAsync(string operation, IReadOnlyDictionary<string, string> options,
@@ -23,10 +24,10 @@ public sealed class GcpProvider(ICloudCommandRunner runner, IGcpMonitoringReader
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(60));
         operation = operation.ToLowerInvariant();
-        if (operation is not ("inventory" or "health" or "posture" or "vm" or "bundle" or "metrics" or "patches" or "cost" or "drift"))
+        if (operation is not ("inventory" or "health" or "posture" or "vm" or "bundle" or "metrics" or "patches" or "cost" or "drift" or "scc" or "services"))
             throw new ArgumentException("Unsupported Google Cloud operation.", nameof(operation));
         var context = new Collection(runner, options, deadline.Token);
-        if (operation is "patches" or "cost" or "drift")
+        if (operation is "patches" or "drift")
         {
             context.Warnings.Add(operation switch
             {
@@ -43,6 +44,12 @@ public sealed class GcpProvider(ICloudCommandRunner runner, IGcpMonitoringReader
             return context.Report(operation, CoverageState.NotConfigured);
         }
         context.ExpectedScopes = projects.Length;
+        if (operation is "scc" or "cost")
+        {
+            if (Option(options, "resource") is not null || Option(options, "region") is not null)
+                throw new ArgumentException("SCC/billing use explicit project scopes only; resource or regional filtering is unsupported. No provider query was sent.");
+            return await Advanced(operation, projects, options, deadline.Token, cancellationToken);
+        }
         var region = Option(options, "region");
         if (region is not null && !Regex.IsMatch(region, @"\A[a-z]+(?:-[a-z0-9]+)+[0-9]\z", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100)))
             throw new ArgumentException("Google Cloud region must be a region name, not a URL or zone.");
@@ -51,6 +58,11 @@ public sealed class GcpProvider(ICloudCommandRunner runner, IGcpMonitoringReader
             throw new ArgumentException("Google Cloud resource must be a canonical resource ID in one of the explicitly selected projects.");
         if (target is not null && operation is "posture" or "bundle")
             throw new ArgumentException("Google Cloud resource-specific firewall attachment analysis is not implemented. Use the explicit project scope for posture or bundle; no provider request was sent.");
+        if (operation == "services" && target is not null)
+            throw new ArgumentException("Service metadata reads accept explicit project/region scopes, not a Compute resource filter. No provider request was sent.");
+        var services = operation == "services" ? ParseServices(Option(options, "gcp-services")) : [];
+        if (services.Contains("run", StringComparer.Ordinal) && region is null)
+            throw new ArgumentException("Cloud Run service metadata requires an explicit --region. No provider request was sent.");
         try
         {
             foreach (var project in projects)
@@ -61,6 +73,7 @@ public sealed class GcpProvider(ICloudCommandRunner runner, IGcpMonitoringReader
                 var beforeTruncation = context.IncompleteReads;
                 var metricTarget = target;
                 if (operation == "inventory") await Inventory(context, project, region, target);
+                else if (operation == "services") await Services(context, project, region, services);
                 else if (operation != "metrics")
                 {
                     var instances = await context.Read(["compute", "instances", "list"], project, "Compute instance state");
@@ -102,6 +115,8 @@ public sealed class GcpProvider(ICloudCommandRunner runner, IGcpMonitoringReader
             context.Warnings.Add("Health covers observed Compute Engine VM state and available Cloud Monitoring CPU samples only. Application availability, latency and platform incidents are outside coverage; RUNNING does not prove a service is available.");
         if (operation is "posture" or "bundle")
             context.Warnings.Add("Posture covers selected ingress firewall configuration only. Effective reachability, IAM privileges, SCC findings and guest security are unknown; no services or permissions were enabled.");
+        if (operation == "services")
+            context.Warnings.Add("Service evidence is selected control-plane metadata only. Reported state, backup configuration, cluster version and public-access prevention do not prove application availability, recoverability or effective IAM access. No pods, bucket objects, service URLs or secrets were read.");
         if (target is not null && context.Resources.Count == 0 && operation != "metrics")
         {
             context.Partial = true;
@@ -125,6 +140,41 @@ public sealed class GcpProvider(ICloudCommandRunner runner, IGcpMonitoringReader
         if (context.Resources.Count == 0 && context.SuccessfulReads > 0 && operation != "metrics")
             context.Warnings.Add("No resources were visible in these reads. An empty response does not establish a secure account or complete service coverage.");
         return context.Report(operation, context.SuccessfulReads == 0 ? context.FailureState : context.Partial || context.FailedReads > 0 ? CoverageState.Partial : CoverageState.Complete);
+    }
+
+    private async Task<AnalysisReport> Advanced(string operation, string[] projects, IReadOnlyDictionary<string, string> options, CancellationToken deadline, CancellationToken cancellationToken)
+    {
+        var results = new List<GcpAdvancedResult>();
+        var truncated = false;
+        try
+        {
+            if (operation == "cost") results.Add(await advancedReads.ReadBillingAsync(projects, options, deadline));
+            else foreach (var project in projects)
+            {
+                deadline.ThrowIfCancellationRequested();
+                results.Add(await advancedReads.ReadSccAsync(project, deadline));
+                if (results.Sum(result => result.Scc?.FindingsCount ?? 0) >= 1000) { truncated = results.Count < projects.Length; break; }
+            }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        { truncated = true; }
+        var now = DateTimeOffset.UtcNow;
+        var records = results.SelectMany(result => result.Scc?.Findings ?? []).Take(1000).ToArray();
+        var warnings = results.SelectMany(result => result.Warnings).ToList();
+        if (truncated || results.Sum(result => result.Scc?.FindingsCount ?? 0) > 1000)
+        { warnings.Add("Advanced Google Cloud collection reached its aggregate row or total time bound; remaining project evidence was omitted."); truncated = true; }
+        var completed = results.Count(result => result.State is CoverageState.Complete or CoverageState.Partial);
+        var state = results.Count == 0 ? CoverageState.Failed : truncated || results.Select(result => result.State).Distinct().Count() != 1 ? CoverageState.Partial : results[0].State;
+        return new($"cloud.gcp.{operation}", now, results.SelectMany(result => result.Findings).Take(1000).ToArray(), new
+        {
+            provider = "gcp", operation, resources = System.Array.Empty<CloudResource>(),
+            scope = new { accounts = projects },
+            scc = operation == "scc" ? new GcpSccEvidence(records.Length, "project", "global", "security-command-center-v1", records) : null,
+            billing = results.FirstOrDefault()?.Billing,
+            coverage = new CloudCoverage(state, now, records.Length, operation == "cost" ? 1 : projects.Length, completed, warnings),
+            source = operation == "scc" ? "security-command-center-v1" : "bigquery-tabledata-read-only",
+            authentication = "application-default-credentials"
+        }, warnings.Distinct(StringComparer.Ordinal).ToArray()) { OperationSucceeded = completed > 0 && state is CoverageState.Complete or CoverageState.Partial };
     }
 
     private static async Task Inventory(Collection context, string project, string? region, string? target)
@@ -152,6 +202,92 @@ public sealed class GcpProvider(ICloudCommandRunner runner, IGcpMonitoringReader
             }));
         }
         context.Warnings.Add("Inventory uses a bounded Cloud Asset search for selected Compute, GKE, Cloud SQL, Cloud Run and Storage resource types. Asset visibility and freshness depend on API permissions; unqueried services are outside coverage.");
+    }
+
+    private static string[] ParseServices(string? value)
+    {
+        var services = (value ?? "gke,sql,storage").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.Ordinal).ToArray();
+        if (services.Length == 0 || services.Any(service => service is not ("gke" or "sql" or "run" or "storage")))
+            throw new ArgumentException("--gcp-services accepts only gke,sql,run,storage. Cloud Run also requires --region.");
+        return services;
+    }
+
+    private static async Task Services(Collection context, string project, string? region, string[] services)
+    {
+        var identity = await context.ProjectIdentity(project);
+        if (identity is null) return;
+        foreach (var service in services)
+        {
+            var command = service switch
+            {
+                "gke" => new[] { "container", "clusters", "list" },
+                "sql" => ["sql", "instances", "list"],
+                "run" => ["run", "services", "list"],
+                _ => ["storage", "buckets", "list"]
+            };
+            foreach (var row in await context.Read(command, project, "Selected " + service + " service metadata", region: service == "run" ? region : null))
+            {
+                string name, location, id;
+                object properties;
+                if (service == "gke")
+                {
+                    name = Text(row, "name"); location = Text(row, "location");
+                    var selfLink = Text(row, "selfLink");
+                    if (!ServiceName(name) || !OwnedLink(selfLink, "container.googleapis.com", project)) { Invalid(); continue; }
+                    if (!InRegion(location, region)) continue;
+                    id = $"//container.googleapis.com/projects/{project}/locations/{location}/clusters/{name}";
+                    properties = new { state = Text(row, "status"), masterVersion = Text(row, "currentMasterVersion"), nodeVersion = Text(row, "currentNodeVersion"), nodeCount = Integer(row, "currentNodeCount") };
+                }
+                else if (service == "sql")
+                {
+                    name = Text(row, "name"); location = Text(row, "region");
+                    if (!ServiceName(name, 98) || Text(row, "project") != project || !OwnedLink(Text(row, "selfLink"), "sqladmin.googleapis.com", project)) { Invalid(); continue; }
+                    if (!InRegion(location, region)) continue;
+                    id = $"//sqladmin.googleapis.com/projects/{project}/instances/{name}";
+                    var settings = Property(row, "settings");
+                    properties = new { state = Text(row, "state"), databaseVersion = Text(row, "databaseVersion"), tier = Text(settings, "tier"), availabilityType = Text(settings, "availabilityType"), backupsEnabled = NullableBoolean(Property(settings, "backupConfiguration"), "enabled"), storageAutoResize = NullableBoolean(settings, "storageAutoResize"), diskSizeGb = Numeric(settings, "dataDiskSizeGb") };
+                }
+                else if (service == "run")
+                {
+                    var metadata = Property(row, "metadata"); name = Text(metadata, "name"); location = region!;
+                    var observedProject = Text(metadata, "namespace");
+                    if (!ServiceName(name) || observedProject != project && observedProject != identity) { Invalid(); continue; }
+                    var status = Property(row, "status");
+                    id = $"//run.googleapis.com/projects/{project}/locations/{location}/services/{name}";
+                    var ready = Array(status, "conditions").FirstOrDefault(condition => Text(condition, "type") == "Ready");
+                    properties = new { state = Text(ready, "status"), ingress = "unavailable", observedGeneration = Numeric(status, "observedGeneration"), readyRevisionObserved = Text(status, "latestReadyRevisionName").Length > 0 };
+                }
+                else
+                {
+                    name = Text(row, "name"); location = Text(row, "location");
+                    var observedProject = Numeric(row, "project_number"); if (observedProject.Length == 0) observedProject = Numeric(row, "projectNumber");
+                    if (!Regex.IsMatch(name, @"\A[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]\z", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100)) || observedProject != identity) { Invalid(); continue; }
+                    if (!InRegion(location.ToLowerInvariant(), region)) continue;
+                    id = "//storage.googleapis.com/" + name;
+                    var iam = Property(row, "iamConfiguration");
+                    properties = new { state = "configuration-observed", storageClass = Text(row, "storage_class") is { Length: > 0 } storageClass ? storageClass : Text(row, "storageClass"), uniformBucketLevelAccess = NullableBoolean(row, "uniform_bucket_level_access") ?? NullableBoolean(Property(iam, "uniformBucketLevelAccess"), "enabled"), publicAccessPrevention = Text(row, "public_access_prevention") is { Length: > 0 } prevention ? prevention : Text(iam, "publicAccessPrevention") };
+                }
+                context.Add(new("gcp", project, location, id, service switch { "gke" => "gke.cluster", "sql" => "sql.instance", "run" => "run.service", _ => "storage.bucket" }, name, properties));
+            }
+        }
+        void Invalid() { context.Partial = true; context.Warnings.Add("A service metadata row lacked a verified project identity or valid resource name and was omitted."); }
+    }
+
+    private static bool ServiceName(string value, int limit = 63) => value.Length <= limit && Regex.IsMatch(value, @"\A[a-z][a-z0-9-]*\z", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+    private static bool InRegion(string location, string? region) => region is null || location == region || location.StartsWith(region + "-", StringComparison.Ordinal);
+    private static bool OwnedLink(string value, string host, string project)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) || uri.Scheme != "https" || uri.Host != host || uri.Port != 443 || uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0) return false;
+        var versions = host == "container.googleapis.com" ? new[] { "/v1/", "/v1beta1/" } : new[] { "/sql/v1/", "/sql/v1beta4/", "/v1/", "/v1beta4/" };
+        return versions.Any(version => uri.AbsolutePath.StartsWith(version + "projects/" + project + "/", StringComparison.Ordinal));
+    }
+    private static JsonElement Property(JsonElement value, string key) => value.ValueKind == JsonValueKind.Object && value.TryGetProperty(key, out var property) ? property : default;
+    private static bool? NullableBoolean(JsonElement value, string key) => Property(value, key).ValueKind switch { JsonValueKind.True => true, JsonValueKind.False => false, _ => null };
+    private static int? Integer(JsonElement value, string key) => Property(value, key) is { ValueKind: JsonValueKind.Number } number && number.TryGetInt32(out var parsed) && parsed >= 0 ? parsed : null;
+    private static string Numeric(JsonElement value, string key)
+    {
+        var text = Property(value, key).ValueKind == JsonValueKind.Number ? Property(value, key).GetRawText() : Text(value, key);
+        return text.Length <= 64 && decimal.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out var number) && number >= 0 ? text : string.Empty;
     }
 
     private static async Task Posture(Collection context, string project)
@@ -280,7 +416,33 @@ public sealed class GcpProvider(ICloudCommandRunner runner, IGcpMonitoringReader
             else Partial = true;
         }
 
-        public async Task<JsonElement[]> Read(string[] command, string project, string label, bool assetSearch = false)
+        public async Task<string?> ProjectIdentity(string project)
+        {
+            if (++queries > MaxQueries)
+            {
+                Partial = true; IncompleteReads++;
+                Warnings.Add("Google Cloud service metadata reached its whole-operation query budget; remaining project reads were omitted.");
+                return null;
+            }
+            try
+            {
+                var result = await runner.RunAsync("gcloud", ["projects", "describe", project, "--format", AdditionalCloudCommandRunner.GcpProjection("projects describe")!, "--quiet", "--verbosity", "error"], cancellationToken);
+                var number = Numeric(result, "projectNumber");
+                if (Text(result, "projectId") != project || !Regex.IsMatch(number, @"\A[0-9]{1,30}\z", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100)))
+                    throw new InvalidDataException("Service metadata project identity was invalid.");
+                SuccessfulReads++;
+                return number;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+            catch (Exception error) when (error is IOException or JsonException or InvalidOperationException or System.ComponentModel.Win32Exception or HttpRequestException)
+            {
+                FailedReads++; Partial = true;
+                Warnings.Add("Service metadata requires the existing gcloud identity to read and verify the configured project descriptor. No unverified service resources were retained.");
+                return null;
+            }
+        }
+
+        public async Task<JsonElement[]> Read(string[] command, string project, string label, bool assetSearch = false, string? region = null)
         {
             if (++queries > MaxQueries)
             {
@@ -290,7 +452,8 @@ public sealed class GcpProvider(ICloudCommandRunner runner, IGcpMonitoringReader
                 return [];
             }
             var args = command.ToList();
-            args.AddRange(["--project", project, "--limit", (MaxRowsPerRead + 1).ToString(CultureInfo.InvariantCulture), "--page-size", MaxRowsPerRead.ToString(CultureInfo.InvariantCulture), "--format", "json", "--quiet", "--verbosity", "error"]);
+            args.AddRange(["--project", project, "--limit", (MaxRowsPerRead + 1).ToString(CultureInfo.InvariantCulture), "--page-size", MaxRowsPerRead.ToString(CultureInfo.InvariantCulture), "--format", AdditionalCloudCommandRunner.GcpProjection(string.Join(' ', command)) ?? "json", "--quiet", "--verbosity", "error"]);
+            if (region is not null) args.AddRange(["--region", region]);
             if (assetSearch) args.AddRange(["--scope", $"projects/{project}", "--asset-types", AssetTypes]);
             try
             {

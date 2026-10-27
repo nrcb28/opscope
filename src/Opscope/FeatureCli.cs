@@ -31,7 +31,8 @@ Extended commands:
   decrypt <bundle> --private-key <pem> --out <zip>
   azure inventory|posture|health|vm|bundle|drift|patches|cost|arc
   aws inventory|posture|health|instance|bundle|drift|patches|cost
-  gcp inventory|posture|health|metrics|vm|bundle --project <project-id>
+  gcp inventory|posture|health|metrics|scc|cost|services|vm|bundle --project <project-id>
+  kubernetes inventory|health|metrics --context <name> --namespaces <names>
   oci|digitalocean|hetzner|cloudflare|openstack|alibaba|ibm|scaleway <operation>
   cloud catalog                         Describe providers and actual capabilities
   cloud <operation> --provider <id>      Query a configured read-only provider
@@ -59,6 +60,11 @@ Extended options:
   --<provider>-projects <ids>            Provider-specific server scope allowlist
   --oci-compartments <ocids> --cloudflare-accounts <ids>
   --alibaba-accounts <ids> --ibm-accounts <ids>
+  --context <name> --contexts <names> --kubernetes-contexts <names>
+  --namespace <name> --namespaces <names> --kubernetes-nodes
+  --billing-project <id> --billing-dataset <id> --billing-table <id>
+  --gcp-services <gke,sql,run,storage>     Selected service configuration reads
+  --metric-resources <ids> --monitoring-instance <id> --cockpit-source <id>
   --account <id>                        Cloud scope (12 digits for AWS/ASFF)
   --cloud-context                       Explicit local metadata lookup
   --confirm-send                        Required for any external delivery
@@ -289,6 +295,7 @@ Local collection does not contact cloud metadata or delivery endpoints by defaul
     private static async Task<int> CloudAsync(string provider, string operation, Options options, CancellationToken token)
     {
         if (operation.Length == 0) throw new CliException("A cloud operation is required. Use cloud catalog to inspect available capabilities.");
+        operation = operation.ToLowerInvariant();
         if (operation == "catalog")
         {
             if (provider != "cloud") throw new CliException("Use cloud catalog [--provider <id>].");
@@ -327,7 +334,7 @@ Local collection does not contact cloud metadata or delivery endpoints by defaul
         if (options.Positionals.ElementAtOrDefault(2) is { } resource) settings["resource"] = resource;
         if (!CloudProviderRegistry.IsKnownProvider(provider)) throw new CliException("Unknown cloud provider. Use cloud catalog.");
         if (!CloudProviderRegistry.SupportsOperation(provider, operation)) throw new CliException($"Operation '{operation}' is not available for {provider}. Use cloud catalog --provider {provider}.");
-        ICloudProvider cloud = CloudProviderRegistry.Create(provider, new TrustedCloudCommandRunner());
+        ICloudProvider cloud = CloudProviderRegistry.Create(provider);
         AnalysisReport report;
         var profiles = options.List("profiles");
         if (provider == "aws" && profiles.Count > 0)
@@ -399,13 +406,15 @@ Local collection does not contact cloud metadata or delivery endpoints by defaul
     {
         var actions = new Dictionary<string, Func<CancellationToken, Task<AnalysisReport>>>(StringComparer.Ordinal);
         var providers = options.List("cloud");
-        if (providers.Count > 11 || providers.Distinct(StringComparer.Ordinal).Count() != providers.Count)
-            throw new CliException("Configure at most eleven distinct cloud providers per session.");
+        if (providers.Count > CloudProviderRegistry.Descriptors.Count || providers.Distinct(StringComparer.Ordinal).Count() != providers.Count)
+            throw new CliException("Configure at most twelve distinct read-only adapters per session: eleven cloud providers and Kubernetes.");
         var configuredScopeCount = 0;
         foreach (var provider in providers)
         {
             if (!CloudProviderRegistry.IsKnownProvider(provider)) throw new CliException("--cloud contains an unknown provider. Use cloud catalog.");
-            var client = CloudProviderRegistry.Create(provider, new TrustedCloudCommandRunner());
+            var client = CloudProviderRegistry.Create(provider);
+            if (provider == "kubernetes" && !KubernetesProvider.IsValidNamespaceAllowlist(options.Optional("namespaces") ?? options.Optional("namespace")))
+                throw new CliException("Kubernetes requires one to twenty distinct valid namespaces before it can be exposed in the UI.");
             var (singular, plural) = CloudScopeOptions(provider);
             var scopedPlural = $"{provider}-{plural}";
             var scopes = options.List(options.Has(scopedPlural) ? scopedPlural : plural);
@@ -416,6 +425,8 @@ Local collection does not contact cloud metadata or delivery endpoints by defaul
             if (configuredScopeCount > 20) throw new CliException("At most 20 configured cloud scopes may be exposed in one local session.");
             if (scopes.Distinct(StringComparer.Ordinal).Count() != scopes.Count)
                 throw new CliException($"Duplicate scopes are not permitted for {provider}.");
+            if (provider == "kubernetes" && scopes.Any(scope => !KubernetesProvider.IsValidContext(scope)))
+                throw new CliException("Kubernetes requires valid explicit context names before it can be exposed in the UI.");
             for (var index = 0; index < scopes.Count; index++)
             {
                 var scope = scopes[index];
@@ -467,6 +478,7 @@ Local collection does not contact cloud metadata or delivery endpoints by defaul
         "azure" => ("subscription", "subscriptions"),
         "aws" => ("profile", "profiles"),
         "oci" => ("compartment", "compartments"),
+        "kubernetes" => ("context", "contexts"),
         "cloudflare" or "alibaba" or "ibm" => ("account", "accounts"),
         _ => ("project", "projects")
     };
@@ -588,8 +600,8 @@ Local collection does not contact cloud metadata or delivery endpoints by defaul
 
     private sealed class Options
     {
-        private static readonly HashSet<string> Flags = new(StringComparer.Ordinal) { "json", "redact", "full", "help", "no-processes", "no-network", "no-services", "quiet", "require-complete", "seal", "confirm-send", "cloud-context", "imds", "metadata" };
-        private static readonly HashSet<string> Arguments = new(StringComparer.Ordinal) { "format", "policy", "plugins", "pack", "fail-on", "evidence", "ioc", "baseline", "input", "bundle", "out", "top", "interval", "page", "samples", "scenario", "sign-private-key", "encrypt-public-key", "public-key", "private-key", "provider", "cloud", "subscription", "subscriptions", "profile", "profiles", "region", "regions", "account", "accounts", "resource", "role-arn", "port", "history", "retention", "retention-days", "target", "endpoint", "credential-env", "project", "issue-type", "dcr", "stream", "log-group", "log-stream", "window-hours", "resource-group", "projects", "compartment", "compartments", "zone", "zones", "cloud-name", "gcp-projects", "digitalocean-projects", "hetzner-projects", "openstack-projects", "scaleway-projects", "oci-compartments", "cloudflare-accounts", "alibaba-accounts", "ibm-accounts" };
+        private static readonly HashSet<string> Flags = new(StringComparer.Ordinal) { "json", "redact", "full", "help", "no-processes", "no-network", "no-services", "quiet", "require-complete", "seal", "confirm-send", "cloud-context", "imds", "metadata", "kubernetes-nodes" };
+        private static readonly HashSet<string> Arguments = new(StringComparer.Ordinal) { "format", "policy", "plugins", "pack", "fail-on", "evidence", "ioc", "baseline", "input", "bundle", "out", "top", "interval", "page", "samples", "scenario", "sign-private-key", "encrypt-public-key", "public-key", "private-key", "provider", "cloud", "subscription", "subscriptions", "profile", "profiles", "region", "regions", "account", "accounts", "resource", "role-arn", "port", "history", "retention", "retention-days", "target", "endpoint", "credential-env", "project", "issue-type", "dcr", "stream", "log-group", "log-stream", "window-hours", "resource-group", "projects", "compartment", "compartments", "zone", "zones", "cloud-name", "gcp-projects", "digitalocean-projects", "hetzner-projects", "openstack-projects", "scaleway-projects", "oci-compartments", "cloudflare-accounts", "alibaba-accounts", "ibm-accounts", "context", "contexts", "kubernetes-contexts", "namespace", "namespaces", "billing-project", "billing-dataset", "billing-table", "gcp-services", "metric-resources", "monitoring-instance", "cockpit-source" };
         public Dictionary<string, string> Values { get; } = new(StringComparer.Ordinal);
         public List<string> Positionals { get; } = [];
         public static Options Parse(string[] args)

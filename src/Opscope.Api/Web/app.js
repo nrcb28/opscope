@@ -55,7 +55,10 @@ cloudLoading:'Ejecutando consulta de nube configurada…', cloudFailed:'La consu
 });
 
 Object.assign(words.en, {
-menu:'Sections', monitoringGroup:'Monitoring', hostGroup:'Host', investigationGroup:'Investigation', cloudGroup:'Cloud workspace', outputGroup:'Output', systemGroup:'System',
+cloud:'Cloud & clusters', clusterAdapter:'Cluster adapter', infrastructureAdapter:'Infrastructure provider', clusterNote:'The Kubernetes context and namespaces are fixed when this session starts. Cluster evidence stays separate from infrastructure accounts.', clusterEvidence:'Cluster evidence', clusterUnlinked:'No infrastructure identity link has been verified. Similar names do not establish that a cluster belongs to a cloud resource.', clusterVerified:'Infrastructure identity link verified', clusterNamespaces:'Authorized namespaces', latestValue:'Latest observed value',
+billingEvidence:'Observed billing-export rows', billingNote:'These are subtotals of the rows actually read from an existing billing export. They are not a complete bill or a forecast. Currencies are kept separate; missing rows never mean zero cost.', billingRowsRead:'Export rows read', billingMatchedRows:'Rows matching the authorized projects', billingCost:'Observed cost', billingCredits:'Observed credits', billingNetCost:'Observed net cost', currency:'Currency', billingNoRows:'No matching billing rows were observed. Cost is unknown.', billingPeriodStart:'Earliest observed usage', billingPeriodEnd:'Latest observed usage', sccEvidence:'Security Command Center observations', sccNote:'SCC findings reflect the configured project, permissions and collection window. An empty or unavailable response does not establish a secure project.', sccCount:'SCC observations', sccLocation:'SCC location', noAdvertisedOperations:'No web operations are advertised for this adapter.',
+inventory:'Inventory', health:'Reported health', posture:'Configuration posture', metrics:'Metrics', cost:'Billing observations', patches:'Patch evidence', scc:'SCC findings', services:'Services', billingUnavailable:'Billing evidence is unavailable. Cost is unknown.',
+menu:'Sections', monitoringGroup:'Monitoring', hostGroup:'Host', investigationGroup:'Investigation', cloudGroup:'Cloud & clusters', outputGroup:'Output', systemGroup:'System',
 metricsGap:'Metric samples were missed. Reloading retained samples; unavailable observations remain gaps.', cloudMetrics:'Provider metric series', unit:'Unit', aggregation:'Aggregation', samplingPeriod:'Provider sample interval', providerLag:'Observation age', cloudMetricsNote:'Provider timestamps, units and aggregation are shown per series. These observations are separate from the host sampler.', sampleAge:'Evidence age', ago:'ago', stale:'Stale evidence', recovering:'Recovering connection', showLatest:'Show latest evidence', pendingEvidence:'A newer sample is available. Your current controls remain unchanged.',
 observedOnly:'observed only; incomplete coverage', rateLimited:'Rate limited', noDataCoverage:'No data', cloudNeedSamples:'A metric plot needs at least two valid provider observations.', complete:'Complete', partial:'Partial coverage', unsupported:'Unsupported', notConfigured:'Not configured', denied:'Permission denied', failed:'Failed', 'timed-out':'Timed out', configured:'Configured', notRequested:'Not requested',
 provider:'Provider', scope:'Configured scope', operation:'Operation', allProviders:'All providers', allScopes:'All configured scopes', cloudCatalog:'Provider catalog', cloudCoverage:'Operation coverage', cloudUnavailable:'No cloud queries are configured for this session. Configure a read-only provider and allowlisted scope when starting the CLI server.', cloudCatalogNote:'Providers appear even when no scope is configured. Only explicitly configured read-only actions can run. An unavailable query never means zero resources.',
@@ -69,7 +72,10 @@ stepFile:'Open file', stepValidate:'Validate', stepMode:'Choose analysis', stepR
 effectiveSettings:'Effective server configuration', preferences:'Interface preferences', density:'Table density', standardDensity:'Standard', compactDensity:'Compact', comfortableDensity:'Comfortable', copySettings:'Copy safe configuration', settingsCopied:'Safe configuration copied', searchCount:'matching records', showing:'Showing', errorAuth:'This local session is no longer authorized. Reopen its bootstrap URL.', errorUnavailable:'The local service is unavailable. Try again when it is running.', errorInvalid:'The local request was rejected. Check the selected input.', requestTimeout:'The local request timed out.'
 });
 Object.assign(words.es, {
-menu:'Secciones', monitoringGroup:'Supervisión', hostGroup:'Host', investigationGroup:'Investigación', cloudGroup:'Espacio de nube', outputGroup:'Salida', systemGroup:'Sistema',
+cloud:'Nube y clústeres', clusterAdapter:'Adaptador de clúster', infrastructureAdapter:'Proveedor de infraestructura', clusterNote:'El contexto Kubernetes y los namespaces se fijan al iniciar esta sesión. Su evidencia se mantiene separada de las cuentas de infraestructura.', clusterEvidence:'Evidencia del clúster', clusterUnlinked:'No se ha verificado un vínculo de identidad con la infraestructura. Los nombres parecidos no demuestran que el clúster pertenezca a un recurso cloud.', clusterVerified:'Vínculo de identidad con la infraestructura verificado', clusterNamespaces:'Namespaces autorizados', latestValue:'Último valor observado',
+billingEvidence:'Filas observadas de la exportación de facturación', billingNote:'Son subtotales de las filas que se han leído de una exportación existente. No representan una factura completa ni una previsión. Las monedas se conservan separadas; la ausencia de filas no equivale a coste cero.', billingRowsRead:'Filas de exportación leídas', billingMatchedRows:'Filas de los proyectos autorizados', billingCost:'Coste observado', billingCredits:'Créditos observados', billingNetCost:'Coste neto observado', currency:'Moneda', billingNoRows:'No se observaron filas de facturación coincidentes. Se desconoce el coste.', billingPeriodStart:'Primer uso observado', billingPeriodEnd:'Último uso observado', sccEvidence:'Observaciones de Security Command Center', sccNote:'Los hallazgos SCC reflejan el proyecto, permisos y ventana configurados. Una respuesta vacía o no disponible no demuestra que el proyecto sea seguro.', sccCount:'Observaciones SCC', sccLocation:'Ubicación SCC', noAdvertisedOperations:'El adaptador no anuncia operaciones web.',
+inventory:'Inventario', health:'Salud declarada', posture:'Configuración de seguridad', metrics:'Métricas', cost:'Observaciones de facturación', patches:'Evidencia de parches', scc:'Hallazgos SCC', services:'Servicios', billingUnavailable:'La evidencia de facturación no está disponible. Se desconoce el coste.',
+menu:'Secciones', monitoringGroup:'Supervisión', hostGroup:'Host', investigationGroup:'Investigación', cloudGroup:'Nube y clústeres', outputGroup:'Salida', systemGroup:'Sistema',
 metricsGap:'Faltan muestras de métricas. Se recuperan las conservadas; las observaciones no disponibles mantienen sus huecos.', cloudMetrics:'Series de métricas del proveedor', unit:'Unidad', aggregation:'Agregación', samplingPeriod:'Intervalo de muestreo del proveedor', providerLag:'Edad de la observación', cloudMetricsNote:'Cada serie indica fechas, unidades y agregación del proveedor. Estas observaciones están separadas del muestreo del host.', sampleAge:'Edad de la evidencia', ago:'atrás', stale:'Evidencia obsoleta', recovering:'Recuperando conexión', showLatest:'Mostrar evidencia reciente', pendingEvidence:'Hay una muestra más reciente. Se conservan tus controles actuales.',
 observedOnly:'solo observados; cobertura incompleta', rateLimited:'Límite de consultas', noDataCoverage:'Sin datos', cloudNeedSamples:'La gráfica necesita al menos dos observaciones válidas del proveedor.', complete:'Completa', partial:'Cobertura parcial', unsupported:'No compatible', notConfigured:'Sin configurar', denied:'Permiso denegado', failed:'Error', 'timed-out':'Tiempo agotado', configured:'Configurado', notRequested:'No solicitado',
 provider:'Proveedor', scope:'Ámbito configurado', operation:'Operación', allProviders:'Todos los proveedores', allScopes:'Todos los ámbitos configurados', cloudCatalog:'Catálogo de proveedores', cloudCoverage:'Cobertura por operación', cloudUnavailable:'No hay consultas de nube configuradas en esta sesión. Configura un proveedor de solo lectura y ámbitos autorizados al iniciar el servidor CLI.', cloudCatalogNote:'Los proveedores aparecen aunque no tengan ámbitos configurados. Solo se ejecutan acciones de lectura configuradas expresamente. Una consulta no disponible nunca equivale a cero recursos.',
@@ -91,8 +97,8 @@ let analysisReport = null, analysisError = null, analysisBusy = false, analysisV
 let cloudAction = null, cloudBusy = false, cloudError = null, cloudVersion = 0;
 let analysisExportFormat = 'json', policyBusy = false, collectionBusy = false, cooldownUntil = 0, snapshotVersion = 0;
 const tablePages = new Map(), tableSizes = new Map(), tableSorts = new Map();
-const knownProviders = new Set(['azure','aws','gcp','oci','digitalocean','hetzner','cloudflare','openstack','alibaba','ibm','scaleway']);
-const knownOperations = new Set(['inventory','health','posture','metrics','cost','patches']);
+const knownProviders = new Set(['azure','aws','gcp','oci','digitalocean','hetzner','cloudflare','openstack','alibaba','ibm','scaleway','kubernetes']);
+const knownOperations = new Set(['inventory','health','posture','metrics','cost','patches','scc','services']);
 const knownViews = new Set(['overview','findings','processes','services','analysis','drift','fleet','history','cloud','policy','reports','settings']);
 let cloudCatalog = null, cloudProvider = 'all', cloudScope = 'all', findingCode = 'all', findingSource = 'all', serviceFilter = 'all', historyRange = 'all';
 let pendingEvidence = false, connectionState = 'connecting', streamController = null, lastTransportAt = 0, streamFailures = 0, chartHandle = null, chartNode = null, chartContext = null, lastMetricSequence = 0;
@@ -534,20 +540,26 @@ function validatedCloudActions() {
     return candidates.filter(action => {
         if (!action || !knownProviders.has(action.providerId) || !knownOperations.has(action.operation) || action.availability !== 'configured' || action.supported !== true || action.readOnly !== true) return false;
         if (typeof action.actionKey !== 'string' || !capabilities.cloud.includes(action.actionKey)) return false;
+        if (cloudCatalog) {
+            const descriptor = cloudCatalog.providers?.find(provider => provider.id === action.providerId);
+            const capability = descriptor?.operations?.find(operation => operation.name === action.operation);
+            if (!capability || capability.supported !== true || capability.readOnly !== true || capability.availability !== 'configured') return false;
+        }
         const parts=action.actionKey.split('/');
         return parts.length===2 && parts[1]===action.operation && parts[0]===action.scopeAlias && new RegExp('^'+action.providerId+'(?:-scope-[1-9][0-9]*)?$').test(action.scopeAlias);
     });
 }
 function providerDescriptors() {
-    const names={azure:'Microsoft Azure',aws:'Amazon Web Services',gcp:'Google Cloud',oci:'Oracle Cloud',digitalocean:'DigitalOcean',hetzner:'Hetzner Cloud',cloudflare:'Cloudflare',openstack:'OpenStack',alibaba:'Alibaba Cloud',ibm:'IBM Cloud',scaleway:'Scaleway'};
+    const names={azure:'Microsoft Azure',aws:'Amazon Web Services',gcp:'Google Cloud',oci:'Oracle Cloud',digitalocean:'DigitalOcean',hetzner:'Hetzner Cloud',cloudflare:'Cloudflare',openstack:'OpenStack',alibaba:'Alibaba Cloud',ibm:'IBM Cloud',scaleway:'Scaleway',kubernetes:'Kubernetes'};
     return [...knownProviders].map(id=>{
         const descriptor=cloudCatalog?.providers?.find(item=>item.id===id);
-        return {id,displayName:descriptor?.displayName || names[id],category:descriptor?.category || '',operations:Array.isArray(descriptor?.operations)?descriptor.operations:[]};
+        const operations=Array.isArray(descriptor?.operations)?descriptor.operations.filter(item=>item&&knownOperations.has(item.name)&&item.supported===true&&item.readOnly===true):[];
+        return {id,displayName:typeof descriptor?.displayName==='string'?descriptor.displayName:names[id],category:id==='kubernetes'?'cluster':descriptor?.category || '',operations};
     });
 }
 async function runCloudQuery(action) {
     if(cloudBusy || !validatedCloudActions().some(item=>item.actionKey===action.actionKey))return;
-    const version=++cloudVersion; cloudAction=action.actionKey;cloudBusy=true;cloudError=null;cloudResult=null;render();
+    const version=++cloudVersion; cloudAction=action.actionKey;cloudBusy=true;cloudError=null;cloudResult=null;notice('');render();
     try {const result=await json(`/api/cloud/${action.scopeAlias}/${action.operation}`,{method:'POST'});if(version===cloudVersion)cloudResult=result;}
     catch(error){if(version===cloudVersion){cloudError=`${t('cloudFailed')} ${error.status===504?t('cloudTimeout'):error.status===403?t('cloudDenied'):error.message}`;cloudResult=error.report||null;}}
     finally{if(version===cloudVersion){cloudBusy=false;render();}}
@@ -565,6 +577,37 @@ function resourceState(resource) {
     }return t('unknown');
 }
 
+function cloudBillingEvidence(billing, state) {
+    const section=el('section',null,'report-group ops-billing-evidence');
+    append(section,el('h3',t('billingEvidence')),el('p',t('billingNote'),'coverage-note muted'));
+    const observed=['complete','partial'].includes(state);
+    const count=value=>observed&&Number.isSafeInteger(value)&&value>=0?value:t('unknown');
+    section.append(facts([['source',billing.source || t('unknown')],['billingRowsRead',count(billing.rowsRead)],['billingMatchedRows',count(billing.matchedRows)],['billingPeriodStart',date(billing.periodStartUtc)],['billingPeriodEnd',date(billing.periodEndUtc)]]));
+    const currencies=observed&&Array.isArray(billing.currencySubtotals)?billing.currencySubtotals.filter(row=>row&&typeof row==='object'&&typeof row.currency==='string'&&/^[A-Z]{3}$/.test(row.currency)&&Number.isFinite(row.observedCost)).slice(0,20):[];
+    const amount=value=>typeof value==='number'&&Number.isFinite(value)?value.toLocaleString(lang==='es'?'es-ES':'en-GB',value!==0&&Math.abs(value)<1e-6?{notation:'scientific',maximumSignificantDigits:10}:{minimumFractionDigits:2,maximumFractionDigits:9}):t('unknown');
+    if(currencies.length) section.append(table(['currency','billingCost','billingCredits','billingNetCost','rows'],currencies.map(row=>[row.currency,amount(row.observedCost),amount(row.observedCredits),amount(row.observedNetCost),count(row.observedRows)]),'cloud:billing'));
+    else section.append(el('p',t(observed?'billingNoRows':'billingUnavailable'),'empty'));
+    return section;
+}
+
+function cloudSccEvidence(scc,state) {
+    const section=el('section',null,'report-group ops-scc-evidence'), observed=['complete','partial'].includes(state);
+    append(section,el('h3',t('sccEvidence')),el('p',t('sccNote'),'coverage-note muted'));
+    section.append(facts([['source',scc.source || t('unknown')],['scope',scc.scopeKind || t('unknown')],['sccLocation',scc.location || t('unknown')],['sccCount',observed&&Number.isSafeInteger(scc.findingsCount)&&scc.findingsCount>=0?scc.findingsCount:t('unknown')]]));
+    const records=observed&&Array.isArray(scc.findings)?scc.findings.filter(row=>row&&typeof row==='object').slice(0,500):[];
+    if(records.length)section.append(table(['category','severity','state','observation'],records.map(row=>[row.category || t('unknown'),row.severity || t('unknown'),row.state || t('unknown'),date(row.eventTimeUtc)]),'cloud:scc'));
+    return section;
+}
+
+function cloudClusterEvidence(cluster) {
+    const section=el('section',null,'report-group ops-cluster-evidence');
+    append(section,el('h3',t('clusterEvidence')),el('p',t('clusterNote'),'muted'));
+    const linked=cluster.cloudCorrelationVerified===true&&cluster.relation==='verified';
+    section.append(el('p',t(linked?'clusterVerified':'clusterUnlinked'),'coverage-note muted'));
+    section.append(facts([['scope',t('clusterAdapter')],['clusterNamespaces',Number.isSafeInteger(cluster.namespacesQueried)&&cluster.namespacesQueried>=0?cluster.namespacesQueried:t('unknown')]]));
+    return section;
+}
+
 function cloudMetricSeries(series) {
     const group=el('section',null,'report-group');append(group,el('h3',t('cloudMetrics')),el('p',t('cloudMetricsNote'),'muted'));
     const valid=series.filter(item=>item&&typeof item==='object'&&(Array.isArray(item.points)||Array.isArray(item.samples)));
@@ -575,7 +618,9 @@ function cloudMetricSeries(series) {
         const title=el('h4',`${item.metric || t('metric')} · ${item.unit || t('unknown')}`);title.id=`cloud-series-${index}`;section.append(title);
         const latest=points[points.length-1];
         section.append(facts([['source',item.source || cloudResult.kind],['scope',item.region || t('unknown')],['unit',item.unit || t('unknown')],['aggregation',item.aggregation || t('unknown')],['samplingPeriod',Number.isFinite(periodSeconds)?`${periodSeconds} s`:t('unknown')],['providerLag',latest?`${Math.max(0,Math.floor((Date.now()-latest.time)/1000))} s · ${date(new Date(latest.time).toISOString())}`:t('noData')]]));
-        if(points.length<2){empty(section,'cloudNeedSamples');group.append(section);return;}
+        if(latest)section.append(el('p',`${t('latestValue')}: ${latest.value.toLocaleString(lang==='es'?'es-ES':'en-GB',{maximumSignificantDigits:8})} ${item.unit || t('unknown')}`,'ops-metric-latest'));
+        const samples=el('details');append(samples,el('summary',`${t('evidence')} · ${t('showing')} ${Math.min(points.length,50)} / ${points.length}`),table(['observation','value','unit'],points.slice(-50).map(point=>[date(new Date(point.time).toISOString()),point.value,item.unit || t('unknown')]),`cloud:metrics:${index}`));
+        if(points.length<2){empty(section,'cloudNeedSamples');section.append(samples);group.append(section);return;}
         const ns='http://www.w3.org/2000/svg',svg=document.createElementNS(ns,'svg');svg.setAttribute('viewBox','0 0 800 220');svg.setAttribute('role','img');svg.setAttribute('aria-labelledby',title.id);svg.classList.add('ops-chart__svg');
         const start=points[0].time,end=points[points.length-1].time,span=end-start || 1;
         const minimum=Math.min(...points.map(point=>point.value)),maximum=Math.max(...points.map(point=>point.value));
@@ -585,7 +630,7 @@ function cloudMetricSeries(series) {
             if(!svg.isConnected){cloudPlotRenderers.delete(draw);return;}
             const viewport=Math.max(160,Math.min(2400,Math.round(svg.getBoundingClientRect().width || 800))),left=65,right=viewport-20,width=right-left;
             svg.setAttribute('viewBox',`0 0 ${viewport} 220`);svg.replaceChildren();
-            for(const ratio of [0,.5,1]){const y=20+ratio*160;add('line',{x1:left,x2:right,y1:y,y2:y,stroke:'currentColor',opacity:'.2'});add('text',{x:left-9,y:y+4,'text-anchor':'end',fill:'currentColor','font-size':12},number(high-(high-low)*ratio));}
+            for(const ratio of [0,.5,1]){const y=20+ratio*160,value=high-(high-low)*ratio,axis=percentUnit?number(value):value.toLocaleString(lang==='es'?'es-ES':'en-GB',{notation:'compact',maximumSignificantDigits:3});add('line',{x1:left,x2:right,y1:y,y2:y,stroke:'currentColor',opacity:'.2'});add('text',{x:left-9,y:y+4,'text-anchor':'end',fill:'currentColor','font-size':12},axis);}
             let path='',previous=null;const period=Number.isFinite(periodSeconds)&&periodSeconds>0?periodSeconds*1000:null;
             points.forEach(point=>{const x=left+(point.time-start)/span*width,y=20+(high-point.value)/(high-low)*160;const continuous=previous&&point.time>previous.time&&period!==null&&point.time-previous.time<=period*2.5;path+=(continuous?' L ':' M ')+x.toFixed(2)+' '+y.toFixed(2);if(!continuous)add('circle',{cx:x,cy:y,r:2.5,fill:'var(--accent)'});previous=point;});
             add('path',{d:path,fill:'none',stroke:'var(--accent)','stroke-width':2.5});
@@ -593,7 +638,7 @@ function cloudMetricSeries(series) {
             add('text',{x:left,y:210,fill:'currentColor','font-size':12},new Date(start).toLocaleTimeString(lang,format));add('text',{x:right,y:210,fill:'currentColor','text-anchor':'end','font-size':12},new Date(end).toLocaleTimeString(lang,format));
         };
         section.append(svg);cloudPlotRenderers.add(draw);queueMicrotask(draw);
-        const details=el('details');append(details,el('summary',`${t('evidence')} · ${t('showing')} ${Math.min(points.length,50)} / ${points.length}`),table(['observation','value','unit'],points.slice(-50).map(point=>[date(new Date(point.time).toISOString()),point.value,item.unit || t('unknown')]),`cloud:metrics:${index}`));section.append(details);group.append(section);
+        section.append(samples);group.append(section);
     });return group;
 }
 function showCloud() {
@@ -606,15 +651,18 @@ function showCloud() {
     const cards=el('div',null,'ops-cloud-matrix');
     providers.filter(provider=>cloudProvider==='all'||provider.id===cloudProvider).forEach(provider=>{
         const card=el('section',null,'ops-cloud-card'), configured=actions.filter(action=>action.providerId===provider.id&&(cloudScope==='all'||action.scopeAlias===cloudScope));
-        append(card,el('h3',provider.displayName));
+        card.dataset.provider=provider.id;
+        append(card,el('h3',provider.displayName),el('p',t(provider.category==='cluster'?'clusterAdapter':'infrastructureAdapter'),'ops-adapter-kind muted'));
+        if(provider.category==='cluster')card.append(el('p',t('clusterNote'),'muted'));
         const status=el('span',cloudStatus(configured.length?'configured':'not-configured'),'ops-cloud-status');status.dataset.state=configured.length?'configured':'notConfigured';card.append(status);
         if(!configured.length)card.append(el('p',t('cloudNoScope'),'muted'));
         const coverage=el('div',null,'status-counts');
-        ['inventory','health','posture','metrics','cost','patches'].forEach(operation=>{
-            const capability=provider.operations.find(item=>item.name===operation), enabled=configured.some(action=>action.operation===operation);
-            const state=enabled?'configured':capability?'not-configured':'unsupported', item=el('span',`${operation}: ${cloudStatus(state)}`,'ops-cloud-status');item.dataset.state=state;
-            if(capability?.limitations?.length)item.title=capability.limitations.join(' ');coverage.append(item);
+        provider.operations.forEach(capability=>{
+            const operation=capability.name, enabled=configured.some(action=>action.operation===operation);
+            const state=enabled?'configured':'not-configured', item=el('span',`${t(operation)}: ${cloudStatus(state)}`,'ops-cloud-status');item.dataset.state=state;item.dataset.operation=operation;
+            if(Array.isArray(capability.limitations))item.title=capability.limitations.filter(value=>typeof value==='string').join(' ');coverage.append(item);
         });card.append(coverage);
+        if(!provider.operations.length)card.append(el('p',t('noAdvertisedOperations'),'muted'));
         const buttons=el('div',null,'ops-cloud-actions');
         configured.forEach(action=>{const query=button(`${t('run')} · ${action.actionKey}`,()=>runCloudQuery(action));query.disabled=cloudBusy;buttons.append(query);});card.append(buttons);cards.append(card);
     });wrap.append(cards);
@@ -629,11 +677,16 @@ function showCloud() {
         const visibleCount=['complete','partial'].includes(state)&&count!==null?state==='partial'?`${count} · ${t('observedOnly')}`:count:t('unknown');
         const summary=el('section',null,'ops-cloud-result-summary');summary.append(el('h3',t('cloudResult')));
         const badge=el('span',cloudStatus(state),'ops-cloud-status');badge.dataset.state=state;summary.append(badge);
-        summary.append(facts([['source',cloudResult.kind || cloudAction],['cloudObserved',date(data?.coverage?.observedAtUtc || cloudResult.collectedAtUtc)],['resourceCount',visibleCount]]));
+        const factsRows=[['source',cloudResult.kind || cloudAction],['cloudObserved',date(data?.coverage?.observedAtUtc || cloudResult.collectedAtUtc)]];
+        if(!data?.billing&&!data?.scc)factsRows.push(['resourceCount',visibleCount]);
+        summary.append(facts(factsRows));
         if(state==='partial')summary.append(el('p',t('observedOnly'),'coverage-note muted'));
         else if(!['complete'].includes(state))summary.append(el('p',t(state==='denied'?'cloudDenied':state==='timed-out'?'cloudTimeout':'cloudFailedCoverage'),'coverage-note muted'));
-        else if(count===0&&!cloudAction?.endsWith('/metrics'))summary.append(el('p',t('cloudEmptyCoverage'),'coverage-note muted'));
+        else if(count===0&&!['metrics','cost','scc'].includes(cloudAction?.split('/')[1]))summary.append(el('p',t('cloudEmptyCoverage'),'coverage-note muted'));
         reportWarnings(summary,cloudResult.warnings);
+        if(data?.cluster&&typeof data.cluster==='object')summary.append(cloudClusterEvidence(data.cluster));
+        if(data?.billing&&typeof data.billing==='object')summary.append(cloudBillingEvidence(data.billing,state));
+        if(data?.scc&&typeof data.scc==='object')summary.append(cloudSccEvidence(data.scc,state));
         if(cloudResult.findings?.length)summary.append(findingsList(cloudResult.findings,'cloud:findings'));
         if(Array.isArray(data?.metrics))summary.append(cloudMetricSeries(data.metrics));
         const resources=Array.isArray(data?.resources)?data.resources:[];

@@ -9,6 +9,17 @@ namespace Opscope.Cloud;
 /// <summary>Fixed read commands and fixed-host REST queries for opt-in experimental adapters.</summary>
 public sealed class AdditionalCloudCommandRunner : ICloudCommandRunner
 {
+    // Fixed source projections keep service credentials/specification fields out of CLI stdout.
+    internal static string? GcpProjection(string command) => command switch
+    {
+        "projects describe" => "json(projectId,projectNumber)",
+        "container clusters list" => "json(name,location,selfLink,status,currentMasterVersion,currentNodeVersion,currentNodeCount)",
+        "sql instances list" => "json(name,project,region,selfLink,state,databaseVersion,settings.tier,settings.availabilityType,settings.backupConfiguration.enabled,settings.storageAutoResize,settings.dataDiskSizeGb)",
+        "run services list" => "json(metadata.name,metadata.namespace,status.conditions.type,status.conditions.status,status.latestReadyRevisionName,status.observedGeneration)",
+        "storage buckets list" => "json(name,project_number,projectNumber,location,storage_class,storageClass,uniform_bucket_level_access,public_access_prevention,iamConfiguration.uniformBucketLevelAccess.enabled,iamConfiguration.publicAccessPrevention)",
+        _ => null
+    };
+
     private const int MaximumBytes = 8 * 1024 * 1024;
     private static readonly HttpClient Http = new(new SocketsHttpHandler
     {
@@ -35,7 +46,7 @@ public sealed class AdditionalCloudCommandRunner : ICloudCommandRunner
         {
             if (!prepared.Contains("--quiet", StringComparer.Ordinal)) prepared.Add("--quiet");
             if (!prepared.Contains("--verbosity", StringComparer.Ordinal)) prepared.AddRange(["--verbosity", "error"]);
-            if (!prepared.Contains("--format", StringComparer.Ordinal)) prepared.AddRange(["--format", "json"]);
+            if (!prepared.Contains("--format", StringComparer.Ordinal)) prepared.AddRange(["--format", GcpProjection(string.Join(' ', arguments.Take(3))) ?? GcpProjection(string.Join(' ', arguments.Take(2))) ?? "json"]);
         }
         var result = await CommandRunner.RunAsync(tool, prepared, TimeSpan.FromSeconds(45), MaximumBytes, cancellationToken);
         if (result.TimedOut || result.OutputTruncated)
@@ -55,7 +66,7 @@ public sealed class AdditionalCloudCommandRunner : ICloudCommandRunner
             "oci" => new[] { "compute instance list", "bv volume list", "network vcn list", "network security-list list" },
             "openstack" => new[] { "server list", "volume list", "network list", "security group rule list", "token issue" },
             "aliyun" => new[] { "ecs DescribeInstances", "ecs DescribeDisks", "vpc DescribeVpcs", "sts GetCallerIdentity" },
-            "gcloud" => new[] { "asset search-all-resources", "compute instances list", "compute disks list", "compute addresses list", "compute networks list", "compute firewall-rules list", "container clusters list", "sql instances list", "run services list", "storage buckets list" },
+            "gcloud" => new[] { "asset search-all-resources", "compute instances list", "compute disks list", "compute addresses list", "compute networks list", "compute firewall-rules list", "container clusters list", "sql instances list", "run services list", "storage buckets list", "projects describe" },
             _ => Array.Empty<string>()
         };
         var prefix = reads.OrderByDescending(s => s.Length).FirstOrDefault(s => arguments.Take(s.Split(' ').Length).SequenceEqual(s.Split(' ')));
@@ -65,11 +76,18 @@ public sealed class AdditionalCloudCommandRunner : ICloudCommandRunner
             "oci" => new[] { "--compartment-id", "--region", "--profile", "--limit", "--page", "--output" },
             "openstack" => new[] { "--os-cloud", "--os-project-id", "--os-region-name", "--limit", "--long", "-f", "-c" },
             "aliyun" => new[] { "--profile", "--RegionId", "--PageNumber", "--PageSize" },
-            "gcloud" => new[] { "--project", "--scope", "--asset-types", "--page-size", "--limit", "--format", "--quiet", "--verbosity" },
+            "gcloud" => new[] { "--project", "--scope", "--asset-types", "--page-size", "--limit", "--format", "--quiet", "--verbosity", "--region" },
             _ => Array.Empty<string>()
         };
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        for (var i = prefix.Split(' ').Length; i < arguments.Count; i++)
+        var start = prefix.Split(' ').Length;
+        if (tool == "gcloud" && prefix == "projects describe")
+        {
+            if (arguments.Count <= start || !Regex.IsMatch(arguments[start], @"\A[a-z][a-z0-9-]{4,28}[a-z0-9]\z", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100)))
+                throw new InvalidOperationException("Project identity reads require one literal project ID.");
+            start++;
+        }
+        for (var i = start; i < arguments.Count; i++)
         {
             var option = arguments[i];
             if (!options.Contains(option, StringComparer.Ordinal) || option != "-c" && !seen.Add(option))
@@ -78,8 +96,12 @@ public sealed class AdditionalCloudCommandRunner : ICloudCommandRunner
             if (++i == arguments.Count) throw new InvalidOperationException("Cloud option requires a literal value.");
             var value = arguments[i];
             Literal(value);
-            if (option is "--format" or "--output" or "-f" or "-o" && !value.Equals("json", StringComparison.OrdinalIgnoreCase))
-                throw new InvalidOperationException("Cloud output must be JSON.");
+            if (option is "--format" or "--output" or "-f" or "-o")
+            {
+                var expected = tool == "gcloud" && option == "--format" ? GcpProjection(prefix) ?? "json" : "json";
+                if (!string.Equals(value, expected, StringComparison.Ordinal))
+                    throw new InvalidOperationException("Cloud output must use the exact configured JSON projection.");
+            }
             if (option == "--verbosity" && value != "error") throw new InvalidOperationException("Cloud verbosity must be error.");
         }
         static void Literal(string value)

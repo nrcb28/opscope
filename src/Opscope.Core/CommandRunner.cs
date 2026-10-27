@@ -248,6 +248,7 @@ public static class CommandRunner
         "oci" => ["/usr/local/bin/oci", "/usr/bin/oci", "/opt/oci/bin/oci"],
         "openstack" => ["/usr/bin/openstack", "/usr/local/bin/openstack"],
         "aliyun" => ["/usr/local/bin/aliyun", "/usr/bin/aliyun"],
+        "kubectl" => ["/usr/local/bin/kubectl", "/usr/bin/kubectl", "/opt/kubernetes/bin/kubectl"],
         "azcmagent" => ["/opt/azcmagent/bin/azcmagent", "/usr/bin/azcmagent"],
         "az" => ["/usr/bin/az", "/usr/local/bin/az", "/opt/az/bin/az"],
         "dpkg-query" => ["/usr/bin/dpkg-query", "/bin/dpkg-query"],
@@ -275,7 +276,7 @@ public static class CommandRunner
     {
         var binary = Path.GetFileName(name);
         var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-        if (binary is "gcloud" or "oci" or "openstack" or "aliyun")
+        if (binary is "gcloud" or "oci" or "openstack" or "aliyun" or "kubectl")
             return [Path.Combine(programFiles, "Opscope", "CloudTools", binary + ".exe")];
         if (binary is "aws" or "aws.exe") return [Path.Combine(programFiles, "Amazon", "AWSCLIV2", "aws.exe")];
         if (binary is "azcmagent" or "azcmagent.exe") return [Path.Combine(programFiles, "AzureConnectedMachineAgent", "azcmagent.exe")];
@@ -296,6 +297,7 @@ public static class CommandRunner
         "oci" => ["/usr/local/bin/oci", "/opt/homebrew/bin/oci"],
         "openstack" => ["/usr/local/bin/openstack", "/opt/homebrew/bin/openstack"],
         "aliyun" => ["/usr/local/bin/aliyun", "/opt/homebrew/bin/aliyun"],
+        "kubectl" => ["/usr/local/bin/kubectl", "/opt/homebrew/bin/kubectl"],
         "aws" => ["/usr/local/bin/aws", "/opt/homebrew/bin/aws"], "az" => ["/usr/local/bin/az", "/opt/homebrew/bin/az"],
         _ => []
     };

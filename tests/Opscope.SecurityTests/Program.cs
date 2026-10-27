@@ -7,7 +7,9 @@ var privateFields = new Dictionary<string, object>
     ["compartmentId"] = "ocid1.compartment.oc1..private-scope", ["tenancyId"] = "private-oci-tenancy",
     ["cloudName"] = "private-openstack-profile", ["zoneId"] = "private-cloudflare-zone",
     ["dropletId"] = 987654321, ["serviceAccountKey"] = new { private_key = "private-key-material" },
-    ["userData"] = "boot script with private-root-password", ["cloudInit"] = "private-cloud-init-content"
+    ["userData"] = "boot script with private-root-password", ["cloudInit"] = "private-cloud-init-content",
+    ["context"] = "private-cluster-context", ["namespaces"] = new[] { "private-namespace" },
+    ["billingTable"] = "private-billing-export", ["cockpitSource"] = "private-monitoring-source"
 };
 var messages = "Projects private-gcp-project and 123456789012, droplet 987654321, tenancy private-oci-tenancy";
 var report = new AnalysisReport("cloud/read", DateTimeOffset.UtcNow,
@@ -15,7 +17,7 @@ var report = new AnalysisReport("cloud/read", DateTimeOffset.UtcNow,
     new { scope = privateFields, metric = new { unit = "percent", periodSeconds = 60, value = 0.0 }, coverage = new { state = "partial", enumeratedResources = 2 } },
     ["Selected private-openstack-profile could not be read."]);
 var json = ReportSecurity.Serialize(report);
-foreach (var forbidden in new[] { "private-gcp-project", "123456789012", "ocid1.compartment", "private-oci-tenancy", "private-openstack-profile", "private-cloudflare-zone", "987654321", "private-key-material", "private-root-password", "private-cloud-init-content" })
+foreach (var forbidden in new[] { "private-gcp-project", "123456789012", "ocid1.compartment", "private-oci-tenancy", "private-openstack-profile", "private-cloudflare-zone", "987654321", "private-key-material", "private-root-password", "private-cloud-init-content", "private-cluster-context", "private-namespace", "private-billing-export", "private-monitoring-source" })
     if (json.Contains(forbidden, StringComparison.Ordinal)) throw new InvalidOperationException("Cloud export leaked a private field: " + forbidden);
 using var document = JsonDocument.Parse(json);
 var data = document.RootElement.GetProperty("data");

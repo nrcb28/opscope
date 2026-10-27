@@ -14,24 +14,27 @@ public static class CloudProviderRegistry
              CloudOperation.Drift, CloudOperation.Patches, CloudOperation.Cost, CloudOperation.Metadata],
             ["compute.vm", "compute.disk", "network", "object-storage"], ["AWS service-specific read permissions"]),
         Descriptor("gcp", "Google Cloud", "public-cloud", true,
-            [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Posture, CloudOperation.Vm, CloudOperation.Bundle, CloudOperation.Metrics],
+            [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Posture, CloudOperation.Vm, CloudOperation.Bundle, CloudOperation.Metrics, CloudOperation.Scc, CloudOperation.Cost, CloudOperation.Services],
             ["compute.vm", "compute.disk", "network", "managed-service"], ["cloudasset.assets.searchAllResources", "compute.instances.list", "compute.firewalls.list"]),
         Descriptor("oci", "Oracle Cloud", "public-cloud", true,
-            [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Posture], ["compute.vm", "network"], ["OCI inspect/read permissions in selected compartment"]),
+            [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Posture, CloudOperation.Metrics], ["compute.vm", "network"], ["OCI inspect/read permissions in selected compartment"]),
         Descriptor("digitalocean", "DigitalOcean", "public-cloud", true,
             [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Posture, CloudOperation.Metrics], ["compute.vm", "network"], ["DigitalOcean read-only API token"]),
         Descriptor("hetzner", "Hetzner Cloud", "public-cloud", true,
             [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Posture, CloudOperation.Metrics], ["compute.vm", "network"], ["Hetzner Cloud read-only API token"]),
         Descriptor("cloudflare", "Cloudflare", "edge", true,
-            [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Posture], ["edge.zone"], ["Cloudflare zone read permission"]),
+            [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Posture, CloudOperation.Metrics], ["edge.zone"], ["Cloudflare zone read permission"]),
         Descriptor("openstack", "OpenStack", "private-cloud", true,
-            [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Posture], ["compute.vm", "network"], ["OpenStack reader in configured project"]),
+            [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Posture, CloudOperation.Metrics], ["compute.vm", "network"], ["OpenStack reader in configured project"]),
         Descriptor("alibaba", "Alibaba Cloud", "public-cloud", true,
-            [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Posture], ["compute.vm", "storage.disk"], ["ECS DescribeInstances and DescribeDisks"]),
+            [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Posture, CloudOperation.Metrics], ["compute.vm", "storage.disk"], ["ECS DescribeInstances and DescribeDisks"]),
         Descriptor("ibm", "IBM Cloud", "public-cloud", true,
-            [CloudOperation.Inventory, CloudOperation.Health], ["service.instance"], ["IBM Resource Controller viewer in the configured account and resource group"]),
+            [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Metrics], ["service.instance"], ["IBM Resource Controller viewer in the configured account and resource group"]),
         Descriptor("scaleway", "Scaleway", "public-cloud", true,
-            [CloudOperation.Inventory, CloudOperation.Health], ["compute.vm"], ["Scaleway Instance read permissions"])
+            [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Metrics], ["compute.vm"], ["Scaleway Instance read permissions"]),
+        Descriptor("kubernetes", "Kubernetes", "cluster", true,
+            [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Metrics], ["cluster.workload", "cluster.service"],
+            ["Explicit kubeconfig context and namespace allowlist; get/list workload metadata; optional Metrics Server read access"])
     });
 
     public static IReadOnlyList<CloudAdapterDescriptor> Descriptors => Registered;
@@ -53,9 +56,17 @@ public static class CloudProviderRegistry
         "azure" => new AzureProvider(runner ?? new TrustedCloudCommandRunner()),
         "aws" => new AwsProvider(runner ?? new TrustedCloudCommandRunner()),
         "gcp" => new GcpProvider(runner ?? new TrustedCloudCommandRunner()),
-        _ when AdditionalCloudProviders.Supports(providerId) => AdditionalCloudProviders.Create(providerId, runner),
+        "kubernetes" => new KubernetesProvider(runner),
+        _ when AdditionalCloudProviders.Supports(providerId) => WithSupplementalMetrics(providerId, runner),
         _ => throw new ArgumentException("Unknown cloud provider. Use a registered lower-case provider ID.", nameof(providerId))
     };
+
+    private static ICloudProvider WithSupplementalMetrics(string providerId, ICloudCommandRunner? runner)
+    {
+        var provider = AdditionalCloudProviders.Create(providerId, runner);
+        return SupplementalCloudMetricsA.Supports(providerId) || SupplementalCloudMetricsB.Supports(providerId)
+            ? new SupplementalMetricsProvider(provider, runner) : provider;
+    }
 
     private static CloudAdapterDescriptor Descriptor(string id, string name, string category, bool experimental,
         CloudOperation[] operations, string[] resourceTypes, string[] permissions) => new(id, name, category, "1",
@@ -72,15 +83,33 @@ public static class CloudProviderRegistry
                 CloudOperation.Metrics => (["compute.vm.cpu"], ["monitoring.timeSeries.list (ADC)"]),
                 CloudOperation.Health => (["compute.vm.state", "compute.vm.cpu"], ["compute.instances.list", "monitoring.timeSeries.list (ADC)"]),
                 CloudOperation.Vm => (["compute.vm.state"], ["compute.instances.list"]),
+                CloudOperation.Scc => (["security.finding"], ["resourcemanager.projects.get", "securitycenter.findings.list (ADC)"]),
+                CloudOperation.Cost => (["billing.observed-export-rows"], ["bigquery.tables.get", "bigquery.tables.getData (ADC); preconfigured billing export"]),
+                CloudOperation.Services => (["gke.cluster", "sql.instance", "run.service", "storage.bucket"], ["resourcemanager.projects.get", "Service-specific configuration list permissions for selected GCP services"]),
                 _ => (["compute.vm.state", "compute.vm.cpu", "network.firewall"], ["compute.instances.list", "compute.firewalls.list", "monitoring.timeSeries.list (ADC)"])
             };
             (resourceTypes, permissions) = metadata;
         }
-        else if (operation == CloudOperation.Metrics) resourceTypes = id == "digitalocean" ? ["compute.vm.cpu_seconds_total"] : ["compute.vm.cpu"];
+        else if (operation == CloudOperation.Metrics)
+        {
+            (string[] ResourceTypes, string[] Permissions) metricMetadata = id switch
+            {
+                "digitalocean" => (["compute.vm.cpu_seconds_total"], ["Project membership and Monitoring read access"]),
+                "oci" => (["compute.vm.cpu"], ["OCI Monitoring read-metrics in the selected compartment"]),
+                "cloudflare" => (["edge.http.requests", "edge.http.bytes"], ["Zone Read and Analytics Read for explicitly allowed account/zones"]),
+                "openstack" => (["compute.vm.metric"], ["Gnocchi resource/metric read in the selected project"]),
+                "alibaba" => (["compute.vm.cpu"], ["ECS DescribeInstances and CloudMonitor DescribeMetricList"]),
+                "ibm" => (["monitoring.target.up"], ["Resource Controller viewer and read access to the selected Monitoring instance"]),
+                "scaleway" => (["monitoring.target.up"], ["Cockpit data-source metadata and metrics read for the selected project/source"]),
+                "kubernetes" => (["pod.cpu", "pod.memory"], ["get/list metrics.k8s.io pods in the allowed namespaces"]),
+                _ => (["compute.vm.cpu"], permissions)
+            };
+            (resourceTypes, permissions) = metricMetadata;
+        }
         else if (operation == CloudOperation.Posture && id == "cloudflare") resourceTypes = ["edge.zone.paused"];
         else if (operation == CloudOperation.Posture && id == "alibaba") resourceTypes = ["storage.disk.encryption"];
         else if (id is not ("azure" or "aws") && operation == CloudOperation.Health)
-            resourceTypes = id == "cloudflare" ? ["edge.zone.state"] : id == "ibm" ? ["service.instance.state"] : ["compute.vm.state"];
+            resourceTypes = id == "cloudflare" ? ["edge.zone.state"] : id == "ibm" ? ["service.instance.state"] : id == "kubernetes" ? ["cluster.workload.state"] : ["compute.vm.state"];
         return new(operation, Array.AsReadOnly(resourceTypes), Array.AsReadOnly(permissions), experimental,
             operation == CloudOperation.Metrics || id == "gcp" && operation is CloudOperation.Health or CloudOperation.Bundle ? TimeSpan.FromSeconds(60) : null);
     }

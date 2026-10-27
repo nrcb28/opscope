@@ -43,7 +43,43 @@ CloudWatch executes exactly `aws logs put-log-events` using a trusted AWS CLI pa
 
 ## Release artifacts
 
-The release workflow builds self-contained single-file archives for `linux-x64`, `linux-arm64`, `win-x64`, `win-arm64`, `osx-x64`, and `osx-arm64`, plus a framework-dependent .NET 8 tool package. The macOS targets enable actual Homebrew formulas for both architectures. Native platform diagnostic coverage still depends on installed tools and permissions; publishing a RID does not prove every platform-specific collector was exercised on that architecture.
+The reusable [package workflow](../.github/workflows/package-build.yml) builds self-contained single-file archives for `linux-x64`, `linux-arm64`, `win-x64`, `win-arm64`, `osx-x64`, and `osx-arm64`, plus a framework-dependent .NET 8 tool package. It produces actual-output SPDX SBOMs, checksums and package-manager manifests, then verifies the assembled package set. The CLI regression suite runs against published executables when the target architecture matches the runner, and against an installed local .NET tool. The tool test uses a local-only NuGet source and a fresh cache, then checks removal. Cross-built targets receive artifact verification without a native-execution claim. Native platform diagnostic coverage still depends on installed tools and permissions.
+
+### Candidate packages from CI
+
+After the .NET and browser regression jobs succeed, [CI](../.github/workflows/ci.yml) calls the package workflow with read-only repository permissions and no signing secrets. The candidate version comes from the literal `<Version>` in `src/Opscope/Opscope.csproj`, followed by `-ci.<run number>`; a candidate is tied to that source revision and workflow execution.
+
+Open a successful [CI execution](https://github.com/nrcb28/opscope/actions/workflows/ci.yml), download `package-assets` from **Artifacts**, and extract the outer GitHub artifact ZIP. Artifacts are retained for fourteen days and downloads require GitHub access to the repository. The set contains all six platform archives, the `.nupkg`, their SBOMs, `SHA256SUMS` and generated package-manager manifests. These are temporary workflow downloads; the CI workflow creates no tag or public release and publishes to no package registry.
+
+Choose the archive matching your operating system and architecture. Extract that archive into a local directory and launch `./opscope serve` on Linux/macOS, or `.\opscope.exe serve` in PowerShell. The executable prints the authenticated local URL. These self-contained archives include the runtime. To use the `.nupkg` instead, install the .NET 8 ASP.NET Core runtime and install the exact downloaded version from its local directory:
+
+```sh
+dotnet tool install Opscope --tool-path ./opscope-tool --add-source ./packages --version <downloaded-version> --ignore-failed-sources
+./opscope-tool/opscope serve
+dotnet tool uninstall Opscope --tool-path ./opscope-tool
+```
+
+In PowerShell, launch the installed tool with `.\opscope-tool\opscope.exe serve`. Replace `./packages` and `<downloaded-version>` with the directory and version actually downloaded. `--tool-path` keeps the tool installation in the selected directory.
+
+From a source checkout, the packaging helper can derive a candidate version without evaluating MSBuild or execute integrity verification against a downloaded set:
+
+```sh
+python3 packaging/release_assets.py candidate-version --project src/Opscope/Opscope.csproj --suffix ci.123
+python3 packaging/release_assets.py verify --input ./packages --version <downloaded-version> --repository nrcb28/opscope
+```
+
+`verify` requires all six archives and their SBOMs, the `Opscope.<version>.nupkg` tool package and its SBOM, generated package-manager manifests and their archive, and a complete `SHA256SUMS`. It checks actual hashes, archive paths and entries, executable headers for the claimed RID, SBOM file hashes, tool package identity/version/command, and manifest contents. Limits are 1 GiB per file, 2 GiB of expanded content and 10,000 archive entries overall, and 16 MiB per metadata document. The project XML used for candidate versions is limited to 256 KiB and read without evaluating MSBuild.
+
+An individual platform archive can also be checked before extraction from a source checkout:
+
+```sh
+python3 packaging/release_assets.py verify-archive --input opscope-<downloaded-version>-linux-x64.tar.gz \
+  --sbom opscope-<downloaded-version>-linux-x64.spdx.json --rid linux-x64 --version <downloaded-version>
+```
+
+The helper performs local checks and no provider or package-registry requests. It does not establish publisher identity, a native signature, notarization or licenses of embedded runtime components. The run number above is an example. Use the version attached to the selected execution for verification. Package-manager manifests contain release URLs calculated from the repository and version; those URLs become installable only after corresponding release assets are published. Candidate downloads can be used directly as archives or local tool packages.
+
+### Versioned releases
 
 Push a semantic version tag such as `v0.2.0`, or run the workflow manually with `version=0.2.0`. A manual run builds downloadable workflow artifacts by default. Tag runs create a **draft** GitHub release; manual runs do so only with `create_draft=true` and an existing matching tag at the selected commit. The workflow refuses to overwrite an already published release. It does not publish to NuGet, submit winget manifests, modify a Homebrew tap, or make a draft public.
 
@@ -80,6 +116,6 @@ gh attestation verify opscope-0.2.0-linux-x64.tar.gz --repo YOUR_OWNER/YOUR_REPO
 
 A public key downloaded from the same release is useful for inspection, but establishes publisher trust only when its fingerprint is verified through a trusted channel. Package-manager submission, native signing/notarization infrastructure and public release approval remain maintainer actions.
 
-## Validation performed locally
+## Validation evidence
 
-Fake HTTP/CLI transport tests exercise previews, all six delivery targets, credential handling, redirect rejection, response bounds, redaction and cancellation without sending any notification or log event. Packaging tests check actual-file hashes, required archives, file-level SBOMs and archive contents. The .NET tool package was built, installed from a local directory and invoked with `--help`. The GitHub release workflow, signing services and cross-platform release jobs were not run in this workspace.
+Fake HTTP/CLI transport tests exercise previews, all six delivery targets, credential handling, redirect rejection, response bounds, redaction and cancellation without sending notifications or log events. Packaging tests cover actual-file hashes, required archives, file-level SBOMs, archive contents and malformed inputs. [Distribution validation](distribution-validation.md) records the executions and their scope. Native signatures, notarization, live cloud permissions and package-registry ingestion require their corresponding credentials or environments; a successful package build does not certify them.

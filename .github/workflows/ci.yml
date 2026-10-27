@@ -50,7 +50,7 @@ jobs:
         shell: pwsh
         run: ./tests/smoke.ps1
       - name: Validate release asset tooling without publishing
-        run: python -m unittest discover -s packaging -p test_release_assets.py
+        run: python -m unittest discover -s packaging -p 'test_*.py'
 
   browser:
     strategy:
@@ -82,3 +82,32 @@ jobs:
       - name: Exercise local UI, privacy, downloads, and accessibility
         working-directory: tests/Opscope.ApiTests
         run: npm test
+
+  distribution-version:
+    needs: [build, browser]
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - id: version
+        env:
+          CANDIDATE_SUFFIX: ci.${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          version="$(python3 packaging/release_assets.py candidate-version --project src/Opscope/Opscope.csproj --suffix "$CANDIDATE_SUFFIX")"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+  distribution:
+    needs: distribution-version
+    uses: ./.github/workflows/package-build.yml
+    with:
+      version: ${{ needs.distribution-version.outputs.version }}
+      run_regressions: false
+      native_signing: false

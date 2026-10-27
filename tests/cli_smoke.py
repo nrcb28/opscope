@@ -19,10 +19,14 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 PARSER = argparse.ArgumentParser()
-PARSER.add_argument("--dll", default=str(ROOT / "src/Opscope/bin/Release/net8.0/opscope.dll"))
+TARGET = PARSER.add_mutually_exclusive_group()
+TARGET.add_argument("--dll", default=str(ROOT / "src/Opscope/bin/Release/net8.0/opscope.dll"))
+TARGET.add_argument("--executable", help="Test an extracted self-contained binary or installed tool shim.")
 ARGS, _ = PARSER.parse_known_args()
 DLL = Path(ARGS.dll).resolve()
 DOTNET = os.environ.get("DOTNET_BIN", "dotnet")
+EXECUTABLE = Path(ARGS.executable).resolve() if ARGS.executable else None
+COMMAND = [str(EXECUTABLE)] if EXECUTABLE else [DOTNET, str(DLL)]
 
 
 def fixture():
@@ -53,7 +57,7 @@ class CliTests(unittest.TestCase):
         self.directory.cleanup()
 
     def run_cli(self, *args, expected=0):
-        result = subprocess.run([DOTNET, str(DLL), *map(str, args)], cwd=ROOT, capture_output=True, timeout=30)
+        result = subprocess.run([*COMMAND, *map(str, args)], cwd=self.root, capture_output=True, timeout=30)
         self.assertEqual(result.returncode, expected, result.stderr.decode("utf-8", errors="replace"))
         return result.stdout
 
@@ -256,7 +260,7 @@ class CliTests(unittest.TestCase):
         self.assertIn(b"opscope TUI | services", output)
 
     def test_real_serve_uses_loopback_auth_and_clean_shutdown(self):
-        process = subprocess.Popen([DOTNET, str(DLL), "serve", "--history", str(self.root / "server.sqlite"), "--no-network", "--no-processes", "--no-services"], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        process = subprocess.Popen([*COMMAND, "serve", "--history", str(self.root / "server.sqlite"), "--no-network", "--no-processes", "--no-services"], cwd=self.root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             deadline = time.monotonic() + 20
             bootstrap = None
@@ -283,5 +287,5 @@ class CliTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    if not DLL.is_file(): raise SystemExit("Build the Release CLI before running these tests.")
+    if not (EXECUTABLE or DLL).is_file(): raise SystemExit("Build the Release CLI or supply an existing --executable before running these tests.")
     unittest.main(argv=[__file__], verbosity=2)

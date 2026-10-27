@@ -99,6 +99,7 @@ public sealed class KubernetesProvider(ICloudCommandRunner? runner = null) : ICl
                 cluster = new { scopeKind = "cluster", relation = "unverified", cloudCorrelationVerified = false, namespacesQueried = completedScopes, includesNodes = includeNodes && operation != "metrics" },
                 scope = new { accounts = context.Length == 0 ? Array.Empty<string>() : new[] { context }, namespaces = allowedNamespaces },
                 resources, metrics,
+                infrastructureCorrelation = KubernetesInfrastructureLinker.Unverified(resources.Count(resource => resource.Type == "kubernetes.node"), includeNodes && operation != "metrics"),
                 coverage = new { state, observedAtUtc = now, enumeratedResources = operation == "metrics" ? metrics.Select(series => series.ResourceId).Distinct(StringComparer.Ordinal).Count() : resources.Count, expectedScopes, completedScopes, attemptedReads, completedReads },
                 source = operation == "metrics" ? "metrics-server" : "kubectl-fixed-metadata-projection"
             }, warnings.Distinct(StringComparer.Ordinal).ToArray()) { OperationSucceeded = succeeded };
@@ -220,6 +221,9 @@ public sealed class KubernetesProvider(ICloudCommandRunner? runner = null) : ICl
             result["capacityMemoryBytes"] = TryMemoryBytes(Text(row, "memory"), out var memory) ? memory : null;
             var version = Text(row, "version");
             result["kubeletVersion"] = Regex.IsMatch(version, @"\Av[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?\z", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100)) ? version : "unknown";
+            var infrastructureResourceId = Text(row, "infrastructureResourceId");
+            if (KubernetesInfrastructureLinker.IsSupportedReference(infrastructureResourceId))
+                result["infrastructureResourceId"] = infrastructureResourceId;
         }
         else if (kind == "pods")
         {

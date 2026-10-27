@@ -140,9 +140,93 @@ var oversizedRunner = new FakeRunner((_, args, _) => args[4] == "namespaces" ? M
 var bounded = await new KubernetesProvider(oversizedRunner).CollectAsync("inventory", scope);
 Check(!bounded.OperationSucceeded && Data(bounded).GetProperty("resources").GetArrayLength() == 1000, "The entire collection has a 1000-resource bound even with an injected oversized page");
 
+const string nodeReference = "gce://project-alpha/europe-west1-b/node-one";
+const string gcpResourceId = "//compute.googleapis.com/projects/project-alpha/zones/europe-west1-b/instances/node-one";
+var gcpResource = new CloudResource("gcp", "project-alpha", "europe-west1-b", gcpResourceId, "compute.googleapis.com/Instance", "node-one");
+var gcpInventory = Infrastructure("gcp", [gcpResource]);
+var clusterReferences = ClusterReferences(("node-one", nodeReference));
+var linked = KubernetesInfrastructureLinker.Correlate(clusterReferences, [gcpInventory]);
+Check(linked.State == "verified_node_references" && linked.NodeReferencesVerified && !linked.ClusterIdentityVerified && linked.MatchedNodes == 1, "An exact current GCP node reference can match infrastructure without asserting cluster identity");
+Check(linked.Links is [{ Provider: "gcp", Account: "project-alpha", Region: "europe-west1-b", ResourceId: gcpResourceId, NodeId: "cluster/nodes/node-one" }], "A verified link retains exact provider, account, zone and canonical resource identity");
+var applied = KubernetesInfrastructureLinker.Apply(clusterReferences, [gcpInventory]);
+Check(applied.OperationSucceeded && !Data(applied).GetProperty("cluster").GetProperty("cloudCorrelationVerified").GetBoolean() && Data(applied).GetProperty("infrastructureCorrelation").GetProperty("nodeReferencesVerified").GetBoolean(), "Applying links preserves collection success and the unverified cluster identity");
+Check(!JsonSerializer.Serialize(applied.Data, ReportSecurity.JsonOptions).Contains("CLOUD_SECRET", StringComparison.Ordinal), "Infrastructure correlation never copies arbitrary cloud resource properties");
+var partialLinks = KubernetesInfrastructureLinker.Correlate(ClusterTwoReferences(("node-one", nodeReference), ("node-two", "aws:///eu-west-1a/i-0123456789abcdef0")), [gcpInventory]);
+Check(partialLinks.State == "partial_node_references" && partialLinks.MatchedNodes == 1 && partialLinks.UnmatchedNodes == 1 && !partialLinks.ClusterIdentityVerified, "Unsupported or account-less node references remain unmatched beside a verified reference");
+Check(!KubernetesInfrastructureLinker.Correlate(ClusterReferences(("same-name", "")), [gcpInventory]).NodeReferencesVerified, "Similar node and cloud names never establish a link");
+foreach (var invalidReference in new[]
+{
+    "gce://project-alpha/europe-west1-b/node-one?token=PRIVATE_SECRET", "gce://project-alpha/europe-west1-b/../node-one",
+    "gce://project-alpha/europe-west1-b/node%2Done", "gce://project-alpha/europe-west1-b/node-one#fragment",
+    "https://compute.googleapis.com/projects/project-alpha/zones/europe-west1-b/instances/node-one",
+    "gce://project-beta/europe-west1-b/node-one", "gce://project-alpha/europe-west1-c/node-one",
+    "azure:///subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/rg/providers/Microsoft.Compute/virtualMachineScaleSets/pool/virtualMachines/1"
+}) Check(!KubernetesInfrastructureLinker.Correlate(ClusterReferences(("node-one", invalidReference)), [gcpInventory]).NodeReferencesVerified, "Malformed, foreign, mismatched or unsupported references cannot establish a link");
+foreach (var invalidCloud in new[]
+{
+    gcpInventory with { OperationSucceeded = false }, gcpInventory with { CollectedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-6) },
+    gcpInventory with { CollectedAtUtc = DateTimeOffset.UtcNow.AddMinutes(3) }, gcpInventory with { Kind = "cloud.gcp.health" },
+    Infrastructure("gcp", [gcpResource], coverage: "partial"), Infrastructure("gcp", [gcpResource], completed: 0),
+    Infrastructure("gcp", [gcpResource], accounts: ["project-beta"]),
+    Infrastructure("gcp", [gcpResource with { Account = "project-beta" }]),
+    Infrastructure("gcp", [gcpResource with { Region = "europe-west1" }]),
+    Infrastructure("gcp", [gcpResource with { Type = "container.googleapis.com/Cluster" }]),
+    Infrastructure("gcp", [gcpResource with { Id = "[redacted-identifier]" }]),
+    Infrastructure("gcp", [gcpResource, gcpResource])
+}) Check(!KubernetesInfrastructureLinker.Correlate(clusterReferences, [invalidCloud]).NodeReferencesVerified, "Incomplete, stale, redacted, ambiguous or out-of-scope cloud evidence never verifies a reference");
+Check(!KubernetesInfrastructureLinker.Correlate(clusterReferences, [gcpInventory, gcpInventory]).NodeReferencesVerified, "A canonical resource duplicated across reports remains ambiguous");
+foreach (var invalidCluster in new[]
+{
+    clusterReferences with { OperationSucceeded = false }, clusterReferences with { CollectedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-6) },
+    clusterReferences with { Kind = "cluster/kubernetes/metrics" }, ClusterReferences(("node-one", nodeReference), coverage: "partial"),
+    ClusterReferences(("node-one", nodeReference), includesNodes: false), ClusterReferences(("node-one", nodeReference), account: "other-context"),
+    ClusterTwoReferences(("node-one", nodeReference), ("node-two", nodeReference))
+}) Check(!KubernetesInfrastructureLinker.Correlate(invalidCluster, [gcpInventory]).NodeReferencesVerified, "Failed, stale, incomplete, unrequested, mismatched or duplicate node evidence never establishes links");
+Check(!KubernetesInfrastructureLinker.Correlate(clusterReferences, Enumerable.Repeat(gcpInventory, 21).ToArray()).NodeReferencesVerified, "Correlation rejects more than twenty infrastructure reports");
+Check(!KubernetesInfrastructureLinker.Correlate(clusterReferences, [Infrastructure("gcp", Enumerable.Repeat(gcpResource, 10001).ToArray())]).NodeReferencesVerified, "Correlation rejects an inventory exceeding the ten-thousand-resource bound");
+const string azureAccount = "00000000-0000-0000-0000-000000000001";
+const string azureId = "/subscriptions/00000000-0000-0000-0000-000000000001/resourceGroups/PrivateGroup/providers/Microsoft.Compute/virtualMachines/PrivateVm";
+var azureResource = new CloudResource("azure", azureAccount, "westeurope", azureId, "Microsoft.Compute/virtualMachines", "PrivateVm");
+var azureInventory = Infrastructure("azure", [azureResource], accounts: [azureAccount]);
+var azureCluster = ClusterReferences(("azure-node", "azure://" + azureId));
+foreach (var group in new[] { ".", "..", "group." })
+    Check(!KubernetesInfrastructureLinker.IsSupportedReference("azure://" + azureId.Replace("PrivateGroup", group, StringComparison.Ordinal)), "Azure provider references reject dot segments and invalid trailing-period resource groups");
+var azureLink = KubernetesInfrastructureLinker.Correlate(azureCluster, [azureInventory]);
+Check(azureLink.NodeReferencesVerified && !azureLink.ClusterIdentityVerified && azureLink.Links[0].Account == azureAccount && azureLink.Links[0].Region == "westeurope", "Azure links require the exact subscription/resource path and retain the inventory-observed region");
+Check(KubernetesInfrastructureLinker.Correlate(ClusterReferences(("azure-node", "azure://" + azureId.ToLowerInvariant())), [azureInventory]).NodeReferencesVerified, "Azure resource ID comparison follows case-insensitive ARM identity semantics");
+Check(!KubernetesInfrastructureLinker.Correlate(azureCluster, [azureInventory with { Warnings = ["Azure resource inventory reached a row limit; results are incomplete."] }]).NodeReferencesVerified, "Azure truncation warnings block a complete-reference claim");
+Check(!KubernetesInfrastructureLinker.Correlate(azureCluster, [azureInventory with { Warnings = Enumerable.Repeat("Observation", 129).ToArray() }]).NodeReferencesVerified, "Correlation bounds its traversal of Azure coverage warnings");
+Check(!KubernetesInfrastructureLinker.Correlate(azureCluster, [azureInventory with { Warnings = [new string('x', 2049)] }]).NodeReferencesVerified, "Correlation rejects oversized unstructured coverage warnings");
+Check(!KubernetesInfrastructureLinker.Correlate(azureCluster, [Infrastructure("azure", [azureResource], accounts: ["00000000-0000-0000-0000-000000000002"])]).NodeReferencesVerified, "Azure subscription allowlists cannot be widened by a resource or node path");
+Check(!KubernetesInfrastructureLinker.Correlate(azureCluster, [Infrastructure("azure", [azureResource with { Account = "00000000-0000-0000-0000-000000000002" }], accounts: [azureAccount])]).NodeReferencesVerified, "Azure account and canonical resource ID must agree");
+var scopedReferenceRunner = new FakeRunner((_, args, _) => args[4] == "nodes" ? Element(new { kind = "nodes", rows = new[] { new { name = "node-one", ready = "True", infrastructureResourceId = nodeReference } }, truncated = false, malformedRows = 0 }) : Metadata(args));
+var referenceInventory = await new KubernetesProvider(scopedReferenceRunner).CollectAsync("inventory", new Dictionary<string, string>(scope) { ["kubernetes-nodes"] = "true" });
+Check(Data(referenceInventory).GetProperty("resources").EnumerateArray().Single(resource => resource.GetProperty("type").GetString() == "kubernetes.node").GetProperty("properties").GetProperty("infrastructureResourceId").GetString() == nodeReference, "Only the opted-in fixed node projection retains a canonical infrastructure reference");
+Check(!Data(referenceInventory).GetProperty("infrastructureCorrelation").GetProperty("nodeReferencesVerified").GetBoolean(), "Collection alone does not verify a provider reference without backend inventory");
+var invalidReferenceRunner = new FakeRunner((_, args, _) => args[4] == "nodes" ? Element(new { kind = "nodes", rows = new[] { new { name = "node-one", ready = "True", infrastructureResourceId = "https://untrusted.invalid/PRIVATE_SECRET" } }, truncated = false, malformedRows = 0 }) : Metadata(args));
+var invalidReferenceInventory = await new KubernetesProvider(invalidReferenceRunner).CollectAsync("inventory", new Dictionary<string, string>(scope) { ["kubernetes-nodes"] = "true" });
+Check(!JsonSerializer.Serialize(invalidReferenceInventory.Data, ReportSecurity.JsonOptions).Contains("PRIVATE_SECRET", StringComparison.Ordinal), "Invalid infrastructure references are omitted even from full cluster reports");
+Check(!ReportSecurity.Serialize(referenceInventory).Contains(nodeReference, StringComparison.Ordinal), "Shared reports redact the complete infrastructure reference");
+Check(!ReportSecurity.Serialize(applied).Contains("cluster/nodes/node-one", StringComparison.Ordinal), "Shared correlation output redacts node identifiers");
+
 Console.WriteLine($"Kubernetes scoped metadata, grammar, metrics, privacy and bounds passed ({checks} checks).");
 
 static JsonElement Element(object value) => JsonSerializer.SerializeToElement(value);
+static AnalysisReport ClusterReferences((string Name, string Reference) node, string coverage = "complete", bool includesNodes = true, string account = "private-cluster-context") => ClusterReferenceSet([node], coverage, includesNodes, account);
+static AnalysisReport ClusterTwoReferences((string Name, string Reference) first, (string Name, string Reference) second) => ClusterReferenceSet([first, second]);
+static AnalysisReport ClusterReferenceSet((string Name, string Reference)[] nodes, string coverage = "complete", bool includesNodes = true, string account = "private-cluster-context") => new("cluster/kubernetes/inventory", DateTimeOffset.UtcNow, [], new
+{
+    provider = "kubernetes", operation = "inventory", cluster = new { includesNodes, cloudCorrelationVerified = false },
+    scope = new { accounts = new[] { "private-cluster-context" }, namespaces = new[] { "private-namespace" } },
+    resources = nodes.Select(node => new CloudResource("kubernetes", account, "cluster", "cluster/nodes/" + node.Name, "kubernetes.node", node.Name, new { infrastructureResourceId = node.Reference })).ToArray(),
+    coverage = new { state = coverage, expectedScopes = 1, completedScopes = 1 }
+});
+static AnalysisReport Infrastructure(string provider, CloudResource[] resources, string coverage = "complete", int completed = 1, string[]? accounts = null) => new("cloud." + provider + ".inventory", DateTimeOffset.UtcNow, [], new
+{
+    provider, operation = "inventory", resources = resources.Select(resource => resource with { Properties = new { password = "CLOUD_SECRET" } }).ToArray(),
+    scope = provider == "gcp" ? (object)new { accounts = accounts ?? new[] { "project-alpha" } } : new { subscriptions = accounts ?? Array.Empty<string>() },
+    coverage = new { state = coverage, expectedScopes = 1, completedScopes = completed }
+});
 static IReadOnlyList<string> MetadataArguments(string kind, string ns)
 {
     var args = new List<string> { "--context", "reader", "--request-timeout=10s", "get", kind };

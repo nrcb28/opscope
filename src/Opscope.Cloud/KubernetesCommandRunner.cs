@@ -12,7 +12,7 @@ public sealed class KubernetesCommandRunner : ICloudCommandRunner
     internal static readonly IReadOnlyDictionary<string, string> Columns = new Dictionary<string, string>(StringComparer.Ordinal)
     {
         ["namespaces"] = "name:.metadata.name,uid:.metadata.uid,state:.status.phase",
-        ["nodes"] = "name:.metadata.name,uid:.metadata.uid,ready:.status.conditions[?(@.type==\"Ready\")].status,cpu:.status.capacity.cpu,memory:.status.capacity.memory,version:.status.nodeInfo.kubeletVersion",
+        ["nodes"] = "name:.metadata.name,uid:.metadata.uid,ready:.status.conditions[?(@.type==\"Ready\")].status,cpu:.status.capacity.cpu,memory:.status.capacity.memory,version:.status.nodeInfo.kubeletVersion,infrastructureResourceId:.spec.providerID",
         ["pods"] = "name:.metadata.name,uid:.metadata.uid,state:.status.phase,ready:.status.containerStatuses[*].ready,restarts:.status.containerStatuses[*].restartCount",
         ["deployments"] = "name:.metadata.name,uid:.metadata.uid,desired:.spec.replicas,available:.status.availableReplicas,updated:.status.updatedReplicas",
         ["statefulsets"] = "name:.metadata.name,uid:.metadata.uid,desired:.spec.replicas,available:.status.availableReplicas,updated:.status.updatedReplicas",

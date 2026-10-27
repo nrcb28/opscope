@@ -23,7 +23,7 @@ Los endpoints cloud reales necesitan las identidades, API y permisos descritos e
 
 ## Segunda fase: GCP avanzado, métricas y Kubernetes
 
-Verificación local del 27 de octubre de 2026, sobre la base `bb5115846686ee904a2fd47431cc88d1f70d6ab3`. La tabla anterior conserva los resultados históricos de la primera fase. Los resultados siguientes corresponden a la segunda fase en Linux x64; la ejecución de CI remoto en Windows, macOS y Linux queda pendiente de la publicación de esta revisión.
+Verificación local del 27 de octubre de 2026, sobre la base `bb5115846686ee904a2fd47431cc88d1f70d6ab3`. La tabla anterior conserva los resultados históricos de la primera fase. Los resultados siguientes corresponden a la segunda fase en Linux x64. Antes de integrar la [PR #14](https://github.com/nrcb28/opscope/pull/14), también aprobaron las cinco comprobaciones de [CI remoto](https://github.com/nrcb28/opscope/actions/runs/40491327233): regresiones en Windows, macOS y Linux, y navegador en Windows/Linux.
 
 | Comprobación | Resultado local de la segunda fase |
 | --- | --- |
@@ -42,4 +42,23 @@ Verificación local del 27 de octubre de 2026, sobre la base `bb5115846686ee904a
 
 Las pruebas de proveedores usan fixtures y transportes inyectados; no se utilizaron cuentas cloud reales ni un clúster remoto. Por tanto, no certifican permisos IAM/RBAC, configuración de ADC, disponibilidad de APIs o Metrics Server, ni compatibilidad con cada despliegue del proveedor. La CI y las lecturas reales requieren sus entornos correspondientes.
 
-El alcance comprobado conserva los límites descritos en [cloud.md](cloud.md): la facturación muestra subtotales incompletos de filas observadas, las métricas mantienen sus unidades originales y Kubernetes no inventa historia para una observación puntual. La correlación automática entre clúster e infraestructura, las evidencias OS Config y el drift de Google Cloud siguen pendientes; las firmas de distribución y la revisión manual con lectores de pantalla tampoco forman parte de esta validación.
+El alcance comprobado conserva los límites descritos en [cloud.md](cloud.md): la facturación muestra subtotales incompletos de filas observadas, las métricas mantienen sus unidades originales y Kubernetes no inventa historia para una observación puntual. En esa segunda fase quedaron pendientes la correlación entre clúster e infraestructura, las evidencias OS Config y el drift de Google Cloud. Las firmas de distribución y la revisión manual con lectores de pantalla tampoco formaron parte de esa validación.
+
+## Tercera fase: jobs OS Config, baseline GCP y referencias de nodos
+
+Verificación local del 27 de octubre de 2026, sobre la base `3f2ada84bfef7ebb6807235eecad4c2d7eb192eb`. Su alcance y límites se describen en [cloud.md](cloud.md) y en la [matriz de implementación](engineering-review-v4.md). Los resultados siguientes corresponden a Linux x64; la ejecución de CI remoto en Windows, macOS y Linux queda pendiente de publicar esta revisión.
+
+| Comprobación | Resultado local de la tercera fase |
+| --- | --- |
+| Compilación CLI y módulos, Release | Aprobada, cero errores y cero advertencias. |
+| Proyectos de regresión .NET | Los veinte proyectos aprobados, incluidas las nuevas suites de OS Config y baseline GCP. |
+| API, SQLite y MCP | 319 comprobaciones aprobadas; incluyen las acciones configuradas de patches y drift, sus límites de evidencia y la redacción. |
+| OS Config | 110 comprobaciones aprobadas de identidad, proyección, fechas, contadores desconocidos, errores y presupuestos de lectura. |
+| Baseline GCP | 63 comprobaciones aprobadas de ámbitos, cobertura, filtros, entradas redactadas, perfil no admitido y exportación/comparación real con transporte simulado. |
+| Kubernetes y referencias de infraestructura | 162 comprobaciones aprobadas; incluyen coincidencias exactas, frescura, referencias ambiguas o no admitidas, opt-in y privacidad. |
+| Navegador Chromium | 139 comprobaciones aprobadas de interfaz y accesibilidad, incluidas las nuevas vistas de patches, drift y referencias de nodos; sin errores de JavaScript ni solicitudes fuera del origen local autenticado. |
+| Resoluciones y zoom | Verificaciones entre 320 y 1920 px, reflujo equivalente a 200% y accesibilidad en temas claro y oscuro conservadas; tablas nuevas comprobadas en móvil. |
+| CLI real, pruebas Python | 19 pruebas aprobadas. |
+| Prueba de humo Unix y herramientas de distribución | Prueba de humo aprobada; seis pruebas de empaquetado aprobadas. |
+
+La evidencia OS Config corresponde a jobs ya registrados y no establece cumplimiento actual. La comparación GCP requiere inventarios normalizados privados y compatibles; rechaza perfiles declarados que no seleccionan una identidad GCP. Un enlace de nodo Kubernetes verifica solo su referencia contra el recurso observado; no verifica identidad del controlplane ni propiedad del clúster. Las pruebas usan fixtures y transportes simulados, sin cuentas cloud reales ni clúster remoto. Estas funciones siguen necesitando configuración e identidades reales para validar IAM/RBAC, ADC y disponibilidad de servicios fuera de los fixtures.

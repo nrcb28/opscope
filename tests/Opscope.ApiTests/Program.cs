@@ -44,6 +44,8 @@ internal static class Program
                         ["hetzner-scope-1/metrics"] = _ => Task.FromResult(CloudMetricFixture("hetzner")),
                         ["gcp-scope-1/scc"] = _ => Task.FromResult(AdvancedCloudFixture("scc")),
                         ["gcp-scope-1/cost"] = _ => Task.FromResult(AdvancedCloudFixture("cost")),
+                        ["gcp-scope-1/patches"] = _ => Task.FromResult(AdvancedCloudFixture("patches")),
+                        ["gcp-scope-1/drift"] = _ => Task.FromResult(AdvancedCloudFixture("drift")),
                         ["kubernetes-scope-1/inventory"] = _ => Task.FromResult(AdvancedCloudFixture("kubernetes-inventory")),
                         ["kubernetes-scope-1/metrics"] = _ => Task.FromResult(AdvancedCloudFixture("kubernetes-metrics"))
                     }
@@ -115,6 +117,19 @@ internal static class Program
                 rowsRead = 4, matchedRows = 3, periodStartUtc = now.AddDays(-1), periodEndUtc = now, isComplete = false
             }
         }, ["Only observed export rows contribute to these subtotals. They are not the total bill."]);
+        if (operation == "patches") return new("cloud/gcp/patches", now, [], new
+        {
+            provider = "gcp", coverage,
+            patches = new { source = "osconfig-existing-patch-jobs-v1", jobsRead = 1, complianceState = "unknown", freshnessThresholdHours = 24,
+                latestObservedJobUpdateUtc = now.AddDays(-2), jobs = new[] { new { state = "SUCCEEDED", dryRun = false, updatedAtUtc = now.AddDays(-2), isStale = true, succeededInstanceCount = 2, failedInstanceCount = 0 } } }
+        }, ["Existing patch jobs do not establish current patch compliance."]);
+        if (operation == "drift") return new("cloud/gcp/drift", now, [], new
+        {
+            provider = "gcp", coverage,
+            drift = new { baselineObservedAtUtc = now.AddDays(-1), currentObservedAtUtc = now, comparedResources = 1, comparedFields = 2,
+                unknownFields = 0, addedResources = 0, missingResources = 0, changedResources = 1, absenceAssessmentAvailable = true,
+                changes = new[] { new { resourceId = "[redacted-id]", type = "compute.googleapis.com/Instance", changeType = "Changed", fields = new[] { "state" } } }, comparedFieldAllowlist = new[] { "region", "state" } }
+        }, ["Only matching scoped inventory fields were compared."]);
         var cluster = new { scopeKind = "cluster", relation = "unverified", cloudCorrelationVerified = false, namespacesQueried = 1, includesNodes = false };
         if (operation == "kubernetes-metrics") return new("cloud/kubernetes/metrics", now, [], new
         {
@@ -322,6 +337,8 @@ internal static class Program
                 ["azure-scope-2/health"] = _ => Task.FromResult(new AnalysisReport("cloud/azure", DateTimeOffset.UtcNow, [], new { detail = "reflected " + reflectedToken }, ["Provider coverage failed."]) { OperationSucceeded = false }),
                 ["gcp-scope-3/scc"] = _ => Task.FromResult(AdvancedCloudFixture("scc")),
                 ["gcp-scope-3/cost"] = _ => Task.FromResult(AdvancedCloudFixture("cost")),
+                ["gcp-scope-3/patches"] = _ => Task.FromResult(AdvancedCloudFixture("patches")),
+                ["gcp-scope-3/drift"] = _ => Task.FromResult(AdvancedCloudFixture("drift")),
                 ["kubernetes-scope-2/inventory"] = _ => Task.FromResult(AdvancedCloudFixture("kubernetes-inventory")),
                 ["kubernetes-scope-2/metrics"] = _ => Task.FromResult(AdvancedCloudFixture("kubernetes-metrics")),
                 ["kubernetes-scope-2/health"] = _ => Task.FromResult(new AnalysisReport("cloud/kubernetes/health", DateTimeOffset.UtcNow, [], new { coverage = new { state = "no_data" } }))
@@ -624,7 +641,7 @@ internal static class Program
         Assert(unconfigured.GetProperty("scopes").GetArrayLength() == 0 && unconfigured.GetProperty("operations").EnumerateArray().Any(operation => operation.GetProperty("name").GetString() == "inventory" && operation.GetProperty("availability").GetString() == "not-configured"), "Known unconfigured providers expose their missing scope instead of an empty successful inventory");
         var actions = catalog.RootElement.GetProperty("actions").EnumerateArray().ToArray();
         Assert(actions.Any(action => action.GetProperty("actionKey").GetString() == "azure-scope-2/inventory") && actions.All(action => action.GetProperty("readOnly").GetBoolean()), "Catalog preserves explicitly configured action aliases as read-only actions");
-        foreach (var action in new[] { "gcp-scope-3/scc", "gcp-scope-3/cost", "kubernetes-scope-2/inventory", "kubernetes-scope-2/metrics" })
+        foreach (var action in new[] { "gcp-scope-3/scc", "gcp-scope-3/cost", "gcp-scope-3/patches", "gcp-scope-3/drift", "kubernetes-scope-2/inventory", "kubernetes-scope-2/metrics" })
             Assert(actions.Any(item => item.GetProperty("actionKey").GetString() == action), "Catalog exposes only the explicitly configured advanced action: " + action);
         Assert(!text.Contains(token, StringComparison.Ordinal) && !text.Contains("api-private-host", StringComparison.Ordinal), "Cloud discovery reveals no host evidence or session secret");
         foreach (var (path, status) in new[]
@@ -650,6 +667,7 @@ internal static class Program
         foreach (var (action, expectedKind) in new[]
         {
             ("gcp-scope-3/scc", "cloud/gcp/scc"), ("gcp-scope-3/cost", "cloud/gcp/cost"),
+            ("gcp-scope-3/patches", "cloud/gcp/patches"), ("gcp-scope-3/drift", "cloud/gcp/drift"),
             ("kubernetes-scope-2/inventory", "cloud/kubernetes/inventory"), ("kubernetes-scope-2/metrics", "cloud/kubernetes/metrics")
         })
         {
@@ -662,6 +680,10 @@ internal static class Program
             var data = report.RootElement.GetProperty("data");
             if (action.EndsWith("/cost", StringComparison.Ordinal))
                 Assert(!data.GetProperty("billing").GetProperty("isComplete").GetBoolean() && data.GetProperty("billing").GetProperty("currencySubtotals")[0].GetProperty("observedNetCost").GetDecimal() == 10.5m, "Billing fixture preserves the observed currency subtotal and explicitly denies a complete-bill claim");
+            if (action.EndsWith("/patches", StringComparison.Ordinal))
+                Assert(data.GetProperty("patches").GetProperty("complianceState").GetString() == "unknown" && data.GetProperty("patches").GetProperty("jobs")[0].GetProperty("isStale").GetBoolean(), "Existing successful patch jobs preserve stale evidence and unknown current compliance");
+            if (action.EndsWith("/drift", StringComparison.Ordinal))
+                Assert(data.GetProperty("drift").GetProperty("changedResources").GetInt32() == 1 && data.GetProperty("drift").GetProperty("comparedFieldAllowlist").EnumerateArray().Select(field => field.GetString()).SequenceEqual(new[] { "region", "state" }), "Drift exposes only the configured baseline comparison and allowlisted field names");
             if (action.StartsWith("kubernetes", StringComparison.Ordinal))
                 Assert(!data.GetProperty("cluster").GetProperty("cloudCorrelationVerified").GetBoolean(), "Kubernetes observations cannot infer a cloud identity match from a context name");
             if (action == "kubernetes-scope-2/metrics")

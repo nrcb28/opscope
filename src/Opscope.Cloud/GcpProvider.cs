@@ -6,7 +6,7 @@ namespace Opscope.Cloud;
 
 /// <summary>Optional Google Cloud read-only collector using the caller's existing gcloud session.</summary>
 /// <remarks>gcloud credentials are separate from Application Default Credentials. This collector never logs in.</remarks>
-public sealed class GcpProvider(ICloudCommandRunner runner, IGcpMonitoringReader? monitoring = null, IGcpAdvancedReader? advanced = null) : ICloudProvider
+public sealed class GcpProvider(ICloudCommandRunner runner, IGcpMonitoringReader? monitoring = null, IGcpAdvancedReader? advanced = null, IGcpPatchReader? patches = null) : ICloudProvider
 {
     private const int MaxRowsPerRead = 500;
     private const int MaxResources = 10000;
@@ -14,6 +14,7 @@ public sealed class GcpProvider(ICloudCommandRunner runner, IGcpMonitoringReader
     private const string AssetTypes = "compute.googleapis.com/Instance,compute.googleapis.com/Disk,compute.googleapis.com/Address,compute.googleapis.com/Network,compute.googleapis.com/Firewall,container.googleapis.com/Cluster,sqladmin.googleapis.com/Instance,run.googleapis.com/Service,storage.googleapis.com/Bucket";
     private readonly IGcpMonitoringReader metrics = monitoring ?? new GcpMonitoringReader();
     private readonly IGcpAdvancedReader advancedReads = advanced ?? new GcpAdvancedReader();
+    private readonly IGcpPatchReader patchReads = patches ?? new GcpPatchReader();
     public string Name => "gcp";
 
     public async Task<AnalysisReport> CollectAsync(string operation, IReadOnlyDictionary<string, string> options,
@@ -21,21 +22,23 @@ public sealed class GcpProvider(ICloudCommandRunner runner, IGcpMonitoringReader
     {
         ArgumentNullException.ThrowIfNull(options);
         cancellationToken.ThrowIfCancellationRequested();
+        if (Option(options, "profile") is not null)
+            throw new ArgumentException("Google Cloud uses the existing gcloud configuration and ADC. --profile is unsupported and cannot select a Google Cloud identity; no provider query was sent.");
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(60));
         operation = operation.ToLowerInvariant();
         if (operation is not ("inventory" or "health" or "posture" or "vm" or "bundle" or "metrics" or "patches" or "cost" or "drift" or "scc" or "services"))
             throw new ArgumentException("Unsupported Google Cloud operation.", nameof(operation));
         var context = new Collection(runner, options, deadline.Token);
-        if (operation is "patches" or "drift")
+        if (operation == "drift")
         {
-            context.Warnings.Add(operation switch
+            if (string.IsNullOrWhiteSpace(Option(options, "baseline")))
             {
-                "patches" => "OS Config / VM Manager patch evidence is not configured. Patch compliance is unknown.",
-                "cost" => "Cloud Billing exports are not configured. Billing cost is unavailable, not zero; no BigQuery jobs or dataset changes were made.",
-                _ => "Google Cloud drift comparison requires an explicit baseline workflow; no change or compliance claim was inferred."
-            });
-            return context.Report(operation, CoverageState.Unsupported);
+                context.Warnings.Add("Google Cloud drift requires an explicit --baseline exported from a full normalized inventory with matching scopes. No provider read or comparison was attempted.");
+                return context.Report(operation, CoverageState.NotConfigured);
+            }
+            var inventory = await CollectAsync("inventory", options, cancellationToken);
+            return await GcpBaselineComparer.CompareAsync(inventory, options, cancellationToken);
         }
         var projects = ParseProjects(Option(options, "projects") ?? Option(options, "project"));
         if (projects.Length == 0)
@@ -44,6 +47,7 @@ public sealed class GcpProvider(ICloudCommandRunner runner, IGcpMonitoringReader
             return context.Report(operation, CoverageState.NotConfigured);
         }
         context.ExpectedScopes = projects.Length;
+        if (operation == "patches") return await patchReads.ReadAsync(projects, options, cancellationToken);
         if (operation is "scc" or "cost")
         {
             if (Option(options, "resource") is not null || Option(options, "region") is not null)
@@ -488,7 +492,7 @@ public sealed class GcpProvider(ICloudCommandRunner runner, IGcpMonitoringReader
                 provider = "gcp", operation,
                 resources = Resources,
                 metrics = Metrics,
-                scope = new { schemaVersion = 1, accounts = ParseProjects(Option(options, "projects") ?? Option(options, "project")), region = Option(options, "region") },
+                scope = new { schemaVersion = 1, accounts = ParseProjects(Option(options, "projects") ?? Option(options, "project")), region = Option(options, "region"), resource = Option(options, "resource"), profile = (string?)null, assetTypes = AssetTypes.Split(',') },
                 coverage = new CloudCoverage(state, now, Resources.Count, ExpectedScopes, CompletedScopes, warnings),
                 source = operation == "metrics" ? "cloud-monitoring" : operation is "health" or "bundle" ? "gcloud-and-cloud-monitoring" : "gcloud-read-only",
                 authentication = operation == "metrics" ? "application-default-credentials" : operation is "health" or "bundle" ? "existing-gcloud-session-and-adc" : "existing-gcloud-session",

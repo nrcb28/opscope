@@ -79,11 +79,25 @@ class CliTests(unittest.TestCase):
             self.assertTrue(all(isinstance(capability["operation"], str) for capability in provider["capabilities"]))
         gcp = json.loads(self.run_cli("cloud", "catalog", "--provider", "gcp"))
         self.assertEqual([provider["providerId"] for provider in gcp["data"]["providers"]], ["gcp"])
-        self.assertTrue({"scc", "cost"}.issubset({capability["operation"] for capability in gcp["data"]["providers"][0]["capabilities"]}))
+        self.assertTrue({"scc", "cost", "patches", "drift"}.issubset({capability["operation"] for capability in gcp["data"]["providers"][0]["capabilities"]}))
         for provider in providers:
             if provider["providerId"] in {"oci", "cloudflare", "openstack", "alibaba", "ibm", "scaleway"}:
                 self.assertIn("metrics", {capability["operation"] for capability in provider["capabilities"]})
         self.assertFalse(catalog.get("warnings"))
+
+    def test_drift_without_baseline_and_node_correlation_configuration_stay_offline(self):
+        drift = json.loads(self.run_cli("gcp", "drift", "--project", "example-project", expected=2))
+        self.assertEqual(drift["data"]["coverage"]["state"], "NotConfigured")
+        for args in [
+            ("kubernetes", "inventory", "--infrastructure-provider", "gcp"),
+            ("kubernetes", "inventory", "--infrastructure-provider", "aws", "--kubernetes-nodes"),
+            ("kubernetes", "inventory", "--infrastructure-provider", "gcp", "--kubernetes-nodes", "--projects", "invalid/path"),
+            ("serve", "--cloud", "gcp", "--project", "example-project", "--infrastructure-provider", "gcp", "--kubernetes-nodes"),
+            ("serve", "--cloud", "kubernetes", "--contexts", "reader", "--namespaces", "default", "--infrastructure-provider", "azure", "--kubernetes-nodes"),
+            ("gcp", "inventory", "--project", "example-project", "--infrastructure-provider", "gcp", "--kubernetes-nodes"),
+            ("gcp", "inventory", "--project", "example-project", "--profile", "unimplemented-selector")
+        ]:
+            self.run_cli(*args, expected=2)
 
     def test_cloud_configuration_rejects_unknown_unsupported_and_ambiguous_scopes(self):
         for args in [("cloud", "catalog", "--provider", "unknown"),

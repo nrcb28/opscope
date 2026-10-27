@@ -110,6 +110,39 @@ foreach (var request in new[] { new[] { "auth", "login" }, new[] { "compute", "i
     try { TrustedCloudCommandRunner.PrepareArguments("gcloud", request); throw new Exception("Unsafe gcloud grammar accepted"); }
     catch (InvalidOperationException) { }
 }
+var noBaselineRunner = new FakeRunner((_, _) => throw new Exception("Drift without a baseline must stay offline"));
+var noBaseline = await new GcpProvider(noBaselineRunner, noMetrics).CollectAsync("drift", options);
+Check(Coverage(noBaseline) == "NotConfigured" && noBaselineRunner.Calls.Count == 0, "Drift without an explicit baseline cannot query a provider");
+var patchReader = new FakePatches();
+await new GcpProvider(commands, noMetrics, patches: patchReader).CollectAsync("patches", options);
+Check(patchReader.Projects.SequenceEqual(new[] { Project }), "GCP patch dispatch preserves the explicit project scope");
+var correlationOptions = new Dictionary<string, string> { ["infrastructure-provider"] = "gcp", ["kubernetes-nodes"] = "true", ["gcp-projects"] = Project, ["endpoint"] = "https://never-forward.invalid", ["baseline"] = "private-file", ["resource"] = "never-forward-filter" };
+var prepared = KubernetesInfrastructureCollection.Prepare(correlationOptions)!;
+Check(prepared["projects"] == Project && prepared["provider"] == "gcp" && !prepared.ContainsKey("endpoint") && !prepared.ContainsKey("resource") && !prepared.ContainsKey("baseline"), "Node matching forwards only the fixed explicit infrastructure scope");
+foreach (var mutate in new Action<Dictionary<string, string>>[] { o => o["infrastructure-provider"] = "unknown", o => o.Remove("kubernetes-nodes"), o => o["gcp-projects"] = "", o => o["gcp-projects"] = Project + "," + Project, o => o["gcp-projects"] = "https://untrusted.invalid" })
+{
+    var invalid = new Dictionary<string, string>(correlationOptions); mutate(invalid);
+    try { KubernetesInfrastructureCollection.Prepare(invalid); throw new Exception("Unsafe correlation configuration accepted"); } catch (ArgumentException) { }
+}
+var infrastructureCalls = 0;
+ICloudProvider CreateInfrastructure(string id, ICloudCommandRunner? unused)
+{
+    infrastructureCalls++;
+    Check(id == "gcp", "Only the configured infrastructure adapter is constructed");
+    return new FakeCloud("gcp", (_, selected) => { Check(selected["projects"] == Project && !selected.ContainsKey("endpoint"), "Only the prepared scope reaches the infrastructure inventory"); return new("cloud/gcp/inventory", DateTimeOffset.UtcNow, [], new { provider = "gcp" }); });
+}
+var clusterFixture = new FakeCloud("kubernetes", (_, _) => new("cloud/kubernetes/inventory", DateTimeOffset.UtcNow, [], new { provider = "kubernetes" }));
+await KubernetesInfrastructureCollection.CollectAsync(clusterFixture, "inventory", new Dictionary<string, string>(), CreateInfrastructure);
+await KubernetesInfrastructureCollection.CollectAsync(clusterFixture, "metrics", correlationOptions, CreateInfrastructure);
+Check(infrastructureCalls == 0, "Default and metrics-only cluster collection never query infrastructure");
+await KubernetesInfrastructureCollection.CollectAsync(clusterFixture, "inventory", correlationOptions, CreateInfrastructure);
+Check(infrastructureCalls == 1, "Explicit node correlation performs one scoped inventory");
+var failedCluster = new FakeCloud("kubernetes", (_, _) => new AnalysisReport("cloud/kubernetes/inventory", DateTimeOffset.UtcNow, [], new { provider = "kubernetes" }) { OperationSucceeded = false });
+await KubernetesInfrastructureCollection.CollectAsync(failedCluster, "inventory", correlationOptions, CreateInfrastructure);
+Check(infrastructureCalls == 1, "Failed cluster observations never trigger infrastructure follow-up");
+var unavailableCorrelation = await KubernetesInfrastructureCollection.CollectAsync(clusterFixture, "inventory", correlationOptions, (_, _) => new FakeCloud("gcp", (_, _) => throw new IOException("PRIVATE-CLOUD-ERROR")));
+Check(!ReportSecurity.Serialize(unavailableCorrelation).Contains("PRIVATE-CLOUD-ERROR", StringComparison.Ordinal) && unavailableCorrelation.Warnings!.Any(w => w.Contains("unverified", StringComparison.Ordinal)), "Infrastructure errors preserve unverified correlation without raw error text");
+Check(ReportSecurity.Serialize(new AnalysisReport("catalog", DateTimeOffset.UtcNow, [], new { providerId = "gcp" })).Contains("gcp", StringComparison.Ordinal), "Node identity redaction preserves public catalog provider IDs");
 Console.WriteLine("Google Cloud, ADC Monitoring, coverage, scope, redaction and registry checks passed");
 
 static JsonElement Json(string text) => JsonDocument.Parse(text).RootElement.Clone();
@@ -133,4 +166,17 @@ sealed class FakeHandler(Func<HttpRequestMessage, HttpResponseMessage> response)
     public HttpMethod? LastMethod { get; private set; }
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     { Requests++; LastUri = request.RequestUri; LastMethod = request.Method; return Task.FromResult(response(request)); }
+}
+
+sealed class FakePatches : IGcpPatchReader
+{
+    public IReadOnlyList<string> Projects { get; private set; } = [];
+    public Task<AnalysisReport> ReadAsync(IReadOnlyList<string> projects, IReadOnlyDictionary<string, string> options, CancellationToken cancellationToken = default)
+    { Projects = projects; return Task.FromResult(new AnalysisReport("cloud/gcp/patches", DateTimeOffset.UtcNow, [], new { provider = "gcp" })); }
+}
+sealed class FakeCloud(string name, Func<string, IReadOnlyDictionary<string, string>, AnalysisReport> response) : ICloudProvider
+{
+    public string Name => name;
+    public Task<AnalysisReport> CollectAsync(string operation, IReadOnlyDictionary<string, string> options, CancellationToken cancellationToken = default)
+    { cancellationToken.ThrowIfCancellationRequested(); return Task.FromResult(response(operation, options)); }
 }

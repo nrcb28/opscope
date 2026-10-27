@@ -354,7 +354,7 @@ async function main() {
     check(await page.locator('.ops-cloud-series svg').evaluate(svg => svg.viewBox.baseVal.width <= 390), provider + ' cloud chart retains readable axis labels on mobile');
     await page.setViewportSize({ width: 1440, height: 1000 });
   }
-  async function invokeAdvancedFixture(action, kind) {
+  async function invokeAdvancedFixture(action, kind, expectedStatus = 200) {
     let response;
     for (let attempt = 0; attempt < 4; attempt++) {
       const received = page.waitForResponse(result => result.url() === origin + '/api/cloud/' + action);
@@ -363,7 +363,7 @@ async function main() {
       if (response.status() !== 429) break;
       await page.waitForTimeout(2100);
     }
-    assert.equal(response.status(), 200, 'Configured advanced observation succeeds after the action cooldown');
+    assert.equal(response.status(), expectedStatus, 'Configured advanced observation retains its actual status after the action cooldown');
     await page.locator('#cloud-status').waitFor({ state: 'hidden' });
     await page.waitForFunction(expected => {
       try { return JSON.parse(document.querySelector('#view pre')?.textContent || '{}').kind === expected; }
@@ -389,6 +389,35 @@ async function main() {
   await page.getByRole('button').filter({ hasText: 'gcp-scope-1/cost' }).click(); await deniedBilling; await page.locator('#cloud-error').waitFor();
   check(await page.locator('.ops-billing-evidence').innerText().then(text => text.includes('Billing evidence is unavailable') && !text.includes('123.45') && !text.includes('No matching billing rows')) && await page.locator('.ops-billing-evidence table').count() === 0, 'Permission-denied billing hides stale subtotals and remains distinct from a successful empty read');
   await page.unroute(costPath);
+  check(await page.locator('.ops-cloud-card [data-operation="patches"]').count() === 1 && await page.locator('.ops-cloud-card [data-operation="drift"]').count() === 1 && await page.locator('#view input[type="file"]').count() === 0, 'Patch and baseline operations use configured descriptors without accepting browser baseline files or paths');
+  await invokeAdvancedFixture('gcp-scope-1/patches', 'cloud/gcp/patches');
+  check(await page.locator('.ops-patch-evidence').innerText().then(text => text.includes('SUCCEEDED') && text.includes('Stale job observation') && text.includes('Unknown — no current compliance assessment') && text.includes('Job success does not prove')), 'A successful stale patch job remains an observation with unknown current compliance');
+  await page.setViewportSize({ width: 390, height: 844 });
+  check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'Patch observations and their unknown-compliance explanation fit the mobile viewport');
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  let patchMode = 'empty';
+  const patchPath = '**/api/cloud/gcp-scope-1/patches';
+  await page.route(patchPath, route => route.fulfill({ status: patchMode === 'denied' ? 502 : 200, contentType: 'application/json', body: JSON.stringify({ kind: 'cloud/gcp/patches', collectedAtUtc: new Date().toISOString(), findings: [], warnings: [], operationSucceeded: patchMode !== 'denied', data: { coverage: { state: patchMode === 'denied' ? 'PermissionDenied' : 'Complete' }, patches: { source: 'osconfig-existing-patch-jobs-v1', jobsRead: patchMode === 'denied' ? 1 : 0, complianceState: 'compliant', latestObservedJobUpdateUtc: null, jobs: patchMode === 'denied' ? [{ state: 'STALE_PRIVATE_JOB', succeededInstanceCount: 999 }] : [] } } }) }));
+  await invokeAdvancedFixture('gcp-scope-1/patches', 'cloud/gcp/patches');
+  check(await page.locator('.ops-patch-evidence').innerText().then(text => text.includes('No existing patch jobs were observed') && text.includes('Unknown — no current compliance assessment')) && await page.locator('.ops-patch-evidence table').count() === 0, 'An empty patch read and an unsupported compliance flag do not certify patch compliance');
+  patchMode = 'denied';
+  await invokeAdvancedFixture('gcp-scope-1/patches', 'cloud/gcp/patches', 502);
+  check(await page.locator('.ops-patch-evidence').innerText().then(text => text.includes('Patch-job evidence is unavailable') && !text.includes('STALE_PRIVATE_JOB') && !text.includes('999')) && await page.locator('.ops-patch-evidence table').count() === 0, 'Unavailable patch evidence hides stale observations and preserves unknown compliance');
+  await page.unroute(patchPath);
+  await invokeAdvancedFixture('gcp-scope-1/drift', 'cloud/gcp/drift');
+  check(await page.locator('.ops-drift-evidence').innerText().then(text => text.includes('Shared fields compared') && text.includes('Changed') && text.includes('state') && text.includes('not a live infrastructure-as-code plan')), 'Cloud drift exposes its actual inventory comparison and limited shared fields');
+  await page.setViewportSize({ width: 390, height: 844 });
+  check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'Inventory comparison fields and coverage fit the mobile viewport');
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  let driftMode = 'partial';
+  const driftPath = '**/api/cloud/gcp-scope-1/drift';
+  await page.route(driftPath, route => route.fulfill({ status: driftMode === 'failed' ? 502 : 200, contentType: 'application/json', body: JSON.stringify({ kind: 'cloud/gcp/drift', collectedAtUtc: new Date().toISOString(), findings: [], warnings: [], operationSucceeded: driftMode !== 'failed', data: { coverage: { state: driftMode === 'failed' ? 'Failed' : 'Partial' }, drift: { comparedResources: 2, comparedFields: 1, unknownFields: 3, addedResources: 91, missingResources: 92, changedResources: 1, absenceAssessmentAvailable: false, changes: [{ resourceId: 'added-unverified-resource', changeType: 'Added', fields: [] }, { resourceId: 'missing-unverified-resource', changeType: 'Missing', fields: [] }, { resourceId: 'changed-observed-resource', type: 'compute.googleapis.com/Instance', changeType: 'Changed', fields: ['state', 'arbitrary-secret-field'] }] } } }) }));
+  await invokeAdvancedFixture('gcp-scope-1/drift', 'cloud/gcp/drift');
+  check(await page.locator('.ops-drift-evidence').innerText().then(text => text.includes('incomplete or non-comparable inventory') && text.includes('changed-observed-resource') && !text.includes('added-unverified-resource') && !text.includes('missing-unverified-resource') && !text.includes('arbitrary-secret-field') && !text.includes('91') && !text.includes('92')), 'Incomplete drift coverage suppresses absence claims and whitelists the compared field names');
+  driftMode = 'failed';
+  await invokeAdvancedFixture('gcp-scope-1/drift', 'cloud/gcp/drift', 502);
+  check(await page.locator('.ops-drift-evidence').innerText().then(text => text.includes('Drift is unknown') && !text.includes('changed-observed-resource')) && await page.locator('.ops-drift-evidence table').count() === 0, 'Failed inventory comparisons cannot reuse earlier changed or absent resource observations');
+  await page.unroute(driftPath);
   await page.locator('#cloud-provider').selectOption('kubernetes');
   check(await page.locator('.ops-cloud-card[data-provider="kubernetes"] .ops-adapter-kind').textContent() === 'Cluster adapter' && await page.locator('.ops-cloud-card[data-provider="kubernetes"]').innerText().then(text => text.includes('separate from infrastructure accounts')), 'Kubernetes is presented as an explicitly scoped cluster adapter');
   await invokeAdvancedFixture('kubernetes-scope-1/inventory', 'cloud/kubernetes/inventory');
@@ -402,6 +431,25 @@ async function main() {
   check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'Cluster evidence and its unit-specific metric tables fit the mobile viewport');
   await page.screenshot({ path: path.join(results, 'cluster-metrics-mobile.png'), fullPage: true });
   await page.setViewportSize({ width: 1440, height: 1000 });
+  let correlationMode = 'verified';
+  const correlationPath = '**/api/cloud/kubernetes-scope-1/inventory';
+  await page.route(correlationPath, route => route.fulfill({ status: correlationMode === 'denied' ? 502 : 200, contentType: 'application/json', body: JSON.stringify({ kind: 'cloud/kubernetes/inventory', collectedAtUtc: new Date().toISOString(), findings: [], warnings: [], operationSucceeded: correlationMode !== 'denied', data: { coverage: { state: correlationMode === 'denied' ? 'PermissionDenied' : 'Partial' }, cluster: { namespacesQueried: 1, cloudCorrelationVerified: true, relation: 'verified' }, infrastructureCorrelation: { state: correlationMode === 'legacy' ? 'unverified' : 'partial_node_references', nodeReferencesVerified: correlationMode !== 'legacy', clusterIdentityVerified: false, observedNodes: 3, matchedNodes: 1, unmatchedNodes: 2, links: [{ nodeId: '[redacted-node]', provider: 'gcp', resourceId: '[redacted-resource]', state: 'verified_node_reference' }], warnings: [] } } }) }));
+  await invokeAdvancedFixture('kubernetes-scope-1/inventory', 'cloud/kubernetes/inventory');
+  check(await page.locator('.ops-cluster-evidence').innerText().then(text => text.includes('Node references match the selected infrastructure inventory') && text.includes('Cluster and control-plane identity remain unverified') && text.includes('Unmatched node references')) && await page.locator('.ops-cluster-evidence table tbody tr').count() === 1, 'Verified node references remain separate from unverified cluster identity and unmatched nodes');
+  await page.setViewportSize({ width: 390, height: 844 });
+  check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'Node-reference links and the unverified cluster explanation fit the mobile viewport');
+  await page.screenshot({ path: path.join(results, 'node-references-mobile.png'), fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.locator('#language').selectOption('es');
+  check(await page.locator('.ops-cluster-evidence').innerText().then(text => text.includes('Referencias de nodos coincidentes') && text.includes('plano de control sigue sin verificar')), 'Spanish correlation explains the same node-reference and cluster-identity distinction');
+  await page.locator('#language').selectOption('en');
+  correlationMode = 'legacy';
+  await invokeAdvancedFixture('kubernetes-scope-1/inventory', 'cloud/kubernetes/inventory');
+  check(await page.locator('.ops-cluster-evidence').innerText().then(text => text.includes('No infrastructure identity link has been verified') && !text.includes('Node references match')) && await page.locator('.ops-cluster-evidence table').count() === 0, 'Legacy cluster flags and unverified correlation cannot claim a verified infrastructure relationship');
+  correlationMode = 'denied';
+  await invokeAdvancedFixture('kubernetes-scope-1/inventory', 'cloud/kubernetes/inventory', 502);
+  check(await page.locator('.ops-cluster-evidence').innerText().then(text => text.includes('No infrastructure identity link has been verified') && !text.includes('Node references match')) && await page.locator('.ops-cluster-evidence table').count() === 0, 'Unavailable cluster evidence does not show stale verified node references');
+  await page.unroute(correlationPath);
   await page.locator('#cloud-provider').selectOption('azure');
   let deniedCoverage = false;
   await page.route('**/api/cloud/azure-scope-1/inventory', route => route.fulfill({ status: deniedCoverage ? 502 : 200, contentType: 'application/json', body: JSON.stringify({ kind: 'cloud/azure/inventory', collectedAtUtc: new Date().toISOString(), findings: [], data: { resources: [{ provider: 'azure', type: 'compute.vm', properties: { status: 'running' } }], coverage: { state: deniedCoverage ? 'PermissionDenied' : 'Partial', enumeratedResources: 1 } }, warnings: ['Synthetic limited coverage.'], operationSucceeded: !deniedCoverage }) }));

@@ -31,7 +31,7 @@ Extended commands:
   decrypt <bundle> --private-key <pem> --out <zip>
   azure inventory|posture|health|vm|bundle|drift|patches|cost|arc
   aws inventory|posture|health|instance|bundle|drift|patches|cost
-  gcp inventory|posture|health|metrics|scc|cost|services|vm|bundle --project <project-id>
+  gcp inventory|posture|health|metrics|scc|cost|services|patches|drift|vm|bundle --project <project-id>
   kubernetes inventory|health|metrics --context <name> --namespaces <names>
   oci|digitalocean|hetzner|cloudflare|openstack|alibaba|ibm|scaleway <operation>
   cloud catalog                         Describe providers and actual capabilities
@@ -62,6 +62,7 @@ Extended options:
   --alibaba-accounts <ids> --ibm-accounts <ids>
   --context <name> --contexts <names> --kubernetes-contexts <names>
   --namespace <name> --namespaces <names> --kubernetes-nodes
+  --infrastructure-provider <gcp|azure>   Verify optional node references in an explicit live scope
   --billing-project <id> --billing-dataset <id> --billing-table <id>
   --gcp-services <gke,sql,run,storage>     Selected service configuration reads
   --metric-resources <ids> --monitoring-instance <id> --cockpit-source <id>
@@ -334,6 +335,7 @@ Local collection does not contact cloud metadata or delivery endpoints by defaul
         if (options.Positionals.ElementAtOrDefault(2) is { } resource) settings["resource"] = resource;
         if (!CloudProviderRegistry.IsKnownProvider(provider)) throw new CliException("Unknown cloud provider. Use cloud catalog.");
         if (!CloudProviderRegistry.SupportsOperation(provider, operation)) throw new CliException($"Operation '{operation}' is not available for {provider}. Use cloud catalog --provider {provider}.");
+        if (options.Has("infrastructure-provider") && provider != "kubernetes") throw new CliException("--infrastructure-provider applies to Kubernetes node references only.");
         ICloudProvider cloud = CloudProviderRegistry.Create(provider);
         AnalysisReport report;
         var profiles = options.List("profiles");
@@ -349,7 +351,9 @@ Local collection does not contact cloud metadata or delivery endpoints by defaul
             }
             report = new($"cloud/aws/{operation}", DateTimeOffset.UtcNow, results.SelectMany(r => r.Findings).ToArray(), new { profilesQueried = profiles.Count, reports = results }, results.SelectMany(r => r.Warnings ?? []).ToArray()) { OperationSucceeded = results.All(r => r.OperationSucceeded) };
         }
-        else report = await cloud.CollectAsync(operation, settings, token);
+        else report = provider == "kubernetes"
+            ? await KubernetesInfrastructureCollection.CollectAsync(cloud, operation, settings, token)
+            : await cloud.CollectAsync(operation, settings, token);
         report = report with { Kind = $"cloud/{provider}/{operation}" };
         var cloudPolicyPath = options.Optional("policy") ?? (File.Exists("opscope.yml") ? "opscope.yml" : null);
         if (cloudPolicyPath is not null)
@@ -406,6 +410,11 @@ Local collection does not contact cloud metadata or delivery endpoints by defaul
     {
         var actions = new Dictionary<string, Func<CancellationToken, Task<AnalysisReport>>>(StringComparer.Ordinal);
         var providers = options.List("cloud");
+        if (options.Has("infrastructure-provider"))
+        {
+            if (!providers.Contains("kubernetes", StringComparer.Ordinal)) throw new CliException("Infrastructure correlation requires a configured Kubernetes adapter.");
+            KubernetesInfrastructureCollection.Prepare(options.Values);
+        }
         if (providers.Count > CloudProviderRegistry.Descriptors.Count || providers.Distinct(StringComparer.Ordinal).Count() != providers.Count)
             throw new CliException("Configure at most twelve distinct read-only adapters per session: eleven cloud providers and Kubernetes.");
         var configuredScopeCount = 0;
@@ -441,14 +450,17 @@ Local collection does not contact cloud metadata or delivery endpoints by defaul
                 var label = scopes.Count == 1 && scope.Length == 0 ? provider : $"{provider}-scope-{index + 1}";
                 var operations = CloudProviderRegistry.GetDescriptor(provider).Capabilities
                     .Select(capability => capability.Operation.ToString().ToLowerInvariant())
-                    .Where(operation => operation is not ("vm" or "instance" or "bundle" or "drift" or "arc" or "metadata"))
+                    .Where(operation => operation is not ("vm" or "instance" or "bundle" or "drift" or "arc" or "metadata") ||
+                        provider == "gcp" && operation == "drift" && options.Optional("baseline") is { Length: > 0 })
                     .Distinct(StringComparer.Ordinal);
                 foreach (var operation in operations)
                 {
                     var verb = operation;
                     actions[$"{label}/{verb}"] = async ct =>
                     {
-                        var report = await client.CollectAsync(verb, settings, ct);
+                        var report = provider == "kubernetes"
+                            ? await KubernetesInfrastructureCollection.CollectAsync(client, verb, settings, ct)
+                            : await client.CollectAsync(verb, settings, ct);
                         var path = options.Optional("policy") ?? (File.Exists("opscope.yml") ? "opscope.yml" : null);
                         if (path is not null)
                         {
@@ -601,7 +613,7 @@ Local collection does not contact cloud metadata or delivery endpoints by defaul
     private sealed class Options
     {
         private static readonly HashSet<string> Flags = new(StringComparer.Ordinal) { "json", "redact", "full", "help", "no-processes", "no-network", "no-services", "quiet", "require-complete", "seal", "confirm-send", "cloud-context", "imds", "metadata", "kubernetes-nodes" };
-        private static readonly HashSet<string> Arguments = new(StringComparer.Ordinal) { "format", "policy", "plugins", "pack", "fail-on", "evidence", "ioc", "baseline", "input", "bundle", "out", "top", "interval", "page", "samples", "scenario", "sign-private-key", "encrypt-public-key", "public-key", "private-key", "provider", "cloud", "subscription", "subscriptions", "profile", "profiles", "region", "regions", "account", "accounts", "resource", "role-arn", "port", "history", "retention", "retention-days", "target", "endpoint", "credential-env", "project", "issue-type", "dcr", "stream", "log-group", "log-stream", "window-hours", "resource-group", "projects", "compartment", "compartments", "zone", "zones", "cloud-name", "gcp-projects", "digitalocean-projects", "hetzner-projects", "openstack-projects", "scaleway-projects", "oci-compartments", "cloudflare-accounts", "alibaba-accounts", "ibm-accounts", "context", "contexts", "kubernetes-contexts", "namespace", "namespaces", "billing-project", "billing-dataset", "billing-table", "gcp-services", "metric-resources", "monitoring-instance", "cockpit-source" };
+        private static readonly HashSet<string> Arguments = new(StringComparer.Ordinal) { "format", "policy", "plugins", "pack", "fail-on", "evidence", "ioc", "baseline", "input", "bundle", "out", "top", "interval", "page", "samples", "scenario", "sign-private-key", "encrypt-public-key", "public-key", "private-key", "provider", "cloud", "subscription", "subscriptions", "profile", "profiles", "region", "regions", "account", "accounts", "resource", "role-arn", "port", "history", "retention", "retention-days", "target", "endpoint", "credential-env", "project", "issue-type", "dcr", "stream", "log-group", "log-stream", "window-hours", "resource-group", "projects", "compartment", "compartments", "zone", "zones", "cloud-name", "gcp-projects", "digitalocean-projects", "hetzner-projects", "openstack-projects", "scaleway-projects", "oci-compartments", "cloudflare-accounts", "alibaba-accounts", "ibm-accounts", "context", "contexts", "kubernetes-contexts", "namespace", "namespaces", "billing-project", "billing-dataset", "billing-table", "gcp-services", "metric-resources", "monitoring-instance", "cockpit-source", "infrastructure-provider" };
         public Dictionary<string, string> Values { get; } = new(StringComparer.Ordinal);
         public List<string> Positionals { get; } = [];
         public static Options Parse(string[] args)

@@ -14,7 +14,7 @@ public static class CloudProviderRegistry
              CloudOperation.Drift, CloudOperation.Patches, CloudOperation.Cost, CloudOperation.Metadata],
             ["compute.vm", "compute.disk", "network", "object-storage"], ["AWS service-specific read permissions"]),
         Descriptor("gcp", "Google Cloud", "public-cloud", true,
-            [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Posture, CloudOperation.Vm, CloudOperation.Bundle, CloudOperation.Metrics, CloudOperation.Scc, CloudOperation.Cost, CloudOperation.Services],
+            [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Posture, CloudOperation.Vm, CloudOperation.Bundle, CloudOperation.Metrics, CloudOperation.Scc, CloudOperation.Cost, CloudOperation.Services, CloudOperation.Patches, CloudOperation.Drift],
             ["compute.vm", "compute.disk", "network", "managed-service"], ["cloudasset.assets.searchAllResources", "compute.instances.list", "compute.firewalls.list"]),
         Descriptor("oci", "Oracle Cloud", "public-cloud", true,
             [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Posture, CloudOperation.Metrics], ["compute.vm", "network"], ["OCI inspect/read permissions in selected compartment"]),
@@ -86,6 +86,8 @@ public static class CloudProviderRegistry
                 CloudOperation.Scc => (["security.finding"], ["resourcemanager.projects.get", "securitycenter.findings.list (ADC)"]),
                 CloudOperation.Cost => (["billing.observed-export-rows"], ["bigquery.tables.get", "bigquery.tables.getData (ADC); preconfigured billing export"]),
                 CloudOperation.Services => (["gke.cluster", "sql.instance", "run.service", "storage.bucket"], ["resourcemanager.projects.get", "Service-specific configuration list permissions for selected GCP services"]),
+                CloudOperation.Patches => (["osconfig.patch-job.observation"], ["resourcemanager.projects.get", "osconfig.patchJobs.list (ADC); existing OS Config jobs"]),
+                CloudOperation.Drift => (["inventory.baseline.comparison"], ["cloudasset.assets.searchAllResources; private normalized inventory baseline with matching scopes"]),
                 _ => (["compute.vm.state", "compute.vm.cpu", "network.firewall"], ["compute.instances.list", "compute.firewalls.list", "monitoring.timeSeries.list (ADC)"])
             };
             (resourceTypes, permissions) = metadata;

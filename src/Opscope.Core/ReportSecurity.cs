@@ -56,7 +56,9 @@ public static class ReportSecurity
         "resource" or "resourcename" or "vmname" or "image" or "vpc" or "subnet" or "volume" or "instance" or "interface" or "association" or "groups" or "logicalid" or
         "project" or "projectid" or "projects" or "projectnumber" or "compartment" or "compartmentid" or "compartments" or
         "tenancy" or "tenancyid" or "tenant" or "organization" or "organizationid" or "accountname" or "cloudname" or
-        "zoneid" or "resourcegroupid" or "networkid" or "serviceid" or "clusterid" or "serverid" or "dropletid" or "clientemail";
+        "zoneid" or "resourcegroupid" or "networkid" or "serviceid" or "clusterid" or "serverid" or "dropletid" or "clientemail" or
+        "context" or "contexts" or "namespace" or "namespaces" or "clusteruid" or "clustername" or "poduid" or "podname" or
+        "dataset" or "table" or "billingproject" or "billingdataset" or "billingtable" or "monitoringinstance" or "cockpitsource";
 
     private static bool IsSecret(string key) => key.Contains("password", StringComparison.Ordinal) || key.Contains("secret", StringComparison.Ordinal) ||
         key.Contains("token", StringComparison.Ordinal) || key.Contains("credential", StringComparison.Ordinal) ||

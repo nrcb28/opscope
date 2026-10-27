@@ -62,7 +62,7 @@ class CliTests(unittest.TestCase):
 
     def test_help_lists_new_commands(self):
         text = self.run_cli("--help").decode()
-        for command in ["policy", "serve", "azure", "aws", "gcp", "cloud catalog", "verify", "mcp", "notify"]:
+        for command in ["policy", "serve", "azure", "aws", "gcp", "kubernetes", "cloud catalog", "verify", "mcp", "notify"]:
             self.assertIn(command, text)
 
     def test_cloud_catalog_is_complete_local_and_readable_after_redaction(self):
@@ -70,13 +70,19 @@ class CliTests(unittest.TestCase):
         self.assertFalse(catalog["data"]["remoteRequestsMade"])
         providers = catalog["data"]["providers"]
         self.assertEqual({provider["providerId"] for provider in providers},
-                         {"azure", "aws", "gcp", "oci", "digitalocean", "hetzner", "cloudflare", "openstack", "alibaba", "ibm", "scaleway"})
-        self.assertEqual(len(providers), 11)
+                         {"azure", "aws", "gcp", "oci", "digitalocean", "hetzner", "cloudflare", "openstack", "alibaba", "ibm", "scaleway", "kubernetes"})
+        self.assertEqual(len(providers), 12)
+        self.assertEqual([provider["providerId"] for provider in providers if provider["category"] == "cluster"], ["kubernetes"])
+        self.assertEqual(len([provider for provider in providers if provider["category"] != "cluster"]), 11)
         for provider in providers:
             self.assertTrue(provider["capabilities"])
             self.assertTrue(all(isinstance(capability["operation"], str) for capability in provider["capabilities"]))
         gcp = json.loads(self.run_cli("cloud", "catalog", "--provider", "gcp"))
         self.assertEqual([provider["providerId"] for provider in gcp["data"]["providers"]], ["gcp"])
+        self.assertTrue({"scc", "cost"}.issubset({capability["operation"] for capability in gcp["data"]["providers"][0]["capabilities"]}))
+        for provider in providers:
+            if provider["providerId"] in {"oci", "cloudflare", "openstack", "alibaba", "ibm", "scaleway"}:
+                self.assertIn("metrics", {capability["operation"] for capability in provider["capabilities"]})
         self.assertFalse(catalog.get("warnings"))
 
     def test_cloud_configuration_rejects_unknown_unsupported_and_ambiguous_scopes(self):
@@ -85,9 +91,30 @@ class CliTests(unittest.TestCase):
                      ("gcp", "cost", "--project", "example-project"),
                      ("serve", "--cloud", "gcp"),
                      ("serve", "--cloud", "gcp,gcp", "--gcp-projects", "example-project"),
-                     ("serve", "--cloud", "gcp", "--gcp-projects", "example-project,example-project")]:
+                     ("serve", "--cloud", "gcp", "--gcp-projects", "example-project,example-project"),
+                     ("serve", "--cloud", "kubernetes"),
+                     ("serve", "--cloud", "kubernetes", "--contexts", "reader"),
+                     ("serve", "--cloud", "kubernetes", "--contexts", "reader", "--namespaces="),
+                     ("serve", "--cloud", "kubernetes", "--contexts", "reader", "--namespaces", "default,default"),
+                     ("serve", "--cloud", "kubernetes", "--contexts", "@untrusted", "--namespaces", "default"),
+                     ("serve", "--cloud", "kubernetes", "--contexts", "reader,reader", "--namespaces", "default"),
+                     ("kubernetes", "inventory", "--context", "reader", "--namespaces", "default,../../escape"),
+                     ("kubernetes", "exec", "--context", "reader", "--namespaces", "default")]:
             with self.subTest(args=args):
                 self.run_cli(*args, expected=2)
+
+    def test_advanced_sources_require_explicit_configuration_without_fabricating_data(self):
+        billing = json.loads(self.run_cli("gcp", "cost", "--project", "example-project", expected=2))
+        self.assertFalse(billing["operationSucceeded"])
+        self.assertNotIn("totalBill", json.dumps(billing))
+        self.assertTrue(billing.get("warnings"))
+        for provider, scope in [("ibm", ["--account", "testaccount", "--resource-group", "testgroup", "--region", "eu-de"]),
+                                ("scaleway", ["--project", "11111111-1111-1111-1111-111111111111", "--zone", "fr-par-1"])]:
+            with self.subTest(provider=provider):
+                result = json.loads(self.run_cli(provider, "metrics", *scope, expected=2))
+                self.assertFalse(result["operationSucceeded"])
+                self.assertTrue(result.get("warnings"))
+                self.assertFalse(result.get("data", {}).get("metrics", []), "Missing monitoring configuration must not produce synthetic zero metrics")
 
     def test_shared_extended_options_dispatch_without_format_or_policy(self):
         self.assertEqual(json.loads(self.run_cli("snapshot", "--input", self.snapshot, "--json", expected=1))["host"]["hostname"], "cli-private-host")

@@ -84,7 +84,8 @@ internal sealed class CloudWorkspace(IReadOnlyDictionary<string, Func<Cancellati
             {
                 "complete" => "succeeded", "partial" => "partial", "notconfigured" => "not-configured",
                 "permissiondenied" => "permission-denied", "ratelimited" => "rate-limited",
-                "unsupported" => "unsupported", "failed" => "failed", _ => status
+                "unsupported" => "unsupported", "failed" => "failed", "nodata" => "no-data",
+                "unavailable" => "unavailable", "timedout" => "timed-out", _ => status
             };
         }
         observations[key] = new Observation(key, status, report.CollectedAtUtc, report.OperationSucceeded);

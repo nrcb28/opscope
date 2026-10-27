@@ -293,7 +293,7 @@ async function main() {
   await page.getByRole('heading', { name: 'Retained redacted evidence', exact: true }).waitFor();
   check(!await page.locator('pre').innerText().then(text => text.includes('api-private-host')), 'Historical evidence remains redacted after full-view use');
   await page.locator('[data-view="cloud"]').click();
-  check(await page.locator('#cloud-provider option').count() === 12, 'Cloud provider selector exposes the eleven catalog providers plus its all-provider choice');
+  check(await page.locator('#cloud-provider option').count() === 13, 'Cloud selector exposes eleven infrastructure providers, one cluster adapter and its all-provider choice');
   await page.locator('#cloud-provider').selectOption('scaleway');
   check(await page.locator('#view').innerText().then(text => /not configured|not-configured|no configured/i.test(text)) && await page.locator('#view button').filter({ hasText: /scaleway.*inventory/ }).count() === 0, 'Unconfigured Scaleway remains discoverable without advertising an executable empty inventory');
   await page.locator('#cloud-provider').selectOption('all');
@@ -317,6 +317,7 @@ async function main() {
   }
   await invokeFixtureCloud('azure-scope-1/inventory', 3);
   check(JSON.parse(await page.locator('#view pre').innerText()).data.resourceCount === 3, 'Azure scoped action invokes its exact allowlisted fixture callback');
+  check(await page.locator('#notice').isHidden(), 'A new cloud query clears transient notices from earlier evidence workflows');
   await invokeFixtureCloud('aws-scope-20/health', 5);
   check(JSON.parse(await page.locator('#view pre').innerText()).data.resourceCount === 5, 'AWS scoped action invokes its exact allowlisted fixture callback');
   let releaseCloudFailure, markCloudStarted;
@@ -353,6 +354,54 @@ async function main() {
     check(await page.locator('.ops-cloud-series svg').evaluate(svg => svg.viewBox.baseVal.width <= 390), provider + ' cloud chart retains readable axis labels on mobile');
     await page.setViewportSize({ width: 1440, height: 1000 });
   }
+  async function invokeAdvancedFixture(action, kind) {
+    let response;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const received = page.waitForResponse(result => result.url() === origin + '/api/cloud/' + action);
+      await page.getByRole('button').filter({ hasText: action }).click();
+      response = await received;
+      if (response.status() !== 429) break;
+      await page.waitForTimeout(2100);
+    }
+    assert.equal(response.status(), 200, 'Configured advanced observation succeeds after the action cooldown');
+    await page.locator('#cloud-status').waitFor({ state: 'hidden' });
+    await page.waitForFunction(expected => {
+      try { return JSON.parse(document.querySelector('#view pre')?.textContent || '{}').kind === expected; }
+      catch { return false; }
+    }, kind);
+  }
+  await page.locator('#cloud-provider').selectOption('gcp');
+  check(await page.locator('.ops-cloud-card [data-operation="scc"]').count() === 1 && await page.locator('.ops-cloud-card [data-operation="cost"]').count() === 1 && await page.locator('.ops-cloud-card [data-operation="services"]').count() === 1, 'Advanced operation coverage comes from the registered GCP descriptor');
+  await invokeAdvancedFixture('gcp-scope-1/scc', 'cloud/gcp/scc');
+  check(await page.locator('.ops-scc-evidence').innerText().then(text => text.includes('SYNTHETIC_FINDING') && text.includes('HIGH') && text.includes('ACTIVE') && text.includes('does not establish a secure project')), 'SCC exposes the observed finding state and coverage without certifying project security');
+  await invokeAdvancedFixture('gcp-scope-1/cost', 'cloud/gcp/cost');
+  check(await page.locator('.ops-billing-evidence').innerText().then(text => text.includes('EUR') && text.includes('USD') && text.includes('10.50') && text.includes('3.00') && text.includes('not a complete bill') && text.includes('Currencies are kept separate')), 'Billing keeps observed cost and credits per currency and states that the rows are not a complete bill');
+  const costPath = '**/api/cloud/gcp-scope-1/cost';
+  let billingMode = 'tiny';
+  await page.route(costPath, route => route.fulfill({ status: billingMode === 'denied' ? 502 : 200, contentType: 'application/json', body: JSON.stringify({ kind: 'cloud/gcp/cost', collectedAtUtc: new Date().toISOString(), findings: [], warnings: ['Synthetic export observation only.'], operationSucceeded: billingMode !== 'denied', data: { coverage: { state: billingMode === 'denied' ? 'PermissionDenied' : 'Partial' }, billing: { source: 'Existing BigQuery export', rowsRead: billingMode === 'empty' ? 0 : 1, matchedRows: billingMode === 'empty' ? 0 : 1, isComplete: false, currencySubtotals: billingMode === 'denied' ? [{ currency: 'USD', observedCost: 123.45, observedCredits: 0, observedNetCost: 123.45, observedRows: 1 }] : billingMode === 'tiny' ? [{ currency: 'USD', observedCost: 0.0000004, observedCredits: 0, observedNetCost: 0.0000004, observedRows: 1 }] : [] } } }) }));
+  await invokeAdvancedFixture('gcp-scope-1/cost', 'cloud/gcp/cost');
+  check(await page.locator('.ops-billing-evidence tbody tr td').nth(1).innerText().then(text => text === '4E-7'), 'Small nonzero observed billing amounts retain their magnitude instead of rounding to zero');
+  billingMode = 'empty';
+  await invokeAdvancedFixture('gcp-scope-1/cost', 'cloud/gcp/cost');
+  check(await page.locator('.ops-billing-evidence').innerText().then(text => text.includes('Cost is unknown') && !text.includes('0.00')) && await page.locator('.ops-billing-evidence table').count() === 0, 'An export without matching rows leaves monetary evidence unknown instead of showing a zero bill');
+  billingMode = 'denied';
+  const deniedBilling = page.waitForResponse(response => response.url() === origin + '/api/cloud/gcp-scope-1/cost');
+  await page.getByRole('button').filter({ hasText: 'gcp-scope-1/cost' }).click(); await deniedBilling; await page.locator('#cloud-error').waitFor();
+  check(await page.locator('.ops-billing-evidence').innerText().then(text => text.includes('Billing evidence is unavailable') && !text.includes('123.45') && !text.includes('No matching billing rows')) && await page.locator('.ops-billing-evidence table').count() === 0, 'Permission-denied billing hides stale subtotals and remains distinct from a successful empty read');
+  await page.unroute(costPath);
+  await page.locator('#cloud-provider').selectOption('kubernetes');
+  check(await page.locator('.ops-cloud-card[data-provider="kubernetes"] .ops-adapter-kind').textContent() === 'Cluster adapter' && await page.locator('.ops-cloud-card[data-provider="kubernetes"]').innerText().then(text => text.includes('separate from infrastructure accounts')), 'Kubernetes is presented as an explicitly scoped cluster adapter');
+  await invokeAdvancedFixture('kubernetes-scope-1/inventory', 'cloud/kubernetes/inventory');
+  check(await page.locator('.ops-cluster-evidence').innerText().then(text => text.includes('No infrastructure identity link has been verified') && text.includes('Authorized namespaces')) && await page.locator('.ops-cloud-result-summary table').innerText().then(text => text.includes('Running')), 'Cluster metadata preserves its namespace scope and unverified infrastructure relationship');
+  await invokeAdvancedFixture('kubernetes-scope-1/metrics', 'cloud/kubernetes/metrics');
+  check(await page.locator('.ops-cloud-series').count() === 2 && await page.locator('.ops-cloud-series .ops-metric-latest').allTextContents().then(values => values.some(value => value.includes('230 millicores')) && values.some(value => value.replace(/,/g, '').includes('33554432 bytes'))) && await page.locator('.ops-cloud-series table').count() === 2 && await page.locator('.ops-cloud-series svg').count() === 0, 'Single Kubernetes observations preserve CPU millicores and memory bytes with accessible tables without inventing a time series');
+  await page.locator('#language').selectOption('es');
+  check(await page.locator('.ops-cluster-evidence').innerText().then(text => text.includes('No se ha verificado un vínculo') && text.includes('Namespaces autorizados')), 'Cluster identity and scope explanations are available in Spanish');
+  await page.locator('#language').selectOption('en');
+  await page.setViewportSize({ width: 390, height: 844 });
+  check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'Cluster evidence and its unit-specific metric tables fit the mobile viewport');
+  await page.screenshot({ path: path.join(results, 'cluster-metrics-mobile.png'), fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await page.locator('#cloud-provider').selectOption('azure');
   let deniedCoverage = false;
   await page.route('**/api/cloud/azure-scope-1/inventory', route => route.fulfill({ status: deniedCoverage ? 502 : 200, contentType: 'application/json', body: JSON.stringify({ kind: 'cloud/azure/inventory', collectedAtUtc: new Date().toISOString(), findings: [], data: { resources: [{ provider: 'azure', type: 'compute.vm', properties: { status: 'running' } }], coverage: { state: deniedCoverage ? 'PermissionDenied' : 'Partial', enumeratedResources: 1 } }, warnings: ['Synthetic limited coverage.'], operationSucceeded: !deniedCoverage }) }));
@@ -463,6 +512,21 @@ async function main() {
   await page.screenshot({ path: path.join(results, 'overview-mobile.png'), fullPage: true });
   check(errors.length === 0, 'Browser reports no JavaScript runtime errors');
   check(external.length === 0, 'All UI resources and evidence requests remain on the authenticated local origin');
+  const guardedContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  const guardedPage = await guardedContext.newPage();
+  await guardedPage.route('**/api/cloud/catalog', async route => {
+    const catalog = await (await route.fetch()).json();
+    const gcp = catalog.providers.find(provider => provider.id === 'gcp');
+    gcp.operations.find(operation => operation.name === 'scc').readOnly = false;
+    catalog.actions.push({ actionKey: 'gcp-scope-1/delete', providerId: 'gcp', scopeAlias: 'gcp-scope-1', operation: 'delete', availability: 'configured', supported: true, readOnly: true });
+    await route.fulfill({ json: catalog });
+  });
+  await guardedPage.goto(bootstrap);
+  await guardedPage.getByRole('heading', { name: 'Host evidence', exact: true }).waitFor();
+  await guardedPage.locator('[data-view="cloud"]').click();
+  await guardedPage.locator('#cloud-provider').selectOption('gcp');
+  check(await guardedPage.getByRole('button').filter({ hasText: 'gcp-scope-1/scc' }).count() === 0 && await guardedPage.getByRole('button').filter({ hasText: 'gcp-scope-1/delete' }).count() === 0 && await guardedPage.getByRole('button').filter({ hasText: 'gcp-scope-1/cost' }).count() === 1, 'Cloud actions require a known operation, matching capability and an explicit read-only descriptor');
+  await guardedContext.close();
   console.log(`PASS: ${assertions} browser and accessibility assertions.`);
 }
 main().catch(async error => { if (activePage) { try { fs.mkdirSync(results, { recursive: true }); await activePage.screenshot({ path: path.join(results, 'last-failure.png'), fullPage: true }); } catch {} } console.error(String(error).replace(/#token=\S+/g, '#token=[redacted]')); process.exitCode = 1; }).finally(async () => {

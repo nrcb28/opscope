@@ -42,7 +42,7 @@ foreach (var invalid in new[] { "../escape", "https://evil.invalid", "bad", "pro
 }
 var unsupportedRunner = new FakeRunner((_, _) => throw new Exception("Unexpected read"));
 var unsupported = await new GcpProvider(unsupportedRunner, noMetrics).CollectAsync("cost", options);
-Check(!unsupported.OperationSucceeded && Coverage(unsupported) == "Unsupported" && unsupportedRunner.Calls.Count == 0, "Unavailable Billing must never fabricate zero cost");
+Check(!unsupported.OperationSucceeded && Coverage(unsupported) == "NotConfigured" && unsupportedRunner.Calls.Count == 0, "Unconfigured Billing must never fabricate zero cost or invoke a provider");
 
 var instanceJson = "[{\"name\":\"private-host\",\"zone\":\"https://www.googleapis.com/compute/v1/projects/private-project-123/zones/europe-west1-b\",\"status\":\"RUNNING\",\"machineType\":\"zones/europe-west1-b/machineTypes/e2-medium\"}]";
 var firewallJson = "[{\"name\":\"private-admin-rule\",\"direction\":\"INGRESS\",\"sourceRanges\":[\"::/0\"],\"allowed\":[{\"IPProtocol\":\"tcp\",\"ports\":[\"20-25\"]}]}]";
@@ -102,8 +102,8 @@ foreach (var status in new[] { HttpStatusCode.Forbidden, HttpStatusCode.TooManyR
     Check(!JsonSerializer.Serialize(statusRead).Contains("SECRET-PROVIDER-BODY", StringComparison.Ordinal), "Provider HTTP bodies must stay private");
 }
 
-Check(CloudProviderRegistry.Descriptors.Count == 11 && CloudProviderRegistry.Descriptors.Select(item => item.ProviderId).Distinct().Count() == 11, "Registry must contain exactly eleven unique implemented provider IDs");
-Check(CloudProviderRegistry.SupportsOperation("gcp", "metrics") && !CloudProviderRegistry.SupportsOperation("gcp", "cost") && !CloudProviderRegistry.SupportsOperation("gcp", "0"), "Capabilities must match implemented reads and reject enum numeric strings");
+Check(CloudProviderRegistry.Descriptors.Count == 12 && CloudProviderRegistry.Descriptors.Select(item => item.ProviderId).Distinct().Count() == 12 && CloudProviderRegistry.Descriptors.Count(item => item.Category == "cluster") == 1, "Registry distinguishes eleven cloud providers and a unique Kubernetes cluster adapter");
+Check(CloudProviderRegistry.SupportsOperation("gcp", "metrics") && CloudProviderRegistry.SupportsOperation("gcp", "cost") && CloudProviderRegistry.SupportsOperation("gcp", "scc") && !CloudProviderRegistry.SupportsOperation("gcp", "0"), "Capabilities match implemented advanced reads and reject enum numeric strings");
 Check(CloudProviderRegistry.Create("gcp", commands).Name == "gcp", "Registry composes Google Cloud without network activity");
 foreach (var request in new[] { new[] { "auth", "login" }, new[] { "compute", "instances", "delete" }, new[] { "compute", "instances", "list", "--project", Project, "--impersonate-service-account", "private@example.invalid" }, new[] { "compute", "instances", "list", "--endpoint", "https://evil.invalid" } })
 {

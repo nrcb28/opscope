@@ -17,6 +17,12 @@ dotnet run --project src/Opscope/Opscope.csproj -- serve
 
 Abre la URL que imprime la terminal. Su token es propio de esa sesión: el servidor escucha en `127.0.0.1` y no publica la interfaz en la red. Selecciona **ES** para cambiar de idioma. Las utilidades nativas y los permisos disponibles determinan la cobertura; una fuente ausente se comunica como no evaluada.
 
+### Descargar una compilación instalable
+
+Las ejecuciones aprobadas de [CI en GitHub](https://github.com/nrcb28/opscope/actions/workflows/ci.yml) generan el artefacto `package-assets`, conservado durante catorce días. Descárgalo desde **Artifacts** de la ejecución y extrae el archivo de tu sistema y arquitectura. La versión candidata combina la versión del proyecto con `-ci.<número de ejecución>`.
+
+Los archivos autocontenidos incluyen .NET: ejecuta `./opscope serve` en Linux/macOS o `.\opscope.exe serve` en PowerShell. El paquete `.nupkg` es una alternativa para `dotnet tool` y requiere el runtime ASP.NET Core de .NET 8. [Instalación, comprobación de integridad y límites de distribución](docs/delivery.md#candidate-packages-from-ci).
+
 ### Usos de la interfaz
 
 | Vista | Uso |
@@ -101,7 +107,7 @@ Collection is read-only: it does not stop processes, change services, modify fir
 - Linux: `ss` and `systemctl` provide core coverage; `lsof`, `journalctl`, `resolvectl`, `ip` and supported firewall tools are optional enrichments. `lsof` is used as a read-only listener fallback.
 - Windows: `netstat`, `netsh` and `sc.exe` provide core coverage; `tasklist.exe` and `wevtutil.exe` are optional diagnostics enrichments.
 
-The release workflow targets `linux-x64`, `linux-arm64`, `win-x64`, `win-arm64`, `osx-x64` and `osx-arm64`. The local validation includes an actual Linux self-contained publish; native Windows/macOS execution is covered by the configured CI matrix.
+The package workflow targets `linux-x64`, `linux-arm64`, `win-x64`, `win-arm64`, `osx-x64` and `osx-arm64`. A successful [CI run](https://github.com/nrcb28/opscope/actions/workflows/ci.yml) provides a `package-assets` artifact for fourteen days, with a run-specific `-ci.<run number>` version. Extract the archive matching your operating system and architecture, then run `./opscope serve` or `.\opscope.exe serve`. Self-contained archives include .NET; the `.nupkg` tool requires the .NET 8 ASP.NET Core runtime. [Download, verification and installation details](docs/delivery.md#candidate-packages-from-ci).
 
 ### Build and run
 
@@ -262,7 +268,7 @@ python3 -m unittest discover -s packaging -p 'test_*.py'
 dotnet pack src/Opscope/Opscope.csproj -c Release -p:PublishSingleFile=false -o artifacts/tool
 ```
 
-CI runs .NET checks on Linux/Windows/macOS and Playwright on Linux/Windows. Provider, identity and notification tests use injected transports, with no live tenant/account, real messages or infrastructure changes. Release tooling creates six-RID archives, actual-output SBOMs/checksums, optional real signatures/provenance, and winget/Homebrew manifests derived from real artifact hashes. Publication is a separate operator action; unsigned artifacts are not labelled signed.
+CI runs .NET checks on Linux/Windows/macOS and Playwright on Linux/Windows, then builds and verifies candidate packages through the reusable package workflow. Matching host architectures exercise the published executable; cross-built architectures are checked as artifacts without claiming native execution. Provider, identity and notification tests use injected transports, with no live tenant/account, real messages or infrastructure changes. Package tooling creates six-RID archives, actual-output SBOMs/checksums and winget/Homebrew manifests derived from real artifact hashes. Release-only signing/provenance uses configured credentials. Public releases and package-registry submission remain separate actions; unsigned artifacts are not labelled signed.
 
 Key code comments use **EN/ES** to explain trust boundaries, evidence provenance and concurrency. Public identifiers, CLI flags and JSON schemas keep their existing names. See the [dependency review / revisión de dependencias](docs/dependency-review.md) for the reviewed updates, compatibility checks and native SQLite version change.
 

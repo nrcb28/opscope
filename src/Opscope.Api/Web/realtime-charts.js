@@ -13,7 +13,9 @@
     const memory = metric ? value.memoryPercent : (value.memory?.usedPercent ?? value.memoryUsedPercent);
     if (!Number.isFinite(time) || !validPercent(cpu ?? null) || !validPercent(memory ?? null)) return null;
     return { time, cpu: cpu ?? null, memory: memory ?? null, sequence: metric ? value.sequence : null,
-      elapsed: metric ? value.elapsedMilliseconds : null, clockAdjusted: metric && value.clockAdjusted === true, interval: metric ? value.sampleIntervalSeconds * 1000 : null, source: metric ? 'local-lightweight' : 'snapshot' };
+      elapsed: metric ? value.elapsedMilliseconds : null, clockAdjusted: metric && value.clockAdjusted === true,
+      memoryEstimated: metric && memory != null && value.coverage?.memory === 'estimated',
+      interval: metric ? value.sampleIntervalSeconds * 1000 : null, source: metric ? 'local-lightweight' : 'snapshot' };
   }
   class SeriesBuffer {
     constructor(capacity = LIMIT) { this.capacity = Math.min(LIMIT, Math.max(1, capacity)); this.points = []; this.dropped = 0; }
@@ -56,6 +58,8 @@
     en: { title: 'CPU and memory', description: 'Observed aggregate host percentages. Gaps indicate missing observations; cloud measurements use separate sources.', window: 'Time window', minutes: 'min', pause: 'Pause chart', resume: 'Resume chart', paused: 'Chart paused', cpu: 'CPU', memory: 'Memory', noData: 'No samples received yet.', unavailable: 'Unavailable', stale: 'Stale', latest: 'Last sample', samples: 'samples', table: 'Sample data table', time: 'Time (local)', source: 'Source', snapshot: 'Host snapshots', fast: 'Lightweight host metrics', shown: 'Most recent observations shown', lost: 'Missing sequence samples', connecting: 'Connecting', connected: 'Connected', recovering: 'Recovering', disconnected: 'Disconnected', empty: 'No observations in this window.', partial: 'Partial coverage', elapsed: 'Elapsed sample time', adjusted: 'System clock adjusted' },
     es: { title: 'CPU y memoria', description: 'Porcentajes agregados observados del host. Los huecos indican ausencia de muestras; las mediciones cloud utilizan fuentes separadas.', window: 'Ventana temporal', minutes: 'min', pause: 'Pausar gráfica', resume: 'Reanudar gráfica', paused: 'Gráfica pausada', cpu: 'CPU', memory: 'Memoria', noData: 'Todavía no se han recibido muestras.', unavailable: 'No disponible', stale: 'Obsoleto', latest: 'Última muestra', samples: 'muestras', table: 'Tabla de muestras', time: 'Hora (local)', source: 'Fuente', snapshot: 'Snapshots del host', fast: 'Métricas ligeras del host', shown: 'Se muestran las observaciones más recientes', lost: 'Muestras de secuencia ausentes', connecting: 'Conectando', connected: 'Conectado', recovering: 'Recuperando', disconnected: 'Desconectado', empty: 'Sin observaciones en esta ventana.', partial: 'Cobertura parcial', elapsed: 'Tiempo transcurrido de muestra', adjusted: 'Reloj del sistema ajustado' }
   };
+  Object.assign(words.en, { estimatedMemory: 'Memory includes estimates', estimateNote: 'Marked macOS memory values estimate physical use by treating free and inactive pages as reclaimable. They do not measure memory pressure.' });
+  Object.assign(words.es, { estimatedMemory: 'La memoria incluye estimaciones', estimateNote: 'Los valores de memoria macOS marcados estiman el uso físico considerando recuperables las páginas libres e inactivas. No miden la presión de memoria.' });
   const make = (tag, text, className) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; };
   const svgNode = (tag, attrs = {}, text) => { const node = document.createElementNS('http://www.w3.org/2000/svg', tag); Object.entries(attrs).forEach(([key, value]) => node.setAttribute(key, String(value))); if (text !== undefined) node.textContent = text; return node; };
   function currentBuffer(source) { return source === 'snapshots' ? snapshotBuffer : source === 'metrics' ? metricBuffer : metricBuffer.points.length ? metricBuffer : snapshotBuffer; }
@@ -81,12 +85,13 @@
     const metadata = make('p', '', 'ops-chart__meta'); metadata.setAttribute('role', 'status'); metadata.setAttribute('aria-live', 'off');
     const svg = svgNode('svg', { viewBox: '0 0 800 230', role: 'img', 'aria-labelledby': id + '-title ' + id + '-description', class: 'ops-chart__svg' });
     const graph = svgNode('g'); svg.append(graph);
-    const legend = make('p', undefined, 'ops-chart__legend'); legend.append(make('span', t.cpu + ' — ', 'ops-chart__cpu'), make('span', t.memory + ' ┄', 'ops-chart__memory'));
+    const legend = make('p', undefined, 'ops-chart__legend'), memoryLegend = make('span', t.memory + ' ┄', 'ops-chart__memory'); legend.append(make('span', t.cpu + ' — ', 'ops-chart__cpu'), memoryLegend);
+    const estimateNote = make('p', '* ' + t.estimateNote, 'ops-chart__estimate muted'); estimateNote.id = id + '-estimate'; estimateNote.hidden = true;
     const details = make('details'), summary = make('summary', t.table), tableWrap = make('div', undefined, 'table-wrap'), table = make('table', undefined, 'ops-chart__table');
     const caption = make('caption', ''), head = make('thead'), row = make('tr'), body = make('tbody');
     for (const text of [t.time, t.cpu + ' (%)', t.memory + ' (%)']) { const th = make('th', text); th.scope = 'col'; row.append(th); }
     head.append(row); table.append(caption, head, body); tableWrap.append(table); details.append(summary, tableWrap);
-    controls.append(label, pause); root.append(heading, description, controls, metadata, svg, legend, details); container.replaceChildren(root);
+    controls.append(label, pause); root.append(heading, description, controls, metadata, svg, legend, estimateNote, details); container.replaceChildren(root);
     let paused = false, frozen = null, viewConnection = null;
     const view = {
       render() {
@@ -103,9 +108,13 @@
         const interval = latest?.interval || (all.length > 1 ? all[all.length - 1].time - all[all.length - 2].time : 30000);
         const stale = latest && now - latest.time > Math.max(interval * 3, 30000);
         const state = viewConnection || connection;
+        const hasEstimate = points.some(point => point.memoryEstimated);
+        estimateNote.hidden = !hasEstimate;
+        if (hasEstimate) svg.setAttribute('aria-describedby', estimateNote.id); else svg.removeAttribute('aria-describedby');
+        memoryLegend.textContent = t.memory + (hasEstimate ? ' *' : '') + ' ┄';
         metadata.textContent = (t[state] || t.disconnected) + ' · ' + (latest?.source === 'local-lightweight' ? t.fast : t.snapshot) + ' · ' +
           (latest ? t.latest + ': ' + new Date(latest.time).toLocaleString(language) + ' · ' + Math.max(0, Math.floor((now - latest.time) / 1000)) + ' s · ' + points.length + ' ' + t.samples + (stale ? ' · ' + t.stale : '') + (latest.cpu === null || latest.memory === null ? ' · ' + t.partial : '') : t.noData) +
-          (buffer.dropped ? ' · ' + t.lost + ': ' + buffer.dropped : '') + (monotonic ? ' · ' + t.elapsed : '') + (points.some(point => point.clockAdjusted) ? ' · ' + t.adjusted : '') + (paused ? ' · ' + t.paused : '');
+          (latest?.memoryEstimated ? ' · ' + t.estimatedMemory : '') + (buffer.dropped ? ' · ' + t.lost + ': ' + buffer.dropped : '') + (monotonic ? ' · ' + t.elapsed : '') + (points.some(point => point.clockAdjusted) ? ' · ' + t.adjusted : '') + (paused ? ' · ' + t.paused : '');
         graph.replaceChildren();
         // Match SVG coordinates to CSS pixels so axis labels stay readable on small screens.
         const viewport = Math.max(160, Math.min(2400, Math.round(svg.getBoundingClientRect().width || container.clientWidth || 800)));
@@ -136,9 +145,9 @@
           graph.append(svgNode('path', { d: path, fill: 'none', stroke: color, 'stroke-width': '2.5', 'stroke-dasharray': key === 'memory' ? '7 4' : 'none', class: 'ops-chart__' + key }));
         }
         const selected = points.slice(-50).reverse();
-        caption.textContent = t.shown + ': ' + selected.length + ' / ' + points.length + '. ' + t.source + ': ' + (latest?.source === 'local-lightweight' ? t.fast : t.snapshot);
+        caption.textContent = t.shown + ': ' + selected.length + ' / ' + points.length + '. ' + t.source + ': ' + (latest?.source === 'local-lightweight' ? t.fast : t.snapshot) + (selected.some(point => point.memoryEstimated) ? '. ' + t.estimatedMemory + ' *' : '');
         {
-          const rows = selected.map(point => { const tr = make('tr'); tr.append(make('td', new Date(point.time).toLocaleString(language)), make('td', point.cpu === null ? t.unavailable : point.cpu.toFixed(1)), make('td', point.memory === null ? t.unavailable : point.memory.toFixed(1))); return tr; });
+          const rows = selected.map(point => { const tr = make('tr'); tr.append(make('td', new Date(point.time).toLocaleString(language)), make('td', point.cpu === null ? t.unavailable : point.cpu.toFixed(1)), make('td', point.memory === null ? t.unavailable : point.memory.toFixed(1) + (point.memoryEstimated ? ' *' : ''))); return tr; });
           body.replaceChildren(...rows);
         }
       },

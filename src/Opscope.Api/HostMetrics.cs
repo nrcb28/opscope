@@ -147,9 +147,10 @@ public sealed class HostMetricsSampler : IAsyncDisposable
         var cpu = CpuDelta(previous, current);
         var memory = current.MemoryPercent is { } value && double.IsFinite(value) && value is >= 0 and <= 100 ? value : (double?)null;
         var cpuCoverage = current.CpuTotal is null || current.CpuIdle is null ? current.CpuStatus ?? "unavailable" : previous?.CpuTotal is null ? "warmingUp" : cpu is null ? "unavailable" : "observed";
+        var memoryCoverage = memory is null ? current.MemoryStatus ?? "unavailable" : current.MemoryStatus == "estimated" ? "estimated" : "observed";
         Buffer.Append(new(1, ++sequence, DateTimeOffset.UtcNow, clock.ElapsedMilliseconds,
             interval.TotalSeconds, cpu, memory, cpu is not null && memory is not null ? "observed" : "partial",
-            "local-lightweight", new(cpuCoverage, memory is null ? current.MemoryStatus ?? "unavailable" : "observed")));
+            "local-lightweight", new(cpuCoverage, memoryCoverage)));
         previous = current;
     }
 
@@ -218,6 +219,7 @@ public sealed class SystemHostMetricsReader : IHostMetricsReader
                 memory = Math.Round(100d * (status.TotalPhysical - status.AvailablePhysical) / status.TotalPhysical, 2);
             return new(total, idle, memory);
         }
+        if (OperatingSystem.IsMacOS()) return new DarwinHostMetricsReader().Read();
         return new(null, null, null, "notSupported", "notSupported");
     }
 

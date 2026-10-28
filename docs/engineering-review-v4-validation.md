@@ -67,7 +67,7 @@ La evidencia OS Config corresponde a jobs ya registrados y no establece cumplimi
 
 La quinta fase parte de `b7c641084dd6ab5de2c5ed1f952f86cc035474e0`, después de la distribución candidata de la [PR #16](https://github.com/nrcb28/opscope/pull/16), cuyos quince trabajos de [CI](https://github.com/nrcb28/opscope/actions/runs/40539617841) aprobaron. Esa distribución es una candidata temporal, con artefactos conservados catorce días; no se presenta como una release pública firmada.
 
-La ampliación incluye el menú Conexiones, su lectura local de preparación y el modo de proxy HTTPS autenticado para usar la UI en un servidor remoto. La verificación local del 28 de octubre de 2026 corresponde a Linux x64. El alcance y los prerrequisitos por check se describen en [cloud.md](cloud.md), la [matriz de implementación](engineering-review-v4.md) y la [guía de acceso remoto](remote-hosting.md).
+La ampliación incluye el menú Conexiones, su lectura local de preparación y el modo de proxy HTTPS autenticado para usar la UI en un servidor remoto. La verificación local del 28 de octubre de 2026 corresponde a Linux x64. Antes de integrar la [PR #17](https://github.com/nrcb28/opscope/pull/17), aprobaron los quince trabajos de [CI remoto](https://github.com/nrcb28/opscope/actions/runs/40722169608), incluidas regresiones Linux/Windows/macOS, navegador Linux/Windows y generación/verificación de los paquetes candidatos. El alcance y los prerrequisitos por check se describen en [cloud.md](cloud.md), la [matriz de implementación](engineering-review-v4.md) y la [guía de acceso remoto](remote-hosting.md).
 
 | Comprobación | Resultado local de la quinta fase |
 | --- | --- |
@@ -84,3 +84,20 @@ La ampliación incluye el menú Conexiones, su lectura local de preparación y e
 | Humo Unix, gráficas y herramientas de distribución | Prueba de humo y pruebas unitarias de gráficas aprobadas; 31 pruebas de herramientas de empaquetado aprobadas. |
 
 Los tests de proveedores utilizan transportes y respuestas simulados. La validación de cuentas cloud reales permanece aplazada por indicación del usuario; no hay un despliegue remoto activo, un dominio/certificado emitido ni un login real atribuible a estas pruebas. Un ajuste TLS, un agregado DNS/WAF/rutas, una regla ingress o una red privada observados constituyen evidencia de configuración con su ámbito y cobertura; no prueban seguridad completa, acceso efectivo, aislamiento ni salud de aplicación. El menú de conexión no trata la presencia local de credenciales como prueba de permisos y no ejecuta las plantillas de autenticación.
+
+## Sexta fase: concurrencia cloud, caché y métricas ligeras macOS
+
+Esta fase parte de `88e5e91e6364025da243c790228cd922f353dac9`, después de la PR #17. Separa las consultas cloud de la recolección del host, conserva el alcance de las esperas y las fechas de caché, y añade un lector ligero macOS con contadores nativos agregados. La verificación local del 28 de octubre de 2026 corresponde a Linux x64.
+
+| Comprobación | Resultado local de la sexta fase |
+| --- | --- |
+| Compilación CLI y módulos, Release | Aprobada, cero errores y cero advertencias. |
+| Proyectos de regresión .NET | Los veintisiete proyectos aprobados, incluidas las dos nuevas suites de fiabilidad cloud y métricas Darwin. |
+| API, SQLite y MCP | 331 comprobaciones aprobadas; conexiones y hosting remoto conservan sus 188 y 115 comprobaciones, respectivamente. |
+| Fiabilidad cloud | 2.105 comprobaciones aprobadas de ámbitos cerrados, concurrencia, cuotas por alias, cancelación, privacidad, límites y expiración monótona de caché. Incluye HTTP local/proxy, recolección y SSE durante una consulta bloqueada, y metadatos vinculados a la respuesta original aunque se sustituya la entrada de caché. |
+| Métricas Darwin | 178 comprobaciones de ABI, valores válidos/ausentes, overflow, independencia de fuentes, liberación de puertos, estimación de memoria y privacidad con fuentes inyectadas. La lectura nativa real se omite explícitamente en Linux. |
+| Navegador Chromium | 200 comprobaciones aprobadas de interfaz y accesibilidad, incluidas 23 nuevas sobre caché, espera por ámbito, disponibilidad del host y memoria estimada. |
+| CLI real, pruebas Python | 21 pruebas aprobadas. |
+| Humo Unix, gráficas y distribución | Prueba de humo y pruebas unitarias de gráficas aprobadas; 31 pruebas de herramientas de empaquetado aprobadas. |
+
+Las pruebas cloud siguen usando callbacks y transportes simulados, sin cuentas reales ni un despliegue público. Los fixtures nativos comprueban límites, ABI, datos inválidos y errores sin afirmar ejecución local en macOS. El test condicional del sistema real solo aporta evidencia nativa cuando se ejecuta en macOS; publicar un binario de otra arquitectura no sustituye esa ejecución. La memoria macOS es una estimación recuperable y no una lectura de presión de memoria ni una réplica de Activity Monitor. La recolección completa y la serie ligera conservan sus fuentes separadas.

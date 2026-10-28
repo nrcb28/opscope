@@ -37,6 +37,7 @@ public sealed record ServerOptions
     public IReadOnlyDictionary<string, Func<CancellationToken, Task<AnalysisReport>>>? CloudActions { get; init; }
     /// <summary>Optional read-only policy description, without secret values or host paths.</summary>
     public Func<object>? PolicyView { get; init; }
+    internal TimeProvider CloudTimeProvider { get; init; } = TimeProvider.System;
     public override string ToString() => nameof(ServerOptions);
 }
 
@@ -56,7 +57,7 @@ public static class LocalServer
         using var store = new HistoryStore(historyPath, options.RetentionCount, options.RetentionDays);
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var state = new EvidenceState(options, store, token);
-        var cloudWorkspace = new CloudWorkspace(options.CloudActions);
+        using var cloudWorkspace = new CloudWorkspace(options.CloudActions, options.CloudTimeProvider);
         var cloudConnections = new CloudConnections(options.CloudActions?.Keys);
         await using var metrics = new HostMetricsSampler();
         metrics.Start();
@@ -97,7 +98,14 @@ public static class LocalServer
             var shell = context.Request.Method == "GET" && context.Request.Path.Value is "/" or "/app.js" or "/app.css" or "/realtime-charts.js";
             if (!shell && !ValidToken(context.Request.Headers["X-Opscope-Token"].ToString(), token))
             { context.Response.StatusCode = 401; return; }
-            if (!requests.Allow()) { context.Response.StatusCode = 429; context.Response.Headers.RetryAfter = "1"; return; }
+            if (!requests.Allow())
+            {
+                context.Response.StatusCode = 429;
+                context.Response.Headers.RetryAfter = "1";
+                context.Response.Headers["X-Opscope-Retry-Scope"] = "session";
+                context.Response.Headers["X-Opscope-Retry-Reason"] = "session-limit";
+                return;
+            }
             try { await next(context); }
             catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested || lifetime.IsCancellationRequested) { }
             catch (RequestReadTimeoutException)
@@ -231,14 +239,23 @@ public static class LocalServer
                 return Results.Conflict(new { error = "This operation has no configured scope in this session.", code = "SCOPE_NOT_CONFIGURED" });
             if (cloudWorkspace.Cached(actionKey) is { } cached)
             {
-                context.Response.Headers["X-Opscope-Cache"] = "hit";
-                context.Response.Headers["X-Opscope-Cache-Age-Seconds"] = Math.Max(0, (int)(DateTimeOffset.UtcNow - cached.CachedAtUtc).TotalSeconds).ToString(CultureInfo.InvariantCulture);
+                CloudResponseHeaders(context, cloudWorkspace, actionKey, "hit", cachedEntry: cached);
                 return Results.Text(cached.Json, "application/json", statusCode: cached.StatusCode);
             }
-            if (!await state.TryEnterActionAsync(context.RequestAborted)) return Results.StatusCode(429);
+            var admission = cloudWorkspace.TryEnterRead(actionKey, context.RequestAborted);
+            if (!admission.Allowed)
+            {
+                CloudRetryHeaders(context, provider, admission);
+                return Results.Json(new
+                {
+                    error = admission.RetryReason == "provider-quota" ? "This configured cloud scope is cooling down after a provider quota response." : "The configured cloud read is temporarily limited. Local host collection remains available.",
+                    code = admission.RetryReason == "provider-quota" ? "PROVIDER_RATE_LIMITED" : admission.RetryReason == "scope-cooldown" ? "CLOUD_READ_COOLDOWN" : "CLOUD_BUSY",
+                    admission.RetryAfterSeconds, scopeAlias = provider, admission.RetryReason
+                }, statusCode: 429);
+            }
             try
             {
-                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, lifetime.Token);
                 timeout.CancelAfter(TimeSpan.FromSeconds(60));
                 try
                 {
@@ -247,16 +264,17 @@ public static class LocalServer
                     var problem = CloudConnections.Describe(report);
                     var json = CloudReportJson(report, problem, token);
                     var statusCode = problem.HttpStatus;
+                    if (statusCode == 429) cloudWorkspace.RecordProviderQuota(actionKey);
                     cloudWorkspace.Cache(actionKey, json, statusCode);
-                    context.Response.Headers["X-Opscope-Cache"] = "miss";
+                    CloudResponseHeaders(context, cloudWorkspace, actionKey, "miss", completingRead: true);
                     return Results.Text(json, "application/json", statusCode: statusCode);
                 }
-                catch (OperationCanceledException) when (timeout.IsCancellationRequested && !context.RequestAborted.IsCancellationRequested)
+                catch (OperationCanceledException) when (timeout.IsCancellationRequested && !context.RequestAborted.IsCancellationRequested && !lifetime.IsCancellationRequested)
                 { cloudWorkspace.RecordFailure(actionKey, "timed-out"); return Results.Json(new { error = "The provider read exceeded its deadline.", code = "PROVIDER_TIMED_OUT", remediation = "Check provider connectivity and retry a smaller configured scope." }, statusCode: 504); }
                 catch (Exception error) when (error is IOException or InvalidOperationException or System.ComponentModel.Win32Exception or JsonException)
                 { cloudWorkspace.RecordFailure(actionKey, "failed"); return Results.Json(new { error = "Read-only cloud query failed. Check the local credential setup and scope permissions.", code = "PROVIDER_UNAVAILABLE" }, statusCode: 502); }
             }
-            finally { state.ExitAction(); }
+            finally { cloudWorkspace.ExitRead(); }
         });
         app.MapGet("/api/bundle", async (HttpContext context) =>
         {
@@ -433,6 +451,26 @@ public static class LocalServer
         return json.Contains(token, StringComparison.Ordinal) ? Reporter.ParseSnapshot(ScrubSessionToken(json, token)) : snapshot;
     }
     private static IResult ReportResult(AnalysisReport report, string token) => Results.Text(ScrubSessionToken(ReportSecurity.Serialize(report), token), "application/json", statusCode: report.OperationSucceeded ? 200 : 502);
+    private static void CloudResponseHeaders(HttpContext context, CloudWorkspace workspace, string key, string cacheState, bool completingRead = false, CloudWorkspace.CachedReport? cachedEntry = null)
+    {
+        var metadata = cachedEntry is null ? workspace.CacheDetails(key) : workspace.CacheDetails(cachedEntry);
+        context.Response.Headers["X-Opscope-Cache"] = cacheState;
+        if (metadata.CachedAtUtc is { } cachedAt) context.Response.Headers["X-Opscope-Cache-Cached-At"] = cachedAt.ToString("O", CultureInfo.InvariantCulture);
+        if (metadata.ExpiresAtUtc is { } expiresAt) context.Response.Headers["X-Opscope-Cache-Expires-At"] = expiresAt.ToString("O", CultureInfo.InvariantCulture);
+        if (metadata.AgeSeconds is { } age)
+        {
+            context.Response.Headers["X-Opscope-Cache-Age-Seconds"] = age.ToString(CultureInfo.InvariantCulture);
+            context.Response.Headers["X-Opscope-Cache-Remaining-Seconds"] = metadata.RemainingSeconds.ToString(CultureInfo.InvariantCulture);
+        }
+        var admission = workspace.Readiness(key, completingRead);
+        if (admission.RetryAfterSeconds > 0) CloudRetryHeaders(context, key.Split('/')[0], admission);
+    }
+    private static void CloudRetryHeaders(HttpContext context, string scopeAlias, CloudWorkspace.ReadAdmission admission)
+    {
+        context.Response.Headers.RetryAfter = Math.Max(1, admission.RetryAfterSeconds).ToString(CultureInfo.InvariantCulture);
+        context.Response.Headers["X-Opscope-Retry-Scope"] = scopeAlias;
+        context.Response.Headers["X-Opscope-Retry-Reason"] = admission.RetryReason;
+    }
     private static string CloudReportJson(AnalysisReport report, CloudConnectionFailure problem, string token)
     {
         // Keep the existing redacted report contract and attach only fixed diagnostic metadata.

@@ -89,6 +89,36 @@ class CliTests(unittest.TestCase):
                 self.assertIn("metrics", {capability["operation"] for capability in provider["capabilities"]})
         self.assertFalse(catalog.get("warnings"))
 
+    def test_new_configuration_reads_require_explicit_scopes_offline(self):
+        scaleway = json.loads(self.run_cli("cloud", "catalog", "--provider", "scaleway"))
+        self.assertIn("networks", {entry["operation"] for entry in scaleway["data"]["providers"][0]["capabilities"]})
+        cases = [
+            ("cloudflare", "posture", "--account", "a" * 32),
+            ("cloudflare", "posture", "--account", "a" * 32, "--zones", "https://untrusted.invalid"),
+            ("cloudflare", "posture", "--account", "a" * 32, "--zones", "b" * 32, "--cloudflare-checks", "unsupported"),
+            ("alibaba", "posture"),
+            ("alibaba", "posture", "--account", "123456", "--region", "eu-central-1", "--security-groups", "https://untrusted.invalid"),
+            ("scaleway", "networks", "--project", "11111111-1111-1111-1111-111111111111", "--zone", "fr-par-1"),
+            ("scaleway", "networks", "--project", "11111111-1111-1111-1111-111111111111", "--region", "https://untrusted.invalid")
+        ]
+        for args in cases:
+            self.run_cli(*args, expected=2)
+
+    def test_remote_hosting_rejects_invalid_setup_before_collection(self):
+        history = self.root / "must-not-be-created.sqlite"
+        cases = [
+            ("--public-origin", "http://opscope.example.test"),
+            ("--public-origin", "https://opscope.example.test"),
+            ("--proxy-token-env", "OPSCOPE_TEST_MISSING_PROXY_SECRET"),
+            ("--public-origin", "https://opscope.example.test", "--proxy-token-env", "OPSCOPE_TEST_MISSING_PROXY_SECRET"),
+            ("--public-origin", "https://opscope.example.test", "--proxy-token-env", "invalid-variable-name"),
+            ("--public-origin", "https://opscope.example.test/path", "--proxy-token-env", "OPSCOPE_TEST_MISSING_PROXY_SECRET"),
+        ]
+        for args in cases:
+            with self.subTest(args=args):
+                self.run_cli("serve", "--history", history, *args, expected=2)
+                self.assertFalse(history.exists(), "Invalid hosting setup must fail before collecting or saving host evidence")
+
     def test_drift_without_baseline_and_node_correlation_configuration_stay_offline(self):
         drift = json.loads(self.run_cli("gcp", "drift", "--project", "example-project", expected=2))
         self.assertEqual(drift["data"]["coverage"]["state"], "NotConfigured")

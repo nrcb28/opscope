@@ -46,6 +46,9 @@ internal static class Program
                         ["gcp-scope-1/cost"] = _ => Task.FromResult(AdvancedCloudFixture("cost")),
                         ["gcp-scope-1/patches"] = _ => Task.FromResult(AdvancedCloudFixture("patches")),
                         ["gcp-scope-1/drift"] = _ => Task.FromResult(AdvancedCloudFixture("drift")),
+                        ["cloudflare-scope-1/posture"] = _ => Task.FromResult(ConfigurationFixture("cloudflare")),
+                        ["alibaba-scope-1/posture"] = _ => Task.FromResult(ConfigurationFixture("alibaba")),
+                        ["scaleway-scope-1/networks"] = _ => Task.FromResult(ConfigurationFixture("scaleway")),
                         ["kubernetes-scope-1/inventory"] = _ => Task.FromResult(AdvancedCloudFixture("kubernetes-inventory")),
                         ["kubernetes-scope-1/metrics"] = _ => Task.FromResult(AdvancedCloudFixture("kubernetes-metrics"))
                     }
@@ -145,6 +148,29 @@ internal static class Program
             provider = "kubernetes", coverage, cluster,
             resources = new[] { new CloudResource("kubernetes", "[redacted-account]", "[redacted-region]", "[redacted-id]", "kubernetes.pod", "[redacted-name]", new { state = "Running", readyContainers = 1, containerCount = 1, restartCount = 0 }) }
         }, coverage.Warnings);
+    }
+
+    private static AnalysisReport ConfigurationFixture(string provider)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var observations = provider switch
+        {
+            "cloudflare" => (object)new { sslMode = "flexible", minimumTlsVersion = "1.0", alwaysUseHttps = false },
+            "alibaba" => new { groupsRead = 2, rulesRead = 4, worldIngressAllowRules = 1, administrativeIngressAllowRules = 1, possiblyShadowedAdminAllowRules = 0, unknownRules = 0, assessment = "configuration-only" },
+            _ => new { observedResources = 2, expectedResources = 2 }
+        };
+        return new($"cloud/{provider}/{(provider == "scaleway" ? "networks" : "posture")}", now,
+            [new(FindingSeverity.Warning, "CONFIGURATION_OBSERVED", "Selected configuration observed", "Review the observed setting within its configured scope.", "Configured rules do not prove effective access or application availability.")], new
+            {
+                provider, coverage = new CloudCoverage(CoverageState.Partial, now, 2, 1, 1, []),
+                configurationEvidence = new
+                {
+                    source = "fixed-read-only-configuration", checks = new[]
+                    {
+                        new { check = provider == "cloudflare" ? "tls" : provider == "alibaba" ? "security-groups" : "vpcs", state = "complete", observedAtUtc = now, observations }
+                    }
+                }
+            }, ["Selected configuration only. Coverage does not establish effective access or a healthy account."]);
     }
 
     private static void TestHistory()
@@ -339,6 +365,9 @@ internal static class Program
                 ["gcp-scope-3/cost"] = _ => Task.FromResult(AdvancedCloudFixture("cost")),
                 ["gcp-scope-3/patches"] = _ => Task.FromResult(AdvancedCloudFixture("patches")),
                 ["gcp-scope-3/drift"] = _ => Task.FromResult(AdvancedCloudFixture("drift")),
+                ["cloudflare-scope-4/posture"] = _ => Task.FromResult(ConfigurationFixture("cloudflare")),
+                ["alibaba-scope-4/posture"] = _ => Task.FromResult(ConfigurationFixture("alibaba")),
+                ["scaleway-scope-4/networks"] = _ => Task.FromResult(ConfigurationFixture("scaleway")),
                 ["kubernetes-scope-2/inventory"] = _ => Task.FromResult(AdvancedCloudFixture("kubernetes-inventory")),
                 ["kubernetes-scope-2/metrics"] = _ => Task.FromResult(AdvancedCloudFixture("kubernetes-metrics")),
                 ["kubernetes-scope-2/health"] = _ => Task.FromResult(new AnalysisReport("cloud/kubernetes/health", DateTimeOffset.UtcNow, [], new { coverage = new { state = "no_data" } }))
@@ -637,11 +666,11 @@ internal static class Program
         Assert(providers.Single(provider => provider.GetProperty("id").GetString() == "kubernetes").GetProperty("category").GetString() == "cluster" && providers.Count(provider => provider.GetProperty("category").GetString() != "cluster") == 11, "Kubernetes is classified as a cluster adapter rather than a twelfth infrastructure cloud");
         var gcp = providers.Single(provider => provider.GetProperty("id").GetString() == "gcp");
         Assert(gcp.GetProperty("scopes").GetArrayLength() == 1 && gcp.GetProperty("operations").EnumerateArray().Any(operation => operation.GetProperty("name").GetString() == "inventory" && operation.GetProperty("availability").GetString() == "not-configured"), "Configuring an advanced GCP action does not implicitly enable other operations in that scope");
-        var unconfigured = providers.Single(provider => provider.GetProperty("id").GetString() == "scaleway");
+        var unconfigured = providers.Single(provider => provider.GetProperty("id").GetString() == "oci");
         Assert(unconfigured.GetProperty("scopes").GetArrayLength() == 0 && unconfigured.GetProperty("operations").EnumerateArray().Any(operation => operation.GetProperty("name").GetString() == "inventory" && operation.GetProperty("availability").GetString() == "not-configured"), "Known unconfigured providers expose their missing scope instead of an empty successful inventory");
         var actions = catalog.RootElement.GetProperty("actions").EnumerateArray().ToArray();
         Assert(actions.Any(action => action.GetProperty("actionKey").GetString() == "azure-scope-2/inventory") && actions.All(action => action.GetProperty("readOnly").GetBoolean()), "Catalog preserves explicitly configured action aliases as read-only actions");
-        foreach (var action in new[] { "gcp-scope-3/scc", "gcp-scope-3/cost", "gcp-scope-3/patches", "gcp-scope-3/drift", "kubernetes-scope-2/inventory", "kubernetes-scope-2/metrics" })
+        foreach (var action in new[] { "gcp-scope-3/scc", "gcp-scope-3/cost", "gcp-scope-3/patches", "gcp-scope-3/drift", "cloudflare-scope-4/posture", "alibaba-scope-4/posture", "scaleway-scope-4/networks", "kubernetes-scope-2/inventory", "kubernetes-scope-2/metrics" })
             Assert(actions.Any(item => item.GetProperty("actionKey").GetString() == action), "Catalog exposes only the explicitly configured advanced action: " + action);
         Assert(!text.Contains(token, StringComparison.Ordinal) && !text.Contains("api-private-host", StringComparison.Ordinal), "Cloud discovery reveals no host evidence or session secret");
         foreach (var (path, status) in new[]
@@ -668,6 +697,7 @@ internal static class Program
         {
             ("gcp-scope-3/scc", "cloud/gcp/scc"), ("gcp-scope-3/cost", "cloud/gcp/cost"),
             ("gcp-scope-3/patches", "cloud/gcp/patches"), ("gcp-scope-3/drift", "cloud/gcp/drift"),
+            ("cloudflare-scope-4/posture", "cloud/cloudflare/posture"), ("alibaba-scope-4/posture", "cloud/alibaba/posture"), ("scaleway-scope-4/networks", "cloud/scaleway/networks"),
             ("kubernetes-scope-2/inventory", "cloud/kubernetes/inventory"), ("kubernetes-scope-2/metrics", "cloud/kubernetes/metrics")
         })
         {
@@ -678,6 +708,8 @@ internal static class Program
             Assert(response.IsSuccessStatusCode && report.RootElement.GetProperty("kind").GetString() == expectedKind, "Advanced cloud dispatch calls its exact preconfigured scope and operation: " + action);
             Assert(!text.Contains(token, StringComparison.Ordinal) && !text.Contains("api-private-host", StringComparison.Ordinal), "Advanced report remains separate from live host identity and session secrets: " + action);
             var data = report.RootElement.GetProperty("data");
+            if (data.TryGetProperty("configurationEvidence", out var configuration))
+                Assert(configuration.GetProperty("checks")[0].GetProperty("state").GetString() == "complete" && configuration.GetProperty("checks")[0].GetProperty("observations").ValueKind == JsonValueKind.Object, "Configuration evidence preserves per-source observations within partial overall coverage");
             if (action.EndsWith("/cost", StringComparison.Ordinal))
                 Assert(!data.GetProperty("billing").GetProperty("isComplete").GetBoolean() && data.GetProperty("billing").GetProperty("currencySubtotals")[0].GetProperty("observedNetCost").GetDecimal() == 10.5m, "Billing fixture preserves the observed currency subtotal and explicitly denies a complete-bill claim");
             if (action.EndsWith("/patches", StringComparison.Ordinal))

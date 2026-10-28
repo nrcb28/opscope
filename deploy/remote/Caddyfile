@@ -1,0 +1,17 @@
+# Caddy 2.8+. Set these in a root-readable EnvironmentFile for the Caddy service.
+# OPSCOPE_PUBLIC_HOST=opscope.example.com
+# OPSCOPE_USER=<operator-selected-user>
+# OPSCOPE_PASSWORD_HASH=<output of caddy hash-password>
+# OPSCOPE_PROXY_TOKEN=<same 64-hex secret as the Opscope service>
+{$OPSCOPE_PUBLIC_HOST} {
+    basic_auth {
+        {$OPSCOPE_USER} {$OPSCOPE_PASSWORD_HASH}
+    }
+    reverse_proxy 127.0.0.1:48321 {
+        # Assignment overwrites any client-supplied upstream token.
+        header_up X-Opscope-Token {$OPSCOPE_PROXY_TOKEN}
+        header_up Host {$OPSCOPE_PUBLIC_HOST}
+        header_up -Authorization
+        header_up -Cookie
+    }
+}

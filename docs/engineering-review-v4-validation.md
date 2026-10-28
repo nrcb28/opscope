@@ -46,7 +46,7 @@ El alcance comprobado conserva los límites descritos en [cloud.md](cloud.md): l
 
 ## Tercera fase: jobs OS Config, baseline GCP y referencias de nodos
 
-Verificación local del 27 de octubre de 2026, sobre la base `3f2ada84bfef7ebb6807235eecad4c2d7eb192eb`. Su alcance y límites se describen en [cloud.md](cloud.md) y en la [matriz de implementación](engineering-review-v4.md). Los resultados siguientes corresponden a Linux x64; la ejecución de CI remoto en Windows, macOS y Linux queda pendiente de publicar esta revisión.
+Verificación local del 27 de octubre de 2026, sobre la base `3f2ada84bfef7ebb6807235eecad4c2d7eb192eb`. Su alcance y límites se describen en [cloud.md](cloud.md) y en la [matriz de implementación](engineering-review-v4.md). Los resultados siguientes corresponden a Linux x64. Antes de integrar la [PR #15](https://github.com/nrcb28/opscope/pull/15), también aprobaron las cinco comprobaciones de [CI remoto](https://github.com/nrcb28/opscope/actions/runs/40535447363): regresiones en Windows, macOS y Linux, y navegador en Windows/Linux.
 
 | Comprobación | Resultado local de la tercera fase |
 | --- | --- |
@@ -62,3 +62,25 @@ Verificación local del 27 de octubre de 2026, sobre la base `3f2ada84bfef7ebb68
 | Prueba de humo Unix y herramientas de distribución | Prueba de humo aprobada; seis pruebas de empaquetado aprobadas. |
 
 La evidencia OS Config corresponde a jobs ya registrados y no establece cumplimiento actual. La comparación GCP requiere inventarios normalizados privados y compatibles; rechaza perfiles declarados que no seleccionan una identidad GCP. Un enlace de nodo Kubernetes verifica solo su referencia contra el recurso observado; no verifica identidad del controlplane ni propiedad del clúster. Las pruebas usan fixtures y transportes simulados, sin cuentas cloud reales ni clúster remoto. Estas funciones siguen necesitando configuración e identidades reales para validar IAM/RBAC, ADC y disponibilidad de servicios fuera de los fixtures.
+
+## Quinta fase: configuración cloud, conexiones y acceso remoto
+
+La quinta fase parte de `b7c641084dd6ab5de2c5ed1f952f86cc035474e0`, después de la distribución candidata de la [PR #16](https://github.com/nrcb28/opscope/pull/16), cuyos quince trabajos de [CI](https://github.com/nrcb28/opscope/actions/runs/40539617841) aprobaron. Esa distribución es una candidata temporal, con artefactos conservados catorce días; no se presenta como una release pública firmada.
+
+La ampliación incluye el menú Conexiones, su lectura local de preparación y el modo de proxy HTTPS autenticado para usar la UI en un servidor remoto. La verificación local del 28 de octubre de 2026 corresponde a Linux x64. El alcance y los prerrequisitos por check se describen en [cloud.md](cloud.md), la [matriz de implementación](engineering-review-v4.md) y la [guía de acceso remoto](remote-hosting.md).
+
+| Comprobación | Resultado local de la quinta fase |
+| --- | --- |
+| Compilación CLI y módulos, Release | Aprobada, cero errores y cero advertencias. |
+| Proyectos de regresión .NET | Los veinticinco proyectos aprobados, incluidas las tres suites de configuración cloud y las de conexiones y hosting remoto. |
+| API, SQLite y MCP | 331 comprobaciones aprobadas de regresión y contratos, incluidos catálogo, ámbitos y evidencia de configuración. |
+| Cloudflare posture | 93 comprobaciones aprobadas de selección de checks, identidad de zona/cuenta, privacidad, errores y presupuestos de lectura. |
+| Alibaba posture | 94 comprobaciones aprobadas de STS, proyecciones CLI, cifrado de discos, reglas ingress, parcialidad y límites. |
+| Scaleway networks | 78 comprobaciones aprobadas de proyecto/región, VPC/redes privadas, paginación, permisos, observaciones desconocidas y límites. |
+| Conexiones cloud | 188 comprobaciones aprobadas de preparación local, enlaces/plantillas fijos, herramientas de confianza, privacidad y estados de la última lectura. |
+| Hosting remoto | 115 comprobaciones aprobadas de origen público, loopback, token de upstream, sesión, redacción y errores cloud diferenciados. |
+| Navegador Chromium | 177 comprobaciones aprobadas de interfaz y accesibilidad, incluida configuración cloud, Conexiones, conservación de sesión ante errores de proveedor y acceso en modo proxy sin token de upstream en el navegador. |
+| CLI real, pruebas Python | 21 pruebas aprobadas, incluidos ámbitos explícitos y rechazo de configuración inválida del proxy antes de recolectar. |
+| Humo Unix, gráficas y herramientas de distribución | Prueba de humo y pruebas unitarias de gráficas aprobadas; 31 pruebas de herramientas de empaquetado aprobadas. |
+
+Los tests de proveedores utilizan transportes y respuestas simulados. La validación de cuentas cloud reales permanece aplazada por indicación del usuario; no hay un despliegue remoto activo, un dominio/certificado emitido ni un login real atribuible a estas pruebas. Un ajuste TLS, un agregado DNS/WAF/rutas, una regla ingress o una red privada observados constituyen evidencia de configuración con su ámbito y cobertura; no prueban seguridad completa, acceso efectivo, aislamiento ni salud de aplicación. El menú de conexión no trata la presencia local de credenciales como prueba de permisos y no ejecuta las plantillas de autenticación.

@@ -31,7 +31,7 @@ public static class CloudProviderRegistry
         Descriptor("ibm", "IBM Cloud", "public-cloud", true,
             [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Metrics], ["service.instance"], ["IBM Resource Controller viewer in the configured account and resource group"]),
         Descriptor("scaleway", "Scaleway", "public-cloud", true,
-            [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Metrics], ["compute.vm"], ["Scaleway Instance read permissions"]),
+            [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Metrics, CloudOperation.Networks], ["compute.vm"], ["Scaleway Instance read permissions"]),
         Descriptor("kubernetes", "Kubernetes", "cluster", true,
             [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Metrics], ["cluster.workload", "cluster.service"],
             ["Explicit kubeconfig context and namespace allowlist; get/list workload metadata; optional Metrics Server read access"])
@@ -63,7 +63,7 @@ public static class CloudProviderRegistry
 
     private static ICloudProvider WithSupplementalMetrics(string providerId, ICloudCommandRunner? runner)
     {
-        var provider = AdditionalCloudProviders.Create(providerId, runner);
+        ICloudProvider provider = new ConfigurationCloudProvider(AdditionalCloudProviders.Create(providerId, runner), runner);
         return SupplementalCloudMetricsA.Supports(providerId) || SupplementalCloudMetricsB.Supports(providerId)
             ? new SupplementalMetricsProvider(provider, runner) : provider;
     }
@@ -108,8 +108,21 @@ public static class CloudProviderRegistry
             };
             (resourceTypes, permissions) = metricMetadata;
         }
-        else if (operation == CloudOperation.Posture && id == "cloudflare") resourceTypes = ["edge.zone.paused"];
-        else if (operation == CloudOperation.Posture && id == "alibaba") resourceTypes = ["storage.disk.encryption"];
+        else if (operation == CloudOperation.Posture && id == "cloudflare")
+        {
+            resourceTypes = ["edge.zone.paused", "edge.tls.settings", "edge.dns.metadata", "edge.waf.metadata", "edge.worker-route.metadata"];
+            permissions = ["Zone Read for explicitly selected zones; Zone Settings Read, DNS Read, Zone WAF Read or Workers Routes Read according to selected checks"];
+        }
+        else if (operation == CloudOperation.Posture && id == "alibaba")
+        {
+            resourceTypes = ["storage.disk.encryption", "network.security-group.configuration"];
+            permissions = ["STS GetCallerIdentity; ECS DescribeDisks, DescribeSecurityGroups and DescribeSecurityGroupAttribute in the selected account/region"];
+        }
+        else if (operation == CloudOperation.Networks && id == "scaleway")
+        {
+            resourceTypes = ["network.vpc", "network.privateNetwork"];
+            permissions = ["VPC and Private Network list permissions in the explicit Scaleway project and region"];
+        }
         else if (id is not ("azure" or "aws") && operation == CloudOperation.Health)
             resourceTypes = id == "cloudflare" ? ["edge.zone.state"] : id == "ibm" ? ["service.instance.state"] : id == "kubernetes" ? ["cluster.workload.state"] : ["compute.vm.state"];
         return new(operation, Array.AsReadOnly(resourceTypes), Array.AsReadOnly(permissions), experimental,

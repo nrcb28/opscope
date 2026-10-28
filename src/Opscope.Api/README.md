@@ -5,13 +5,33 @@
 this entry point. There is no remote listener, shell endpoint, host modification,
 telemetry, notification, or credential-entry flow.
 
-The bootstrap URL contains a fresh 256-bit session token in its fragment. The
-browser removes that fragment immediately and keeps the token only in memory.
-Reload by reopening the bootstrap URL. Every evidence endpoint, including
-Prometheus `/metrics`, SSE `/api/events`, and JSON-RPC `/mcp`, requires the
-`X-Opscope-Token` header. Exact Host, Origin, referrer, and Fetch Metadata checks
-also apply to static resources. External origins, DNS aliases, and forwarded
-host headers cannot extend the listener's trust boundary. There is no CORS grant.
+In default local mode the bootstrap URL contains a fresh 256-bit session token
+in its fragment. The browser removes that fragment immediately and keeps the
+token only in memory. Reload by reopening the bootstrap URL. Every evidence
+endpoint, including Prometheus `/metrics`, SSE `/api/events`, and JSON-RPC `/mcp`,
+requires the `X-Opscope-Token` header. Exact Host, Origin, referrer, and Fetch
+Metadata checks also apply to static resources. There is no CORS grant.
+
+Explicit proxy mode sets `ServerOptions.PublicOrigin` to one canonical HTTPS
+origin and `ProxyToken` to a separately provisioned 64-hex-character upstream
+secret. Both must be valid before collection or history initialization. The CLI
+uses `--public-origin` and `--proxy-token-env`; only the environment variable's
+name appears in arguments. Kestrel still accepts only loopback peers. An
+authenticated same-host proxy protects every route, overwrites the upstream
+header and strips browser authorization/cookies. The public bootstrap URL has
+no fragment. Forwarded headers do not alter the configured Host/origin checks.
+The secret is excluded from options JSON and `ToString()` and never returned
+to the browser. [Remote hosting](../../docs/remote-hosting.md) provides the
+HTTPS/authentication template and an SSH-tunnel alternative.
+
+Protected `GET /api/session` returns only
+`{ "authenticationMode": "local" | "proxy", "authenticated": true, "readOnly": true }`.
+Without a local fragment, the browser trusts proxy mode only after this request
+succeeds. Proxy browser requests, including SSE, use same-origin credentials;
+the proxy injects the upstream header. Local browser requests retain their
+in-memory header and omit browser credentials. Neither mode returns cloud or
+browser user identities. All operators admitted to one instance share its
+configured evidence and cloud scopes.
 
 All resources are embedded and use a strict CSP, without inline scripts, remote
 fonts, or a CDN. Displayed evidence uses DOM text nodes. Full identifiers require
@@ -35,17 +55,17 @@ limits connection/header counts, and permits at most four bounded SSE streams.
 JSON uploads require strict UTF-8 and complete within ten seconds. Collection
 failures return HTTP 503 while preserving the last successful snapshot; HTTP 429
 indicates an actual cooldown or concurrency limit, with `Retry-After` where supplied.
-Failed cloud reports return HTTP 502 with their redacted report and
-`operationSucceeded: false`; coverage warnings alone do not turn a successful
-operation into a failure. Provider-reported permission/rate-limit coverage remains
-in that report rather than being confused with the local session's authorization.
-Cloud callbacks are allowlisted provider/operation pairs and their reports pass
-through `ReportSecurity` before being returned. A policy callback supplies only a
-read-only view; no editor writes configuration or host state.
+Cloud responses preserve their redacted report, `operationSucceeded` and coverage.
+Missing setup, denied provider access, quotas and timeouts have distinct statuses
+described below. Provider denial remains separate from Opscope session
+authorization. Cloud callbacks are allowlisted provider/operation pairs and their
+reports pass through `ReportSecurity` before being returned. A policy callback
+supplies only a read-only view; no editor writes configuration or host state.
 
 ## Cloud catalog, fixed scopes and report cache
 
-`GET /api/cloud/catalog` returns version 2 of the closed eleven-provider catalog:
+`GET /api/cloud/catalog` returns version 2 of the closed catalog of eleven
+infrastructure providers and a separate Kubernetes cluster adapter:
 `providers[]` contain an `id`, display name, category, adapter version, anonymous
 configured `scopes[]` and actually supported `operations[]`. Operations identify
 read-only status, experimental coverage, resource types, required permissions,
@@ -58,22 +78,60 @@ each configured action: initially `not-requested`, then successful/partial, fail
 or timed out. This observation does not certify all services in an account.
 `GET /api/capabilities` remains compatible and includes the configured action keys.
 
+`GET /api/cloud/connections` returns version 1 of the guided local setup view for
+the twelve sources. It makes no provider requests, runs no process and performs
+no login (`remoteRequestsMade=false`, `authenticationActionsAvailable=false`).
+Each provider has independent `scopeStatus`, `credentialStatus`, `toolStatus` and
+`accessStatus` fields. A present environment credential or available trusted CLI
+does not prove authentication. CLI sessions, ADC and workload identities remain
+`external-unverified`; a configured read records a separate access observation.
+The historical read status includes its action key and observation time; it
+does not establish current account-wide access.
+
+The view includes fixed official signup/console/documentation links, host-side
+command templates, required scope fields and safe diagnostic/remediation text.
+It returns no credential values, tool paths or account identities. Its test
+actions refer only to callbacks already configured in the catalog, preferring
+inventory, health, networks, then metrics for each alias. The browser cannot
+submit arbitrary scopes, endpoints, credentials or commands. Provider account
+creation and authentication remain external setup on the Opscope host; GCP CLI
+login and ADC are separate requirements.
+
 `POST /api/cloud/{scopeAlias}/{operation}` accepts no body. The alias is either a
 configured provider ID or an anonymous `provider-scope-N`, never a raw remote
 account or project. Provider and operation must be in the registry, and the exact
 action must already be bound in `ServerOptions.CloudActions`. The server rejects
 unknown providers with 404, unsupported operations with **501**
 (`OPERATION_UNSUPPORTED`), and supported operations without a configured action
-with **409** (`SCOPE_NOT_CONFIGURED`). A query that cannot complete returns 502
-with a sanitized error/report; a server-side sixty-second cancellation deadline
-returns 504. The existing gate/cooldown returns 429. These responses are distinct
-from a successful empty inventory.
+with **409** (`SCOPE_NOT_CONFIGURED`). A completed report has these HTTP statuses:
+
+| Coverage/result | Status |
+| --- | --- |
+| Required provider setup missing | 409 |
+| Provider denied the read | 424 |
+| Provider quota limit | 429 |
+| Provider read deadline | 504 |
+| Unsupported adapter read | 501 |
+| Failed or unavailable read | 502 |
+| Successful read (including no-data), or useful partial evidence | 200 |
+
+The existing report fields remain at the response root, with additive
+`cloudProblem` metadata: `httpStatus`, `code`, fixed `message` and `remediation`,
+`nextStep`, and a known `providerId` where available. Read the report's coverage
+and success flag even on HTTP 200; partial evidence is not complete coverage.
+Provider responses do not invalidate the Opscope session. Its own missing/invalid
+upstream header returns 401; source/Host checks return 403.
+
+An exception before a report is available returns a sanitized 502 error; the
+server-side sixty-second cancellation deadline returns 504. The existing
+gate/cooldown returns 429. These responses remain distinct from a successful
+empty inventory.
 
 Completed report responses are cached **after redaction and session-token
 scrubbing** in this server session only. The cache holds at most 32 entries of
 512 KiB each (16 MiB payload ceiling); larger reports are returned but not cached.
-TTL is thirty seconds for successful ordinary reads, sixty seconds for successful
-`metrics` reads, and fifteen seconds for failed report responses. A cache hit
+TTL is thirty seconds for HTTP 200 ordinary reads, sixty seconds for HTTP 200
+`metrics` reads, and fifteen seconds for non-200 report responses. A cache hit
 returns the original status/report and observation time; it does not imply a new
 provider query. `X-Opscope-Cache: hit|miss` identifies reuse, and hits include
 `X-Opscope-Cache-Age-Seconds`. Timeout/exception responses are not report-cache
@@ -121,13 +179,14 @@ explicit gap count; it does not promise an unlimited replay. Use bounded history
 for retained points. At most four streams run concurrently; each stream reconnects
 after two minutes, and **every write/flush has a ten-second cancellation deadline**.
 Slow readers receive only the latest available aggregate rather than building an
-unbounded pending queue. The client keeps its session token in the fetch header
-and uses one stream for both full snapshots and lightweight metrics.
+unbounded pending queue. The local client keeps its session token in the fetch
+header; a proxy client uses same-origin authentication and receives no upstream
+token. Both use one stream for full snapshots and lightweight metrics.
 
 The web interface provides English/Spanish, light/dark themes, keyboard navigation
 and Ctrl+K global search, findings filters, process sorting and port evidence,
 services, uploaded or historical drift baselines, stateless fleet comparison, SQLite trends and a snapshot
-and boot timeline, configured cloud queries, a policy preview editor, and read-only settings.
+and boot timeline, configured cloud queries and connection guidance, a policy preview editor, and read-only settings.
 Unavailable optional integrations are described explicitly. The strict policy YAML editor evaluates drafts through the shared policy engine
 and downloads validated YAML without applying it or persisting it in history or
 browser storage. Native event-log collection and applying a policy remain CLI
@@ -181,6 +240,8 @@ Run verification with:
 
 ```sh
 dotnet run --project tests/Opscope.ApiTests
+dotnet run --project tests/Opscope.CloudConnectionTests
+dotnet run --project tests/Opscope.RemoteHostingTests
 npm ci --prefix tests/Opscope.ApiTests
 # If Chromium is not installed, run: npx --prefix tests/Opscope.ApiTests playwright install chromium
 npm test --prefix tests/Opscope.ApiTests
@@ -188,7 +249,7 @@ npm test --prefix tests/Opscope.ApiTests
 
 The browser suite launches the isolated fixture server, checks keyboard and
 privacy behavior, full-view response races, drift and downloads, both themes
-with axe WCAG A/AA rules, mobile overflow, and local-only requests. It writes
+with axe WCAG A/AA rules, mobile overflow, and same-origin request behavior. It writes
 screenshots and accessibility results to ignored `test-results/`. Set `DOTNET_BIN`
 and `CHROMIUM_PATH` when using nonstandard executable locations.
 

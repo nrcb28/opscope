@@ -34,6 +34,7 @@ Extended commands:
   gcp inventory|posture|health|metrics|scc|cost|services|patches|drift|vm|bundle --project <project-id>
   kubernetes inventory|health|metrics --context <name> --namespaces <names>
   oci|digitalocean|hetzner|cloudflare|openstack|alibaba|ibm|scaleway <operation>
+  scaleway networks --project <uuid> --region <region>
   cloud catalog                         Describe providers and actual capabilities
   cloud <operation> --provider <id>      Query a configured read-only provider
   cloud metadata [--provider azure|aws] Explicit identity-only metadata lookup
@@ -66,6 +67,9 @@ Extended options:
   --billing-project <id> --billing-dataset <id> --billing-table <id>
   --gcp-services <gke,sql,run,storage>     Selected service configuration reads
   --metric-resources <ids> --monitoring-instance <id> --cockpit-source <id>
+  --cloudflare-checks <tls,dns,waf,routes> --security-groups <ids>
+  --public-origin <https://host>          Explicit browser origin behind a same-host authenticated proxy
+  --proxy-token-env <name>               Environment variable holding the proxy's 64-hex upstream secret
   --account <id>                        Cloud scope (12 digits for AWS/ASFF)
   --cloud-context                       Explicit local metadata lookup
   --confirm-send                        Required for any external delivery
@@ -408,6 +412,22 @@ Local collection does not contact cloud metadata or delivery endpoints by defaul
 
     private static async Task<int> ServeAsync(Options options, CancellationToken token)
     {
+        var publicOrigin = options.Optional("public-origin");
+        var proxyTokenVariable = options.Optional("proxy-token-env");
+        string? proxyToken = null;
+        if (proxyTokenVariable is not null)
+        {
+            if (proxyTokenVariable.Length is < 1 or > 128 || !(char.IsAsciiLetter(proxyTokenVariable[0]) || proxyTokenVariable[0] == '_') ||
+                proxyTokenVariable.Any(character => !(char.IsAsciiLetterOrDigit(character) || character == '_')))
+                throw new CliException("--proxy-token-env must name a literal environment variable; a token value is not accepted in command arguments.");
+            proxyToken = Environment.GetEnvironmentVariable(proxyTokenVariable);
+        }
+        if (publicOrigin is not null || proxyTokenVariable is not null)
+        {
+            if (publicOrigin is null || proxyTokenVariable is null || proxyToken is null)
+                throw new CliException("Reverse-proxy mode requires --public-origin and --proxy-token-env naming an existing upstream-secret variable. No collection was started.");
+            LocalServer.ValidateProxyConfiguration(publicOrigin, proxyToken);
+        }
         var actions = new Dictionary<string, Func<CancellationToken, Task<AnalysisReport>>>(StringComparer.Ordinal);
         var providers = options.List("cloud");
         if (options.Has("infrastructure-provider"))
@@ -477,6 +497,7 @@ Local collection does not contact cloud metadata or delivery endpoints by defaul
         await LocalServer.RunAsync(new ServerOptions
         {
             Port = options.Integer("port", 0, 0, 65535), HistoryPath = options.Optional("history"),
+            PublicOrigin = publicOrigin, ProxyToken = proxyToken,
             RetentionCount = options.Integer("retention", 100, 1, 1000), RetentionDays = options.Integer("retention-days", 30, 1, 3650),
             RefreshInterval = TimeSpan.FromSeconds(options.Integer("interval", 30, 5, 86400)),
             CollectAsync = ct => CollectConfiguredAsync(options, ct), CloudActions = actions,
@@ -613,7 +634,7 @@ Local collection does not contact cloud metadata or delivery endpoints by defaul
     private sealed class Options
     {
         private static readonly HashSet<string> Flags = new(StringComparer.Ordinal) { "json", "redact", "full", "help", "no-processes", "no-network", "no-services", "quiet", "require-complete", "seal", "confirm-send", "cloud-context", "imds", "metadata", "kubernetes-nodes" };
-        private static readonly HashSet<string> Arguments = new(StringComparer.Ordinal) { "format", "policy", "plugins", "pack", "fail-on", "evidence", "ioc", "baseline", "input", "bundle", "out", "top", "interval", "page", "samples", "scenario", "sign-private-key", "encrypt-public-key", "public-key", "private-key", "provider", "cloud", "subscription", "subscriptions", "profile", "profiles", "region", "regions", "account", "accounts", "resource", "role-arn", "port", "history", "retention", "retention-days", "target", "endpoint", "credential-env", "project", "issue-type", "dcr", "stream", "log-group", "log-stream", "window-hours", "resource-group", "projects", "compartment", "compartments", "zone", "zones", "cloud-name", "gcp-projects", "digitalocean-projects", "hetzner-projects", "openstack-projects", "scaleway-projects", "oci-compartments", "cloudflare-accounts", "alibaba-accounts", "ibm-accounts", "context", "contexts", "kubernetes-contexts", "namespace", "namespaces", "billing-project", "billing-dataset", "billing-table", "gcp-services", "metric-resources", "monitoring-instance", "cockpit-source", "infrastructure-provider" };
+        private static readonly HashSet<string> Arguments = new(StringComparer.Ordinal) { "format", "policy", "plugins", "pack", "fail-on", "evidence", "ioc", "baseline", "input", "bundle", "out", "top", "interval", "page", "samples", "scenario", "sign-private-key", "encrypt-public-key", "public-key", "private-key", "provider", "cloud", "subscription", "subscriptions", "profile", "profiles", "region", "regions", "account", "accounts", "resource", "role-arn", "port", "history", "retention", "retention-days", "target", "endpoint", "credential-env", "project", "issue-type", "dcr", "stream", "log-group", "log-stream", "window-hours", "resource-group", "projects", "compartment", "compartments", "zone", "zones", "cloud-name", "gcp-projects", "digitalocean-projects", "hetzner-projects", "openstack-projects", "scaleway-projects", "oci-compartments", "cloudflare-accounts", "alibaba-accounts", "ibm-accounts", "context", "contexts", "kubernetes-contexts", "namespace", "namespaces", "billing-project", "billing-dataset", "billing-table", "gcp-services", "metric-resources", "monitoring-instance", "cockpit-source", "infrastructure-provider", "cloudflare-checks", "security-groups", "public-origin", "proxy-token-env" };
         public Dictionary<string, string> Values { get; } = new(StringComparer.Ordinal);
         public List<string> Positionals { get; } = [];
         public static Options Parse(string[] args)

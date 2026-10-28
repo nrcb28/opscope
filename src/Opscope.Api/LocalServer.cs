@@ -20,6 +20,11 @@ namespace Opscope.Api;
 public sealed record ServerOptions
 {
     public int Port { get; init; }
+    /// <summary>Explicit canonical HTTPS browser origin behind an authenticated same-host reverse proxy.</summary>
+    public string? PublicOrigin { get; init; }
+    /// <summary>Shared upstream secret; supplied by the operator, never returned to the browser.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string? ProxyToken { get; init; }
     public string? HistoryPath { get; init; }
     public int RetentionCount { get; init; } = 100;
     public int RetentionDays { get; init; } = 30;
@@ -32,6 +37,7 @@ public sealed record ServerOptions
     public IReadOnlyDictionary<string, Func<CancellationToken, Task<AnalysisReport>>>? CloudActions { get; init; }
     /// <summary>Optional read-only policy description, without secret values or host paths.</summary>
     public Func<object>? PolicyView { get; init; }
+    public override string ToString() => nameof(ServerOptions);
 }
 
 public static class LocalServer
@@ -43,12 +49,15 @@ public static class LocalServer
         ArgumentNullException.ThrowIfNull(options);
         if (options.Port is < 0 or > 65535 || options.RefreshInterval < TimeSpan.FromSeconds(5) || options.RefreshInterval > TimeSpan.FromDays(1))
             throw new ArgumentOutOfRangeException(nameof(options), "Port must be 0–65535 and refresh interval 5 seconds–1 day.");
+        var publicOrigin = ValidateProxyConfiguration(options.PublicOrigin, options.ProxyToken);
+        var authenticationMode = publicOrigin is null ? "local" : "proxy";
         var historyPath = options.HistoryPath ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Opscope", "history.sqlite");
-        var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+        var token = options.ProxyToken ?? Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
         using var store = new HistoryStore(historyPath, options.RetentionCount, options.RetentionDays);
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var state = new EvidenceState(options, store, token);
         var cloudWorkspace = new CloudWorkspace(options.CloudActions);
+        var cloudConnections = new CloudConnections(options.CloudActions?.Keys);
         await using var metrics = new HostMetricsSampler();
         metrics.Start();
         await state.RefreshAsync(lifetime.Token, force: true);
@@ -66,7 +75,8 @@ public static class LocalServer
             server.Listen(IPAddress.Loopback, options.Port);
         });
         await using var app = builder.Build();
-        string? origin = null;
+        string? origin = publicOrigin;
+        string? expectedHost = publicOrigin is null ? null : new Uri(publicOrigin).Authority;
         var requests = new RequestWindow();
         using var offlineOperations = new SemaphoreSlim(2, 2);
         // EN: Origin and session checks run before every protected handler, including metrics and MCP.
@@ -81,7 +91,7 @@ public static class LocalServer
             context.Response.Headers["Cross-Origin-Opener-Policy"] = "same-origin";
             context.Response.Headers["Cache-Control"] = "no-store";
             if (origin is null || context.Connection.RemoteIpAddress is not { } remote || !IPAddress.IsLoopback(remote) ||
-                !string.Equals(context.Request.Host.Value, origin[7..], StringComparison.Ordinal) ||
+                !string.Equals(context.Request.Host.Value, expectedHost, StringComparison.Ordinal) ||
                 !ValidSource(context.Request, origin))
             { context.Response.StatusCode = 403; return; }
             var shell = context.Request.Method == "GET" && context.Request.Path.Value is "/" or "/app.js" or "/app.css" or "/realtime-charts.js";
@@ -103,6 +113,7 @@ public static class LocalServer
         app.MapGet("/app.js", () => Asset("app.js", "text/javascript; charset=utf-8"));
         app.MapGet("/app.css", () => Asset("app.css", "text/css; charset=utf-8"));
         app.MapGet("/realtime-charts.js", () => Asset("realtime-charts.js", "text/javascript; charset=utf-8"));
+        app.MapGet("/api/session", () => Results.Json(new { authenticationMode, authenticated = true, readOnly = true }));
         app.MapGet("/api/metrics/capabilities", () => Results.Json(metrics.Capabilities));
         app.MapGet("/api/metrics/history", (HttpContext context) =>
         {
@@ -176,10 +187,11 @@ public static class LocalServer
             report = report with { Data = data with { Hosts = data.Hosts.Select((host, index) => host with { Host = $"[redacted-host-{index + 1}]" }).ToArray() } };
             return ReportResult(report, token);
         });
-        app.MapGet("/api/settings", () => Results.Json(new { readOnly = true, redactedByDefault = true, historyRedacted = true, retentionCount = options.RetentionCount, retentionDays = options.RetentionDays, refreshSeconds = options.RefreshInterval.TotalSeconds, maxUploadBytes = HistoryStore.MaximumSnapshotBytes, telemetry = false, notifications = false, listener = "127.0.0.1", mcpTransport = "authenticated HTTP JSON-RPC at /mcp; stdio through opscope mcp" }));
+        app.MapGet("/api/settings", () => Results.Json(new { readOnly = true, redactedByDefault = true, historyRedacted = true, retentionCount = options.RetentionCount, retentionDays = options.RetentionDays, refreshSeconds = options.RefreshInterval.TotalSeconds, maxUploadBytes = HistoryStore.MaximumSnapshotBytes, telemetry = false, notifications = false, listener = "127.0.0.1", authenticationMode, mcpTransport = "authenticated HTTP JSON-RPC at /mcp; stdio through opscope mcp" }));
         app.MapGet("/api/capabilities", () => Results.Json(new { cloud = options.CloudActions?.Keys.Where(cloudWorkspace.IsConfigured).Order(StringComparer.Ordinal).ToArray() ?? [], policy = options.PolicyView is not null }));
         app.MapGet("/api/cloud/catalog", () => Results.Json(cloudWorkspace.Catalog()));
         app.MapGet("/api/cloud/coverage", () => Results.Json(cloudWorkspace.Coverage()));
+        app.MapGet("/api/cloud/connections", () => Results.Json(cloudConnections.View(cloudWorkspace.Coverage()), ReportSecurity.JsonOptions));
         app.MapGet("/api/policy", () => options.PolicyView is null ? Results.NotFound() : Results.Json(options.PolicyView()));
         app.MapPost("/api/policy/preview", async (HttpContext context) =>
         {
@@ -232,14 +244,15 @@ public static class LocalServer
                 {
                     var report = await action(timeout.Token);
                     cloudWorkspace.Record(actionKey, report);
-                    var json = ScrubSessionToken(ReportSecurity.Serialize(report), token);
-                    var statusCode = report.OperationSucceeded ? 200 : 502;
+                    var problem = CloudConnections.Describe(report);
+                    var json = CloudReportJson(report, problem, token);
+                    var statusCode = problem.HttpStatus;
                     cloudWorkspace.Cache(actionKey, json, statusCode);
                     context.Response.Headers["X-Opscope-Cache"] = "miss";
                     return Results.Text(json, "application/json", statusCode: statusCode);
                 }
                 catch (OperationCanceledException) when (timeout.IsCancellationRequested && !context.RequestAborted.IsCancellationRequested)
-                { cloudWorkspace.RecordFailure(actionKey, "timed-out"); return Results.StatusCode(504); }
+                { cloudWorkspace.RecordFailure(actionKey, "timed-out"); return Results.Json(new { error = "The provider read exceeded its deadline.", code = "PROVIDER_TIMED_OUT", remediation = "Check provider connectivity and retry a smaller configured scope." }, statusCode: 504); }
                 catch (Exception error) when (error is IOException or InvalidOperationException or System.ComponentModel.Win32Exception or JsonException)
                 { cloudWorkspace.RecordFailure(actionKey, "failed"); return Results.Json(new { error = "Read-only cloud query failed. Check the local credential setup and scope permissions.", code = "PROVIDER_UNAVAILABLE" }, statusCode: 502); }
             }
@@ -340,8 +353,9 @@ public static class LocalServer
         app.MapGet("/api/openapi.json", () => Results.Json(OpenApiContract.Create()));
         await app.StartAsync(cancellationToken);
         var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
-        origin = address.TrimEnd('/');
-        var bootstrap = new Uri($"{origin}/#token={token}");
+        origin = publicOrigin ?? address.TrimEnd('/');
+        expectedHost = new Uri(origin).Authority;
+        var bootstrap = publicOrigin is null ? new Uri($"{origin}/#token={token}") : new Uri(origin + "/");
         if (options.OnStarted is { } started) started(bootstrap);
         else Console.WriteLine(bootstrap.AbsoluteUri);
         var refresh = RefreshLoopAsync(state, options.RefreshInterval, lifetime.Token);
@@ -352,6 +366,21 @@ public static class LocalServer
             try { await refresh; } catch (OperationCanceledException) { }
             await app.StopAsync(CancellationToken.None);
         }
+    }
+
+    /// <summary>Validates explicit proxy configuration before collection, history or listener startup.</summary>
+    public static string? ValidateProxyConfiguration(string? publicOrigin, string? proxyToken)
+    {
+        if (publicOrigin is null && proxyToken is null) return null;
+        if (publicOrigin is null || proxyToken is null || proxyToken.Length != 64 || proxyToken.Any(character => !char.IsAsciiHexDigit(character)) ||
+            publicOrigin.Length > 2048 || !publicOrigin.StartsWith("https://", StringComparison.OrdinalIgnoreCase) || publicOrigin.Contains('\\') ||
+            publicOrigin.Any(character => char.IsWhiteSpace(character) || char.IsControl(character)) || publicOrigin.IndexOfAny(['?', '#', '%']) >= 0 ||
+            publicOrigin.IndexOf('/', 8) is var separator && separator >= 0 && separator != publicOrigin.Length - 1 ||
+            !Uri.TryCreate(publicOrigin, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps ||
+            uri.UserInfo.Length != 0 || uri.AbsolutePath != "/" || uri.Query.Length != 0 || uri.Fragment.Length != 0 ||
+            uri.Port is < 1 or > 65535 || Uri.CheckHostName(uri.IdnHost) == UriHostNameType.Unknown)
+            throw new ArgumentException("Reverse-proxy mode requires a canonical HTTPS origin without credentials, path, query or fragment and a 64-hex-character upstream secret supplied outside command arguments.");
+        return uri.GetLeftPart(UriPartial.Authority);
     }
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { MaxDepth = 64 };
@@ -404,6 +433,21 @@ public static class LocalServer
         return json.Contains(token, StringComparison.Ordinal) ? Reporter.ParseSnapshot(ScrubSessionToken(json, token)) : snapshot;
     }
     private static IResult ReportResult(AnalysisReport report, string token) => Results.Text(ScrubSessionToken(ReportSecurity.Serialize(report), token), "application/json", statusCode: report.OperationSucceeded ? 200 : 502);
+    private static string CloudReportJson(AnalysisReport report, CloudConnectionFailure problem, string token)
+    {
+        // Keep the existing redacted report contract and attach only fixed diagnostic metadata.
+        using var document = JsonDocument.Parse(ReportSecurity.Serialize(report));
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            foreach (var property in document.RootElement.EnumerateObject()) property.WriteTo(writer);
+            writer.WritePropertyName("cloudProblem");
+            JsonSerializer.Serialize(writer, problem, ReportSecurity.JsonOptions);
+            writer.WriteEndObject();
+        }
+        return ScrubSessionToken(Encoding.UTF8.GetString(buffer.ToArray()), token);
+    }
     private static IResult ExportSnapshot(Snapshot snapshot, string format)
     {
         var (contentType, extension) = format switch

@@ -142,6 +142,90 @@ async function exerciseSavedEvidence(page, context, origin, token) {
   page.off('request', requests);
 }
 
+async function exerciseConnections(page, origin) {
+  await page.locator('[data-view="connections"]').click();
+  await page.locator('.ops-connection-card').first().waitFor();
+  check(await page.locator('.ops-connection-card').count() === 12 && await page.locator('#collect').isHidden() && await page.locator('.full-toggle').isHidden(), 'Connections lists all infrastructure and cluster providers with setup controls separated from live collection');
+  check(await page.locator('#view').innerText().then(text => text.includes('without signing in or contacting a provider') && text.includes('Scope configured · access unverified')), 'Connection setup presence is distinct from a successful provider login or read permission');
+  check(await page.locator('#view input').count() === 0 && await page.locator('#view textarea').count() === 0, 'Connection guidance never asks the browser to store a cloud password, API token or kubeconfig');
+  await page.locator('#connection-provider').selectOption('gcp');
+  check(await page.locator('.ops-connection-card pre').allTextContents().then(commands => commands.includes('gcloud auth login') && commands.includes('gcloud auth application-default login')) && await page.locator('#view').innerText().then(text => text.includes('CLI login alone does not configure ADC')), 'Google Cloud guidance distinguishes CLI sign-in from Application Default Credentials');
+  check(await page.locator('.ops-connection-card a').evaluateAll(links => links.every(link => link.protocol === 'https:' && link.rel.includes('noreferrer') && link.rel.includes('noopener') && link.target === '_blank')), 'Account creation and sign-in guidance uses official HTTPS links without exposing an app referrer');
+  await page.locator('#language').selectOption('es');
+  check(await page.locator('#page-title').innerText() === 'Conexiones' && await page.locator('#view').innerText().then(text => text.includes('Las credenciales permanecen en el host de Opscope')), 'Spanish Connections explains where credentials stay without changing setup state');
+  await page.locator('#language').selectOption('en');
+  await page.locator('#connection-provider').selectOption('all');
+  await page.screenshot({ path: path.join(results, 'connections-desktop.png'), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'Connection status cards and host setup commands fit the mobile viewport');
+  await page.screenshot({ path: path.join(results, 'connections-mobile.png'), fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.evaluate(fs.readFileSync(require.resolve('axe-core/axe.min.js'), 'utf8'));
+  for (const theme of ['light', 'dark']) {
+    if (await page.locator('html').getAttribute('data-theme') !== theme) await page.locator('#theme').click();
+    await page.waitForTimeout(220);
+    const violations = await page.evaluate(async () => (await axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21aa'] } })).violations);
+    fs.writeFileSync(path.join(results, 'connections-accessibility-' + theme + '.json'), JSON.stringify(violations, null, 2));
+    check(violations.length === 0, 'Connections passes automated WCAG A/AA checks in the ' + theme + ' theme');
+  }
+  await page.locator('[data-view="overview"]').click();
+}
+async function exerciseConnectionGuards(browser, bootstrap, origin, token) {
+  const context=await browser.newContext({viewport:{width:1440,height:1000}}),page=await context.newPage();
+  await page.route('**/api/cloud/connections',async route=>{
+    const data=await(await route.fetch()).json(),gcp=data.providers.find(provider=>provider.providerId==='gcp');
+    gcp.guide.signUpUrl='https://attacker.invalid/collect';
+    gcp.guide.consoleUrl='https://console.cloud.google.com.attacker.invalid/';
+    gcp.guide.documentationUrl='https://attacker@cloud.google.com/';
+    gcp.guide.steps.push({id:'bad-command',title:'Unsafe command',description:'Do not run fixture command.',commandTemplate:'gcloud auth login; curl https://attacker.invalid/'});
+    gcp.testActions.push({actionKey:'gcp-scope-1/delete',operation:'delete',scopeAlias:'gcp-scope-1'},{actionKey:'gcp-scope-999/inventory',operation:'inventory',scopeAlias:'gcp-scope-999'});
+    data.providers.push({...gcp,providerId:'malicious-provider',displayName:'UNKNOWN_PROVIDER'});
+    await route.fulfill({json:data});
+  });
+  await page.goto(bootstrap);await page.getByRole('heading',{name:'Host evidence',exact:true}).waitFor();
+  await page.locator('[data-view="connections"]').click();await page.locator('#connection-provider').selectOption('gcp');
+  check(await page.locator('.ops-connection-card a').count()===0&&!await page.locator('#view pre').allTextContents().then(commands=>commands.some(command=>command.includes('curl'))), 'Connection guides reject lookalike hosts, URL userinfo and shell-command additions');
+  check(await page.locator('#view button').allTextContents().then(labels=>!labels.some(label=>label.includes('/delete')||label.includes('scope-999')))&&!await page.locator('#view').innerText().then(text=>text.includes('UNKNOWN_PROVIDER')), 'Connection access tests require a known provider and the existing read-only catalogue action');
+  const action='gcp-scope-1/metrics';
+  for(const [status,state,code] of [[409,'NotConfigured','PROVIDER_NOT_CONFIGURED'],[424,'PermissionDenied','PROVIDER_PERMISSION_DENIED'],[429,'RateLimited','PROVIDER_RATE_LIMITED'],[502,'Failed','PROVIDER_UNAVAILABLE']]){
+    await page.route('**/api/cloud/'+action,route=>route.fulfill({status,json:{kind:'cloud/gcp/metrics',collectedAtUtc:new Date().toISOString(),findings:[],warnings:['SAFE_PROVIDER_EVIDENCE'],operationSucceeded:false,data:{resources:[],coverage:{state}},cloudProblem:{httpStatus:status,code,message:'Provider fixture needs attention.',remediation:'Review host setup and read permissions.',nextStep:'open-connections',providerId:'gcp'}}}));
+    await page.locator('[data-view="connections"]').click();await page.locator('#connection-provider').selectOption('gcp');
+    const response=page.waitForResponse(response=>response.url()===origin+'/api/cloud/'+action&&response.request().method()==='POST');
+    await page.getByRole('button',{name:'Test read access · '+action,exact:true}).click();assert.equal((await response).status(),status);
+    await page.locator('#cloud-error').waitFor();
+    check(await page.locator('#connection').getAttribute('data-state')!=='disconnected'&&await page.locator('#cloud-error').innerText().then(text=>text.includes('Review host setup and read permissions.'))&&await page.locator('.ops-cloud-result-summary pre').innerText().then(text=>JSON.parse(text).warnings.includes('SAFE_PROVIDER_EVIDENCE')), 'Provider '+status+' preserves its evidence and remediation without disconnecting the Opscope session');
+    await page.unroute('**/api/cloud/'+action);
+  }
+  await context.close();
+}
+async function exerciseProxyBootstrap(browser, origin, token) {
+  const context=await browser.newContext({viewport:{width:1440,height:1000}}),page=await context.newPage(),observed=[];
+  await context.addCookies([{name:'opscope-fixture-session',value:'authenticated-fixture',url:origin,httpOnly:true,sameSite:'Strict'}]);
+  await page.addInitScript(()=>{const original=window.fetch;window.__fetchOptions=[];window.fetch=(input,options={})=>{window.__fetchOptions.push({path:String(input),credentials:options.credentials,hasToken:new Headers(options.headers).has('X-Opscope-Token')});return original(input,options);};});
+  const snapshot=await(await context.request.get(origin+'/api/snapshot',{headers:{'X-Opscope-Token':token}})).json();
+  await page.route('**/api/**',async route=>{
+    const request=route.request(),pathname=new URL(request.url()).pathname,headers=request.headers();observed.push({pathname,token:headers['x-opscope-token'],cookie:headers.cookie});
+    if(pathname==='/api/session')return route.fulfill({json:{authenticationMode:'proxy',authenticated:true,readOnly:true}});
+    if(pathname==='/api/events')return route.fulfill({status:200,contentType:'text/event-stream',body:'event: snapshot\ndata: '+JSON.stringify(snapshot)+'\n\n'});
+    const upstreamHeaders={...headers,'X-Opscope-Token':token};delete upstreamHeaders.cookie;delete upstreamHeaders.authorization;
+    const response=await route.fetch({headers:upstreamHeaders});return route.fulfill({response});
+  });
+  await page.goto(origin+'/');await page.getByRole('heading',{name:'Host evidence',exact:true}).waitFor();
+  await page.waitForFunction(()=>window.__fetchOptions.some(request=>request.path==='/api/events'));
+  check(await page.locator('#privacy').innerText().then(text=>text.includes('Authenticated proxy'))&&await page.locator('.brand-note').innerText()==='HOSTED'&&await page.locator('footer').innerText().then(text=>text.includes('Opscope host')), 'Explicit authenticated proxy bootstrap opens the hosted workspace without a token URL');
+  check(observed.every(request=>!request.token&&request.cookie?.includes('opscope-fixture-session'))&&await page.evaluate(()=>window.__fetchOptions.every(request=>request.credentials==='same-origin'&&!request.hasToken)), 'Proxy bootstrap, API and SSE requests use same-origin authentication without a browser upstream token');
+  check(page.url()===origin+'/'&&!await page.evaluate(()=>JSON.stringify([localStorage,sessionStorage,document.body.innerText])).then(text=>text.includes(token))&&await page.evaluate(()=>!document.cookie.includes('opscope-fixture-session')), 'Hosted session credentials and upstream secret remain outside browser URLs, storage, visible content and JavaScript cookies');
+  await context.close();
+  for(const session of [null,{authenticationMode:'local',authenticated:true,readOnly:true},{authenticationMode:'proxy',authenticated:false,readOnly:true}]){
+    const deniedContext=await browser.newContext(),deniedPage=await deniedContext.newPage();let evidenceRequests=0;
+    deniedPage.on('request',request=>{if(new URL(request.url()).pathname==='/api/snapshot')evidenceRequests++;});
+    if(session)await deniedPage.route('**/api/session',route=>route.fulfill({json:session}));
+    await deniedPage.goto(origin+'/');await deniedPage.locator('#notice').filter({hasText:'bootstrap URL'}).waitFor();
+    check(evidenceRequests===0&&await deniedPage.locator('#collect').isDisabled(), 'Tokenless bootstrap rejects '+(session?.authenticationMode==='proxy'?'an unauthenticated proxy':session?'a local-mode session claim':'an unauthorized local session'));
+    await deniedContext.close();
+  }
+}
+
 async function main() {
   const bootstrap = await startServer(), origin = new URL(bootstrap).origin, token = new URLSearchParams(new URL(bootstrap).hash.slice(1)).get('token');
   browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PATH || (fs.existsSync('/usr/bin/chromium') ? '/usr/bin/chromium' : undefined), headless: true, args: ['--no-sandbox'] });
@@ -152,6 +236,7 @@ async function main() {
   await page.goto(bootstrap);
   await page.getByRole('heading', { name: 'Host evidence', exact: true }).waitFor();
   check(page.url() === origin + '/', 'Bootstrap fragment is consumed before any evidence requests');
+  await exerciseConnections(page, origin);
   check(!await page.locator('body').innerText().then(text => text.includes('api-private-host')), 'Default evidence view redacts host identifiers');
   check(await page.locator('.safety').innerText().then(text => text.includes('READ ONLY')), 'Read-only banner remains visible');
   await page.keyboard.press('Control+k');
@@ -295,7 +380,7 @@ async function main() {
   await page.locator('[data-view="cloud"]').click();
   check(await page.locator('#cloud-provider option').count() === 13, 'Cloud selector exposes eleven infrastructure providers, one cluster adapter and its all-provider choice');
   await page.locator('#cloud-provider').selectOption('scaleway');
-  check(await page.locator('#view').innerText().then(text => /not configured|not-configured|no configured/i.test(text)) && await page.locator('#view button').filter({ hasText: /scaleway.*inventory/ }).count() === 0, 'Unconfigured Scaleway remains discoverable without advertising an executable empty inventory');
+  check(await page.locator('#view').innerText().then(text => /not configured|not-configured|no configured/i.test(text)) && await page.locator('#view button').filter({ hasText: /scaleway.*inventory/ }).count() === 0, 'Unconfigured Scaleway inventory remains discoverable without advertising an executable empty inventory');
   await page.locator('#cloud-provider').selectOption('all');
   check(await page.getByRole('button', { name: /azure-scope-1\/inventory$/ }).count() === 1 && await page.getByRole('button', { name: /aws-scope-20\/health$/ }).count() === 1, 'Configured anonymous Azure and AWS scope aliases render as query actions');
   async function invokeFixtureCloud(action, expectedCount) {
@@ -450,6 +535,70 @@ async function main() {
   await invokeAdvancedFixture('kubernetes-scope-1/inventory', 'cloud/kubernetes/inventory', 502);
   check(await page.locator('.ops-cluster-evidence').innerText().then(text => text.includes('No infrastructure identity link has been verified') && !text.includes('Node references match')) && await page.locator('.ops-cluster-evidence table').count() === 0, 'Unavailable cluster evidence does not show stale verified node references');
   await page.unroute(correlationPath);
+  const configurationField = (checkName, label) => page.locator(`.ops-configuration-check[data-check="${checkName}"] dt`).filter({ hasText: new RegExp('^'+label+'$') }).locator('..').locator('dd');
+  await page.locator('#cloud-provider').selectOption('cloudflare');
+  await invokeAdvancedFixture('cloudflare-scope-1/posture', 'cloud/cloudflare/posture');
+  check(await page.locator('.ops-configuration-evidence').innerText().then(text => text.includes('flexible') && text.includes('1.0') && text.includes('Disabled') && text.includes('do not establish effective reachability')) && await page.locator('details>summary').filter({ hasText: 'Allowed configuration fields' }).count() === 1, 'Cloudflare exposes observed TLS settings and states the limit of configuration evidence');
+  let configurationMode = 'partial';
+  const configurationPath = '**/api/cloud/cloudflare-scope-1/posture';
+  await page.route(configurationPath, route => {
+    const time = configurationMode === 'future' ? new Date(Date.now()+86400000).toISOString() : new Date().toISOString();
+    const checks = [
+      { check: 'tls', state: 'complete', observedAtUtc: time, zoneId: 'PRIVATE_ZONE_ID', observations: { sslMode: configurationMode === 'invalid' ? 'PRIVATE_SSL_MODE' : 'strict', minimumTlsVersion: configurationMode === 'invalid' ? 'PRIVATE_TLS_VERSION' : '1.2', alwaysUseHttps: configurationMode === 'invalid' ? 'off' : null, content: 'PRIVATE_DNS_CONTENT', expression: 'PRIVATE_WAF_EXPRESSION' } },
+      { check: 'dns', state: 'complete', observedAtUtc: time, observations: { observedRecords: configurationMode === 'empty' ? 0 : 2, observedProxiedRecords: 0, observedUnproxiedRecords: configurationMode === 'empty' ? 0 : 2, unknownProxyRecords: 0, recordTypes: configurationMode === 'empty' ? [] : [{ type: 'A', count: 2, content: 'PRIVATE_RECORD_ADDRESS' }, { type: 'PRIVATE_DNS_TYPE', count: 5 }] } },
+      { check: 'waf', state: 'permission_denied', observedAtUtc: time, observations: { observedRules: 777, observedEnabledRules: 777, expression: 'PRIVATE_RULE_EXPRESSION' } },
+      { check: 'routes', state: 'not_requested', observedAtUtc: time, observations: { observedRoutes: 888, pattern: 'PRIVATE_WORKER_PATTERN' } },
+      { check: 'PRIVATE_UNKNOWN_CHECK', state: 'complete', observedAtUtc: time, observations: { observedResources: 999 } }
+    ];
+    return route.fulfill({ status: configurationMode === 'denied' ? 502 : 200, contentType: 'application/json', body: JSON.stringify({ kind: 'cloud/cloudflare/posture', collectedAtUtc: new Date().toISOString(), findings: [], warnings: [], operationSucceeded: !['denied','contradictory'].includes(configurationMode), data: { provider: 'cloudflare', resources: [], coverage: { state: configurationMode === 'denied' ? 'PermissionDenied' : configurationMode === 'contradictory' ? 'Complete' : 'Partial', enumeratedResources: 0 }, configurationEvidence: configurationMode === 'malformed' ? 'PRIVATE_MALFORMED_CONFIGURATION' : { source: 'PRIVATE_UNSUPPORTED_SOURCE', checks, arbitrary: 'PRIVATE_CONFIGURATION_FIELD' } } }) });
+  });
+  await invokeAdvancedFixture('cloudflare-scope-1/posture', 'cloud/cloudflare/posture');
+  check(await page.locator('.ops-cloud-result-summary').innerText().then(text => !text.includes('PRIVATE_') && !text.includes('777') && !text.includes('888') && !text.includes('999')) && await page.locator('.ops-configuration-check').count() === 4, 'Configuration fields, unknown checks, identities, DNS content, WAF expressions and route patterns stay out of structured and projected JSON views');
+  check(await configurationField('tls','Always use HTTPS').innerText() === 'Unknown' && await page.locator('.ops-configuration-check[data-check="waf"]').innerText().then(text => text.includes('Permission denied') && text.includes('values are unknown')) && await page.locator('.ops-configuration-check[data-check="routes"]').innerText().then(text => text.includes('Not requested') && text.includes('values are unknown')), 'Missing TLS booleans and unavailable WAF or unrequested routes never become disabled or zero observations');
+  check(await page.locator('.ops-configuration-check[data-check="dns"] tbody tr').count() === 1 && await configurationField('dns','Observed proxied records').innerText() === '0' && await configurationField('dns','Observed DNS records').innerText() === '2', 'DNS presentation retains only approved record-type counts and genuine observed zero proxy counts');
+  configurationMode = 'empty';
+  await invokeAdvancedFixture('cloudflare-scope-1/posture', 'cloud/cloudflare/posture');
+  check(await configurationField('dns','Observed DNS records').innerText() === '0' && await page.locator('.ops-configuration-check[data-check="dns"] table').count() === 0 && !await page.locator('.ops-cloud-result-summary').innerText().then(text => text.includes('No resources observed in this successful query')), 'An observed empty DNS read remains a count of records without a secure-zone or complete-inventory claim');
+  configurationMode = 'invalid';
+  await invokeAdvancedFixture('cloudflare-scope-1/posture', 'cloud/cloudflare/posture');
+  check(await configurationField('tls','Observed SSL mode').innerText() === 'Unknown' && await configurationField('tls','Minimum TLS version').innerText() === 'Unknown' && await configurationField('tls','Always use HTTPS').innerText() === 'Unknown' && !await page.locator('.ops-cloud-result-summary').innerText().then(text => text.includes('PRIVATE_')), 'Unrecognized TLS modes, versions and non-boolean flags remain unknown and are omitted from projected JSON');
+  configurationMode = 'future';
+  await invokeAdvancedFixture('cloudflare-scope-1/posture', 'cloud/cloudflare/posture');
+  check(await page.locator('.ops-configuration-evidence .ops-cloud-status[data-state="complete"]').count() === 0 && await page.locator('.ops-configuration-check[data-check="tls"]').innerText().then(text => text.includes('values are unknown')), 'A future or invalid configuration timestamp cannot make stale values look like a complete observation');
+  configurationMode = 'denied';
+  await invokeAdvancedFixture('cloudflare-scope-1/posture', 'cloud/cloudflare/posture', 502);
+  check(await page.locator('.ops-configuration-evidence .ops-cloud-status[data-state="complete"]').count() === 0 && await page.locator('.ops-configuration-evidence').innerText().then(text => text.includes('Permission denied') && !text.includes('strict') && !text.includes('1.2')), 'An overall denied configuration read suppresses stale per-check values and success badges');
+  configurationMode = 'contradictory';
+  await invokeAdvancedFixture('cloudflare-scope-1/posture', 'cloud/cloudflare/posture');
+  check(await page.locator('.ops-cloud-result-summary .ops-cloud-status[data-state="complete"]').count() === 0 && await page.locator('.ops-configuration-evidence').innerText().then(text => text.includes('values are unknown') && !text.includes('strict') && !text.includes('1.2')), 'A failed operation cannot claim complete configuration observations through contradictory coverage metadata');
+  configurationMode = 'malformed';
+  await invokeAdvancedFixture('cloudflare-scope-1/posture', 'cloud/cloudflare/posture');
+  check(await page.locator('.ops-configuration-evidence').innerText().then(text => text.includes('No supported configuration observations')) && !await page.locator('.ops-cloud-result-summary').innerText().then(text => text.includes('PRIVATE_')), 'Malformed scalar configuration evidence cannot bypass projection into the JSON view');
+  await page.unroute(configurationPath);
+  await page.locator('#cloud-provider').selectOption('alibaba');
+  await invokeAdvancedFixture('alibaba-scope-1/posture', 'cloud/alibaba/posture');
+  check(await configurationField('security-groups','Observed security groups').innerText() === '2' && await configurationField('security-groups','Observed administrative ingress allow rules').innerText() === '1' && await page.locator('.ops-configuration-evidence').innerText().then(text => text.includes('do not establish effective reachability')), 'Alibaba displays observed administrative-ingress configuration counts without asserting effective network access');
+  const alibabaPath = '**/api/cloud/alibaba-scope-1/posture';
+  await page.route(alibabaPath, route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ kind: 'cloud/alibaba/posture', collectedAtUtc: new Date().toISOString(), findings: [], warnings: [], data: { provider: 'alibaba', coverage: { state: 'Partial' }, configurationEvidence: { source: 'aliyun-fixed-projections', checks: [{ check: 'disks', state: 'partial', observedAtUtc: new Date().toISOString(), observations: { disksRead: 1, unencryptedDisks: 0, unknownEncryption: 1 } }, { check: 'security-groups', state: 'partial', observedAtUtc: new Date().toISOString(), observations: { groupsRead: 0, rulesRead: null, worldIngressAllowRules: -1, administrativeIngressAllowRules: '0', possiblyShadowedAdminAllowRules: 0, unknownRules: 3, sourceCidr: 'PRIVATE_CIDR', description: 'PRIVATE_RULE_DESCRIPTION' } }] } } }) }));
+  await invokeAdvancedFixture('alibaba-scope-1/posture', 'cloud/alibaba/posture');
+  check(await configurationField('disks','Observed unencrypted disks').innerText() === '0' && await configurationField('disks','Disks with unknown encryption').innerText() === '1' && await configurationField('security-groups','Observed rules').innerText() === 'Unknown' && await configurationField('security-groups','Observed global ingress allow rules').innerText() === 'Unknown' && await configurationField('security-groups','Observed administrative ingress allow rules').innerText() === 'Unknown' && !await page.locator('.ops-cloud-result-summary').innerText().then(text => text.includes('PRIVATE_')), 'Alibaba preserves known zeros and unknown encryption while rejecting missing, negative or string rule counts and private rule fields');
+  await page.unroute(alibabaPath);
+  await page.locator('#cloud-provider').selectOption('scaleway');
+  check(await page.locator('.ops-cloud-card [data-operation="networks"]').count() === 1 && await page.getByRole('button').filter({ hasText: 'scaleway-scope-1/networks' }).count() === 1, 'Regional network actions require a registered configured descriptor');
+  await invokeAdvancedFixture('scaleway-scope-1/networks', 'cloud/scaleway/networks');
+  check(await configurationField('vpcs','Observed regional resources').innerText() === '2' && await configurationField('vpcs','Provider-declared resources').innerText() === '2', 'Scaleway regional network observations preserve observed and provider-declared counts separately');
+  await page.locator('#language').selectOption('es');
+  check(await page.locator('.ops-configuration-evidence').innerText().then(text => text.includes('Configuración observada') && text.includes('Recursos regionales observados') && text.includes('No demuestran accesibilidad efectiva')), 'Spanish configuration evidence explains the same scope and interpretation limits');
+  await page.locator('#language').selectOption('en');
+  await page.setViewportSize({ width: 390, height: 844 });
+  check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'Regional configuration evidence fits the mobile viewport');
+  await page.screenshot({ path: path.join(results, 'configuration-mobile.png'), fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const scalewayPath = '**/api/cloud/scaleway-scope-1/networks';
+  await page.route(scalewayPath, route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ kind: 'cloud/scaleway/networks', collectedAtUtc: new Date().toISOString(), findings: [], warnings: [], data: { provider: 'scaleway', coverage: { state: 'Partial' }, configurationEvidence: { source: 'scaleway-vpc-v2', checks: [{ check: 'vpcs', state: 'permission_denied', observedAtUtc: new Date().toISOString(), observations: { observedResources: 55, expectedResources: 77 } }, { check: 'private-networks', state: 'complete', observedAtUtc: new Date().toISOString(), observations: { observedResources: 0, expectedResources: 0 } }] } } }) }));
+  await invokeAdvancedFixture('scaleway-scope-1/networks', 'cloud/scaleway/networks');
+  check(await page.locator('.ops-configuration-check[data-check="vpcs"]').innerText().then(text => text.includes('values are unknown') && !text.includes('55') && !text.includes('77')) && await configurationField('private-networks','Observed regional resources').innerText() === '0', 'An unavailable VPC read cannot reuse stale totals while a separate successful empty network read retains its actual zero');
+  await page.unroute(scalewayPath);
   await page.locator('#cloud-provider').selectOption('azure');
   let deniedCoverage = false;
   await page.route('**/api/cloud/azure-scope-1/inventory', route => route.fulfill({ status: deniedCoverage ? 502 : 200, contentType: 'application/json', body: JSON.stringify({ kind: 'cloud/azure/inventory', collectedAtUtc: new Date().toISOString(), findings: [], data: { resources: [{ provider: 'azure', type: 'compute.vm', properties: { status: 'running' } }], coverage: { state: deniedCoverage ? 'PermissionDenied' : 'Partial', enumeratedResources: 1 } }, warnings: ['Synthetic limited coverage.'], operationSucceeded: !deniedCoverage }) }));
@@ -515,7 +664,7 @@ async function main() {
   const storage = await page.evaluate(() => ({ local: JSON.stringify(localStorage), session: JSON.stringify(sessionStorage) }));
   check(!storage.local.includes(token) && !storage.session.includes(token) && !storage.local.includes('api-private-host'), 'Browser storage contains no token or snapshot evidence');
   await page.locator('[data-view="overview"]').click();
-  check(await page.locator('#navigation .nav-group').count() === 6 && await page.locator('#navigation [data-view]').count() === 12, 'Task groups preserve access to all twelve evidence sections');
+  check(await page.locator('#navigation .nav-group').count() === 6 && await page.locator('#navigation [data-view]').count() === 13, 'Task groups preserve access to all thirteen evidence and connection sections');
   check(await page.evaluate(() => parseFloat(getComputedStyle(document.documentElement).fontSize) >= 16), 'The interface uses a readable sixteen-pixel base font');
   await page.locator('section.ops-chart').waitFor();
   check(await page.locator('section.ops-chart svg[role="img"]').count() === 1 && await page.locator('section.ops-chart details').count() === 1, 'Realtime host chart exposes a labelled visual and an alternative sample table');
@@ -575,6 +724,8 @@ async function main() {
   await guardedPage.locator('#cloud-provider').selectOption('gcp');
   check(await guardedPage.getByRole('button').filter({ hasText: 'gcp-scope-1/scc' }).count() === 0 && await guardedPage.getByRole('button').filter({ hasText: 'gcp-scope-1/delete' }).count() === 0 && await guardedPage.getByRole('button').filter({ hasText: 'gcp-scope-1/cost' }).count() === 1, 'Cloud actions require a known operation, matching capability and an explicit read-only descriptor');
   await guardedContext.close();
+  await exerciseConnectionGuards(browser, bootstrap, origin, token);
+  await exerciseProxyBootstrap(browser, origin, token);
   console.log(`PASS: ${assertions} browser and accessibility assertions.`);
 }
 main().catch(async error => { if (activePage) { try { fs.mkdirSync(results, { recursive: true }); await activePage.screenshot({ path: path.join(results, 'last-failure.png'), fullPage: true }); } catch {} } console.error(String(error).replace(/#token=\S+/g, '#token=[redacted]')); process.exitCode = 1; }).finally(async () => {

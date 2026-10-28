@@ -5,11 +5,12 @@ internal static class OpenApiContract
     internal static object Create() => new
     {
         openapi = "3.0.3",
-        info = new { title = "Opscope local read-only API", version = "1.0.0", description = "Loopback-only local evidence. Every listed operation requires the session header and exact Host/origin validation. All responses are redacted except an explicit full=true snapshot view." },
+        info = new { title = "Opscope read-only API", version = "1.0.0", description = "Loopback-only evidence. Every listed operation requires the session header and exact Host/origin validation. In explicit proxy mode the authenticated same-host HTTPS proxy injects the upstream header; it never reaches the browser. All responses are redacted except an explicit full=true snapshot view." },
         security = new[] { new Dictionary<string, string[]> { ["sessionToken"] = [] } },
         components = new { securitySchemes = new { sessionToken = new { type = "apiKey", @in = "header", name = "X-Opscope-Token" } } },
         paths = new Dictionary<string, object>
         {
+            ["/api/session"] = new { get = Operation("Authenticated local or explicit proxy session mode; no token or identity returned", "application/json") },
             ["/api/snapshot"] = new { get = Operation("Latest snapshot", "application/json", parameters: [Parameter("full", "query", false, "boolean", "Explicit session-only full identifiers; defaults to false.")]) },
             ["/api/findings"] = new { get = Operation("Redacted latest findings", "application/json") },
             ["/api/history"] = new { get = Operation("Retained redacted snapshot metadata, newest first", "application/json") },
@@ -22,6 +23,7 @@ internal static class OpenApiContract
             ["/api/capabilities"] = new { get = Operation("Configured cloud operation keys and policy-view availability", "application/json") },
             ["/api/cloud/catalog"] = new { get = Operation("Version 2 closed provider catalog with implemented read capabilities and anonymous configured action aliases; no remote credential discovery", "application/json") },
             ["/api/cloud/coverage"] = new { get = Operation("Per-action last execution state and observation timestamp; not-requested is distinct from succeeded or partial", "application/json") },
+            ["/api/cloud/connections"] = new { get = Operation("Guided provider setup, fixed official links and templates, credential presence and trusted-tool readiness, and previous-read state; no remote calls, login actions, credential values or paths", "application/json") },
             ["/api/metrics/capabilities"] = new { get = Operation("Lightweight aggregate host metrics support, sampling interval, and memory-only retention bounds", "application/json") },
             ["/api/metrics/history"] = new { get = Operation("At most 720 aggregate samples from the in-memory host ring; unknown or repeated query fields rejected", "application/json", parameters: [Parameter("window", "query", false, "string", "5m, 15m, 30m, or 1h (default); only available observations are returned."), Parameter("limit", "query", false, "integer", "1–720; default 720."), Parameter("afterSequence", "query", false, "integer", "Nonnegative monotonic sequence cursor.")]) },
             ["/api/policy"] = new { get = Operation("Configured read-only policy view; 404 when unavailable", "application/json") },
@@ -96,9 +98,10 @@ internal static class OpenApiContract
             ["404"] = new { description = "Unknown record or unconfigured capability" },
             ["408"] = new { description = "Request upload deadline exceeded" },
             ["429"] = new { description = "Request, stream, or collection limit reached" },
+            ["424"] = new { description = "Cloud provider denied the read; the local Opscope session remains valid and the redacted report includes cloudProblem remediation" },
             ["502"] = new { description = "Cloud operation failed; the redacted AnalysisReport retains failure and coverage details" },
             ["504"] = new { description = "Cloud operation exceeded its deadline" },
-            ["409"] = new { description = "Known cloud operation has no configured scope in this session" },
+            ["409"] = new { description = "Known cloud operation lacks a configured scope or required provider setup" },
             ["501"] = new { description = "Known provider does not support the requested operation" },
             ["503"] = new { description = "Evidence is unavailable" }
         } };

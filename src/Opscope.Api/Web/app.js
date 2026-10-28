@@ -101,6 +101,8 @@ let analysisSnapshot = null, analysisSafe = null, analysisBaseline = null, analy
 let analysisOperation = 'inspect', analysisScenario = 'high-cpu', analysisIndicatorFormat = 'csv', analysisIndicatorText = '';
 let analysisReport = null, analysisError = null, analysisBusy = false, analysisVersion = 0, analysisController = null;
 let cloudAction = null, cloudBusy = false, cloudError = null, cloudVersion = 0;
+let cloudReadMetadata = null, cloudGateUntil = 0;
+const cloudScopeCooldowns = new Map();
 let analysisExportFormat = 'json', policyBusy = false, collectionBusy = false, cooldownUntil = 0, snapshotVersion = 0;
 const tablePages = new Map(), tableSizes = new Map(), tableSorts = new Map();
 Object.assign(words.en, {
@@ -118,6 +120,8 @@ connections:'Conexiones', connectionsDescription:'Conecta tus cuentas cloud desd
 });
 const knownOperations = new Set(['inventory','health','posture','metrics','cost','patches','drift','scc','services','networks']);
 const knownViews = new Set(['overview','findings','processes','services','analysis','drift','fleet','history','cloud','connections','policy','reports','settings']);
+Object.assign(words.en, {cloudCached:'Retained result · no new provider read', cloudFresh:'New action result', cloudCacheNote:'The result keeps its original observation time. A repeated request may reuse the session cache.', cloudCacheStored:'Stored in this session', cloudCacheExpires:'Cache expiry', cloudCacheAge:'Cache age', cloudCacheRemaining:'Cache reuse remaining', cloudRetry:'This configured scope is cooling down.', cloudRetryNote:'Retry manually after the countdown. Host collection and other cloud scopes remain available.'});
+Object.assign(words.es, {cloudCached:'Resultado conservado · sin nueva lectura del proveedor', cloudFresh:'Nuevo resultado de la acción', cloudCacheNote:'El resultado conserva su hora de observación original. Una solicitud repetida puede reutilizar la caché de sesión.', cloudCacheStored:'Guardado en esta sesión', cloudCacheExpires:'Caducidad de la caché', cloudCacheAge:'Edad de la caché', cloudCacheRemaining:'Reutilización restante de caché', cloudRetry:'Este ámbito configurado está en espera.', cloudRetryNote:'Reintenta manualmente al terminar la cuenta atrás. La recopilación del host y otros ámbitos cloud siguen disponibles.'});
 let cloudConnections = null, connectionsError = null, connectionsBusy = false, connectionProvider = 'all';
 let cloudCatalog = null, cloudProvider = 'all', cloudScope = 'all', findingCode = 'all', findingSource = 'all', serviceFilter = 'all', historyRange = 'all';
 let pendingEvidence = false, connectionState = 'connecting', streamController = null, lastTransportAt = 0, streamFailures = 0, chartHandle = null, chartNode = null, chartContext = null, lastMetricSequence = 0;
@@ -164,29 +168,35 @@ async function api(path, options = {}) {
         if(options.signal?.aborted)throw error;
         throw new Error(t(timedOut?'requestTimeout':'errorUnavailable'));
     } finally {clearTimeout(timeout);options.signal?.removeEventListener('abort',forwardAbort);}
-    if (response.ok) return response;
+    const cloudRequest = cloudActionForRequest(path, options.method);
+    const cloudMetadata = cloudRequest ? readCloudMetadata(response) : null;
+    const scopedRetry = cloudRequest ? recordCloudRetry(response, cloudRequest) : false;
+    if (response.ok) { response.cloudReadMetadata = cloudMetadata; return response; }
     let message = response.status === 429 ? t('busy') : response.status === 401 || response.status === 403 ? t('errorAuth') : response.status === 400 || response.status === 413 ? t('errorInvalid') : response.status === 504 ? t('requestTimeout') : response.status >= 500 ? t('errorUnavailable') : t('error'), failureReport = null;
     if (response.status === 401 || response.status === 403) setConnection('disconnected');
-    if (response.status === 429) {
-        const retry = response.headers.get('Retry-After');
-        const delay = /^\d+$/.test(retry || '') ? Number(retry) : Math.ceil((Date.parse(retry) - Date.now()) / 1000);
-        const seconds = Number.isFinite(delay) && delay > 0 ? Math.min(delay, 3600) : 2;
-        cooldownUntil = Math.max(cooldownUntil, Date.now() + seconds * 1000);
-        message = `${t('busy')} ${t('retryIn')} ${seconds} ${t('seconds')}.`;
-        updateCollectionControl();
-    }
+    let problemCode = null;
     if (['/api/policy/preview', '/api/fleet', '/api/analyze', '/api/report'].includes(path) || path.startsWith('/api/cloud/')) {
         try {
             const problem = await response.json();
+            problemCode = problem.cloudProblem?.code || problem.code;
             if (typeof problem.kind === 'string' && Array.isArray(problem.findings) && Array.isArray(problem.warnings)) failureReport = problem;
             message = [problem.error, problem.detail].filter(value => typeof value === 'string').join(' ') || message;
             if(path.startsWith('/api/cloud/') && problem.cloudProblem && typeof problem.cloudProblem === 'object')
                 message = [problem.cloudProblem.message, problem.cloudProblem.remediation].filter(value => typeof value === 'string' && value.length <= 1000).join(' ') || message;
         } catch {}
     }
+    if (response.status === 429) {
+        const seconds = retryDelaySeconds(response);
+        const providerRetry = cloudRequest && problemCode === 'PROVIDER_RATE_LIMITED';
+        if (providerRetry && !scopedRetry) setCloudRetry(cloudRequest.scopeAlias, seconds);
+        if (!scopedRetry && !providerRetry) cooldownUntil = Math.max(cooldownUntil, Date.now() + seconds * 1000);
+        message += ` ${t('retryIn')} ${seconds} ${t('seconds')}.`;
+        updateCollectionControl();
+    }
     const error = new Error(message);
     error.status = response.status;
     error.report = failureReport;
+    error.cloudReadMetadata = cloudMetadata;
     throw error;
 }
 function updateCollectionControl() {
@@ -194,6 +204,7 @@ function updateCollectionControl() {
     control.disabled = !hasSession() || collectionBusy || remaining > 0;
     control.querySelector('[data-i18n]').textContent = collectionBusy ? t('collecting') : remaining ? `${t('retryIn')} ${remaining}s` : t('collect');
     control.title = remaining ? `${t('retryIn')} ${remaining} ${t('seconds')}` : '';
+    updateCloudControls();
 }
 setInterval(updateCollectionControl, 1000);
 
@@ -582,11 +593,71 @@ function providerDescriptors() {
         return {id,displayName:typeof descriptor?.displayName==='string'?descriptor.displayName:names[id],category:id==='kubernetes'?'cluster':descriptor?.category || '',operations};
     });
 }
+function cloudActionForRequest(path, method) {
+    if (String(method || 'GET').toUpperCase() !== 'POST') return null;
+    return validatedCloudActions().find(action => path === `/api/cloud/${action.scopeAlias}/${action.operation}`) || null;
+}
+function retryDelaySeconds(response) {
+    const retry = response.headers.get('Retry-After');
+    const delay = /^\d{1,10}$/.test(retry || '') ? Number(retry) : Math.ceil((Date.parse(retry) - Date.now()) / 1000);
+    return Number.isFinite(delay) && delay > 0 ? Math.min(delay, 3600) : 2;
+}
+function setCloudRetry(scopeAlias, seconds) {
+    if (!validatedCloudActions().some(action => action.scopeAlias === scopeAlias) || !Number.isFinite(seconds) || seconds <= 0) return;
+    cloudScopeCooldowns.set(scopeAlias, Math.max(cloudScopeCooldowns.get(scopeAlias) || 0, performance.now() + Math.min(seconds, 3600) * 1000));
+}
+function recordCloudRetry(response, action) {
+    const scope = response.headers.get('X-Opscope-Retry-Scope'), reason = response.headers.get('X-Opscope-Retry-Reason');
+    if (scope !== action.scopeAlias || !['provider-quota', 'scope-cooldown', 'workspace-busy'].includes(reason) || !response.headers.has('Retry-After')) return false;
+    const seconds = retryDelaySeconds(response);
+    if (reason === 'workspace-busy') cloudGateUntil = Math.max(cloudGateUntil, performance.now() + seconds * 1000);
+    else setCloudRetry(scope, seconds);
+    return true;
+}
+function cloudWaitSeconds(action) {
+    return Math.max(0, Math.ceil(Math.max((cloudScopeCooldowns.get(action.scopeAlias) || 0) - performance.now(), cloudGateUntil - performance.now(), cooldownUntil - Date.now()) / 1000));
+}
+function configureCloudButton(control, action, mode = 'query') {
+    control.dataset.cloudAction = action.actionKey;
+    control.dataset.cloudMode = mode;
+    return control;
+}
+function updateCloudControls() {
+    for (const control of document.querySelectorAll('button[data-cloud-action]')) {
+        const action = validatedCloudActions().find(item => item.actionKey === control.dataset.cloudAction);
+        if (!action) { control.disabled = true; continue; }
+        const remaining = cloudWaitSeconds(action), base = `${t(control.dataset.cloudMode === 'test' ? 'connectionTest' : 'run')} · ${action.actionKey}`;
+        control.disabled = cloudBusy || remaining > 0;
+        control.textContent = base + (remaining ? ` · ${t('retryIn')} ${remaining}s` : '');
+        control.title = remaining ? `${t('cloudRetry')} ${t('cloudRetryNote')}` : '';
+    }
+    if (cloudReadMetadata) {
+        const elapsed = Math.max(0, Math.floor((performance.now() - cloudReadMetadata.receivedAt) / 1000));
+        const age = document.querySelector('[data-cloud-cache-age]'), remaining = document.querySelector('[data-cloud-cache-remaining]');
+        if (age) age.textContent = cloudReadMetadata.ageSeconds === null ? t('unknown') : `${cloudReadMetadata.ageSeconds + elapsed} s`;
+        if (remaining) remaining.textContent = cloudReadMetadata.remainingSeconds === null ? t('unknown') : `${Math.max(0, cloudReadMetadata.remainingSeconds - elapsed)} s`;
+    }
+}
+function readCloudMetadata(response) {
+    const cache = response.headers.get('X-Opscope-Cache');
+    if (!['hit', 'miss'].includes(cache)) return null;
+    const integer = name => { const value = response.headers.get(name); return /^\d{1,8}$/.test(value || '') && Number(value) <= 3600 ? Number(value) : null; };
+    const instant = name => { const value = response.headers.get(name); return typeof value === 'string' && value.length <= 64 && Number.isFinite(Date.parse(value)) ? value : null; };
+    return { cache, ageSeconds: integer('X-Opscope-Cache-Age-Seconds'), remainingSeconds: integer('X-Opscope-Cache-Remaining-Seconds'), cachedAtUtc: instant('X-Opscope-Cache-Cached-At'), expiresAtUtc: instant('X-Opscope-Cache-Expires-At'), receivedAt: performance.now() };
+}
+function syncCloudCoverage(coverage) {
+    if (coverage?.schemaVersion !== 1 || !Array.isArray(coverage.actions) || coverage.actions.length > 512) return;
+    for (const observation of coverage.actions) {
+        const action = validatedCloudActions().find(item => item.actionKey === observation?.actionKey);
+        if (!action || observation.canRequestRead !== false || !['provider-quota', 'scope-cooldown'].includes(observation.retryReason)) continue;
+        if (Number.isSafeInteger(observation.retryAfterSeconds)) setCloudRetry(action.scopeAlias, observation.retryAfterSeconds);
+    }
+}
 async function runCloudQuery(action) {
-    if(cloudBusy || !validatedCloudActions().some(item=>item.actionKey===action.actionKey))return;
-    const version=++cloudVersion; cloudAction=action.actionKey;cloudBusy=true;cloudError=null;cloudResult=null;notice('');render();
-    try {const result=await json(`/api/cloud/${action.scopeAlias}/${action.operation}`,{method:'POST'});if(version===cloudVersion)cloudResult=result;}
-    catch(error){if(version===cloudVersion){cloudError=`${t('cloudFailed')} ${error.status===504?t('cloudTimeout'):error.status===424?t('cloudDenied')+' '+error.message:error.message}`;cloudResult=error.report||null;}}
+    if(cloudBusy || cloudWaitSeconds(action) || !validatedCloudActions().some(item=>item.actionKey===action.actionKey))return;
+    const version=++cloudVersion; cloudAction=action.actionKey;cloudBusy=true;cloudError=null;cloudResult=null;cloudReadMetadata=null;notice('');render();
+    try {const response=await api(`/api/cloud/${action.scopeAlias}/${action.operation}`,{method:'POST'}), result=await response.json();if(version===cloudVersion){cloudResult=result;cloudReadMetadata=response.cloudReadMetadata;}}
+    catch(error){if(version===cloudVersion){cloudError=`${t('cloudFailed')} ${error.status===504?t('cloudTimeout'):error.status===424?t('cloudDenied')+' '+error.message:error.message}`;cloudResult=error.report||null;cloudReadMetadata=error.cloudReadMetadata;}}
     finally{if(version===cloudVersion){cloudBusy=false;render();loadConnections(false).then(()=>{if(view==='connections')render();});}}
 }
 const connectionHosts = {
@@ -609,6 +680,7 @@ async function loadConnections(showBusy=true) {
         const result=await json('/api/cloud/connections');
         if(result?.version!==1||result.mode!=='guided-setup'||result.authenticationActionsAvailable!==false||result.remoteRequestsMade!==false||!Array.isArray(result.providers))throw new Error(t('connectionsUnavailable'));
         cloudConnections=result;connectionsError=null;
+        syncCloudCoverage(await json('/api/cloud/coverage').catch(()=>null));
     } catch(error){connectionsError=error.message;}
     finally {if(showBusy){connectionsBusy=false;render();}}
 }
@@ -646,10 +718,10 @@ function showConnections() {
         if(requirements.length){const list=el('ul',null,'ops-connection-requirements');requirements.forEach(requirement=>{const operations=Array.isArray(requirement.operations)?requirement.operations.filter(operation=>knownOperations.has(operation)).map(operation=>t(operation==='drift'?'cloudDrift':operation)):[];list.append(el('li',`${requirement.name}: ${label(requirement.state)}${operations.length?' · '+operations.join(', '):''}`));});append(details,el('h4',t('connectionRequirements')),list);}
         card.append(details);
         const testActions=Array.isArray(data.testActions)?data.testActions:[],actions=validatedCloudActions().filter(action=>action.providerId===provider.id&&['inventory','health','networks','metrics'].includes(action.operation)&&testActions.some(test=>test?.actionKey===action.actionKey&&test.operation===action.operation&&test.scopeAlias===action.scopeAlias));
-        const tests=el('div',null,'ops-cloud-actions');actions.forEach(action=>{const test=button(`${t('connectionTest')} · ${action.actionKey}`,()=>{cloudProvider=action.providerId;cloudScope=action.scopeAlias;navigate('cloud');runCloudQuery(action);});test.disabled=cloudBusy;tests.append(test);});
+        const tests=el('div',null,'ops-cloud-actions');actions.forEach(action=>{const test=configureCloudButton(button(`${t('connectionTest')} · ${action.actionKey}`,()=>{cloudProvider=action.providerId;cloudScope=action.scopeAlias;navigate('cloud');runCloudQuery(action);}),action,'test');test.disabled=cloudBusy||cloudWaitSeconds(action)>0;tests.append(test);});
         if(!actions.length)card.append(el('p',t('connectionNoTest'),'muted'));else append(card,el('p',t('connectionTestNote'),'muted'),tests);
         cards.append(card);
-    });wrap.append(cards);$('view').append(wrap);
+    });wrap.append(cards);$('view').append(wrap);updateCloudControls();
 }
 function normalizedCoverage(status) {
     const key=String(status || '').replace(/[_\s-]/g,'').toLowerCase();
@@ -839,7 +911,7 @@ function showCloud() {
         });card.append(coverage);
         if(!provider.operations.length)card.append(el('p',t('noAdvertisedOperations'),'muted'));
         const buttons=el('div',null,'ops-cloud-actions');
-        configured.forEach(action=>{const query=button(`${t('run')} · ${action.actionKey}`,()=>runCloudQuery(action));query.disabled=cloudBusy;buttons.append(query);});card.append(buttons);cards.append(card);
+        configured.forEach(action=>{const query=configureCloudButton(button(`${t('run')} · ${action.actionKey}`,()=>runCloudQuery(action)),action);query.disabled=cloudBusy||cloudWaitSeconds(action)>0;buttons.append(query);});card.append(buttons);cards.append(card);
     });wrap.append(cards);
     if(cloudAction)wrap.append(el('p',`${t('source')}: ${cloudAction} · ${t('alwaysRedacted')}`,'source-badge'));
     if(cloudBusy){const status=el('p',t('cloudLoading'),'work-status');status.id='cloud-status';status.setAttribute('role','status');wrap.append(status);}
@@ -856,6 +928,13 @@ function showCloud() {
         const factsRows=[['source',cloudResult.kind || cloudAction],['cloudObserved',date(data?.coverage?.observedAtUtc || cloudResult.collectedAtUtc)]];
         if(!data?.billing&&!data?.scc&&!data?.patches&&!data?.configurationEvidence)factsRows.push(['resourceCount',visibleCount]);
         summary.append(facts(factsRows));
+        if(cloudReadMetadata){
+            const metadata=el('section',null,'ops-cloud-cache');metadata.dataset.cache=cloudReadMetadata.cache;
+            append(metadata,el('h4',t(cloudReadMetadata.cache==='hit'?'cloudCached':'cloudFresh')),el('p',t('cloudCacheNote'),'muted'));
+            const age=el('span');age.dataset.cloudCacheAge='';const remaining=el('span');remaining.dataset.cloudCacheRemaining='';
+            metadata.append(facts([['cloudCacheStored',date(cloudReadMetadata.cachedAtUtc)],['cloudCacheExpires',date(cloudReadMetadata.expiresAtUtc)]]));
+            const counters=el('p',null,'muted');append(counters,el('span',t('cloudCacheAge')+': '),age,el('span',' · '+t('cloudCacheRemaining')+': '),remaining);metadata.append(counters);summary.append(metadata);
+        }
         if(state==='partial')summary.append(el('p',t('observedOnly'),'coverage-note muted'));
         else if(!['complete'].includes(state))summary.append(el('p',t(state==='denied'?'cloudDenied':state==='timed-out'?'cloudTimeout':'cloudFailedCoverage'),'coverage-note muted'));
         else if(count===0&&!data?.configurationEvidence&&!['metrics','cost','scc'].includes(cloudAction?.split('/')[1]))summary.append(el('p',t('cloudEmptyCoverage'),'coverage-note muted'));
@@ -873,7 +952,7 @@ function showCloud() {
         if(resources.length)summary.append(table(['provider','name','category','state'],resources.map(item=>[item.provider || cloudAction?.split('/')[0],item.name || item.id,item.type,resourceState(item)]),'cloud:resources'));
         const raw=el('details');raw.open=true;append(raw,el('summary',t(configuration?'configurationProjection':'rawJson')));if(configuration)raw.append(el('p',t('configurationProjectionNote'),'muted'));raw.append(el('pre',JSON.stringify(configuration?{...cloudResult,data:{...data,configurationEvidence:configuration}}:cloudResult,null,2),'evidence'));summary.append(raw);wrap.append(summary);
     }
-    $('view').append(wrap);
+    $('view').append(wrap);updateCloudControls();
 }
 
 function showPolicy(){const wrap=panel(t('policy'));wrap.append(el('p',t('policyNote'),'muted'));if(!capabilities.policy)wrap.append(el('p',t('policyUnavailable'),'muted'));const label=el('label',t('policyDraft'),'editor-label'),editor=el('textarea');editor.id='policy-editor';editor.value=policyYaml;editor.spellcheck=false;editor.autocomplete='off';editor.setAttribute('autocapitalize','off');editor.setAttribute('aria-describedby','policy-preview-note');label.htmlFor=editor.id;const editorWrap=el('div',null,'policy-editor-wrap'),lineNumbers=el('pre',null,'policy-lines');lineNumbers.setAttribute('aria-hidden','true');lineNumbers.textContent=policyYaml.split('\n').map((_,index)=>index+1).join('\n');append(editorWrap,lineNumbers,editor);editor.addEventListener('scroll',()=>{lineNumbers.scrollTop=editor.scrollTop;});const note=el('p',t('policyNote'),'muted');note.id='policy-preview-note';editor.addEventListener('input',()=>{policyYaml=editor.value;lineNumbers.textContent=policyYaml.split('\n').map((_,index)=>index+1).join('\n');policyValidatedText=null;policyPreview=null;policyError=null;const result=document.getElementById('policy-result');if(result)result.replaceChildren(el('p',t('policyChanged'),'muted'));const download=document.getElementById('policy-download');if(download)download.disabled=true;});const controls=el('div',null,'control-row');const preview=button(t('previewPolicy'),async event=>{if(policyBusy)return;const submitted=policyYaml;policyBusy=true;event.currentTarget.disabled=true;policyError=null;try{const response=await api('/api/policy/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:submitted})});const result=await response.json();policyPreview=submitted===policyYaml?result:null;policyValidatedText=submitted===policyYaml?submitted:null;notice('');}catch(error){if(submitted===policyYaml){policyPreview=null;policyValidatedText=null;policyError=error.message;}}finally{policyBusy=false;render();}},'primary'),download=button(t('downloadPolicy'),()=>{if(policyValidatedText===policyYaml)saveBlob(new Blob([policyYaml],{type:'application/yaml'}),'opscope.yml');});preview.disabled=policyBusy;download.id='policy-download';download.disabled=policyValidatedText!==policyYaml;append(controls,preview,download);append(wrap,label,editorWrap,note,el('p',policyValidatedText===policyYaml?t('policyValid'):policyError?t('policyInvalid'):t('policyDraftState'),'source-badge'),controls);const outcome=el('div');outcome.id='policy-result';wrap.append(outcome);if(policyError)outcome.append(el('p',`${t('policyInvalid')}: ${policyError}`,'notice'));if(policyPreview){outcome.append(el('h3',t('policyValid')),el('p',`${t('collected')}: ${date(policyPreview.collectedAtUtc)}`,'muted'),findingsList(policyPreview.findings));if(policyPreview.warnings?.length){const warnings=el('ul');policyPreview.warnings.forEach(w=>warnings.append(el('li',w)));outcome.append(warnings);}}if(policyResult){const configured=el('details');append(configured,el('summary',t('configuredPolicy')),el('pre',JSON.stringify(policyResult,null,2),'evidence'));wrap.append(configured);}$('view').append(wrap);}

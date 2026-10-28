@@ -48,8 +48,9 @@ Prefer the default per-user application-data location. The retention API is
 It rejects symbolic-link paths and unsupported schema versions.
 
 Collection is centralized through `SystemProbe` or an explicitly supplied shared
-collector callback. A single collection/cloud gate prevents overlapping work and
-applies a two-second cooldown. Collection has a 60-second cancellation deadline;
+collector callback. Host collection has its own gate and two-second cooldown;
+cloud reads use a separate bounded gate, so a slow provider query does not hold
+the host collector. Collection has a 60-second cancellation deadline;
 automatic refresh defaults to 30 seconds. The server accepts bounded requests,
 limits connection/header counts, and permits at most four bounded SSE streams.
 JSON uploads require strict UTF-8 and complete within ten seconds. Collection
@@ -76,6 +77,10 @@ The catalog does not query credentials, expand scopes or contact providers.
 `GET /api/cloud/coverage` returns schema version 1 and the last observed status of
 each configured action: initially `not-requested`, then successful/partial, failed
 or timed out. This observation does not certify all services in an account.
+Each action also carries `cacheState` (`fresh`, `expired` or `none`), nullable
+`cachedAtUtc`/`expiresAtUtc`, `cacheAgeSeconds`, `retryAfterSeconds`, nullable
+`retryReason` and `canRequestRead`. `fresh` means that a cache entry is within its
+local TTL; it does not establish provider freshness or complete coverage.
 `GET /api/capabilities` remains compatible and includes the configured action keys.
 
 `GET /api/cloud/connections` returns version 1 of the guided local setup view for
@@ -123,9 +128,26 @@ Provider responses do not invalidate the Opscope session. Its own missing/invali
 upstream header returns 401; source/Host checks return 403.
 
 An exception before a report is available returns a sanitized 502 error; the
-server-side sixty-second cancellation deadline returns 504. The existing
-gate/cooldown returns 429. These responses remain distinct from a successful
-empty inventory.
+server-side sixty-second cancellation deadline returns 504. Cloud scheduling
+allows at most one active read per workspace and a two-second minimum interval
+per configured scope alias, independently of host collection. A provider quota
+report returned with HTTP 429 starts a fifteen-second local wait across operations of that alias.
+The fallback is local policy, not an upstream deadline. Other aliases retain
+their own waits; no cloud read is automatically retried.
+
+Cloud POST rejections use HTTP 429 with `Retry-After`,
+`X-Opscope-Retry-Scope: <configured-alias>` and
+`X-Opscope-Retry-Reason: provider-quota|scope-cooldown|workspace-busy`.
+Scheduling errors return fixed `error`, `code` (`PROVIDER_RATE_LIMITED`,
+`CLOUD_READ_COOLDOWN` or `CLOUD_BUSY`), `retryAfterSeconds`, `scopeAlias` and
+`retryReason` fields. A provider quota report keeps the existing report shape.
+These responses remain distinct from a successful empty inventory. A cloud
+quota response does not put host collection or SSE reconnection into a provider
+wait; local endpoint limits keep their own behavior.
+
+The middleware's session-wide request limit instead labels its response
+`X-Opscope-Retry-Scope: session` and `X-Opscope-Retry-Reason: session-limit`.
+It remains a global limit even when the requested path is a cloud operation.
 
 Completed report responses are cached **after redaction and session-token
 scrubbing** in this server session only. The cache holds at most 32 entries of
@@ -133,9 +155,15 @@ scrubbing** in this server session only. The cache holds at most 32 entries of
 TTL is thirty seconds for HTTP 200 ordinary reads, sixty seconds for HTTP 200
 `metrics` reads, and fifteen seconds for non-200 report responses. A cache hit
 returns the original status/report and observation time; it does not imply a new
-provider query. `X-Opscope-Cache: hit|miss` identifies reuse, and hits include
-`X-Opscope-Cache-Age-Seconds`. Timeout/exception responses are not report-cache
-entries. The cache is not written to SQLite or browser storage.
+provider query. Report headers expose `X-Opscope-Cache: hit|miss`,
+`X-Opscope-Cache-Age-Seconds`, `X-Opscope-Cache-Remaining-Seconds`, `X-Opscope-Cache-Cached-At` and
+`X-Opscope-Cache-Expires-At` where a cache entry exists. Cache timing is separate
+from the report's provider observation time. A cache hit is served before the
+scope wait check, so existing evidence can be reused while new reads are paused.
+A cached quota report uses the remaining local `Retry-After`; serving it does
+not restart the wait. Timeout/exception responses are not report-cache entries.
+The cache is not written to SQLite or browser storage, and the API accepts no
+cache-bypass or arbitrary provider-scope option.
 
 ## Aggregate host metrics and SSE
 
@@ -143,8 +171,18 @@ One lightweight sampler per server observes aggregate host CPU and RAM every
 five seconds independently of full snapshots. It does not enumerate processes,
 services, disks or network interfaces. CPU uses deltas of cumulative counters;
 the first CPU value and unavailable/reset readings are `null`, not zero.
-Linux `/proc` and Windows native counters are supported; unsupported platforms
-remain explicitly unavailable. The session retains at most 720 identity-free
+Linux `/proc`, Windows native counters and macOS Mach/sysctl aggregate counters
+are supported; unsupported platforms remain explicitly unavailable. macOS CPU
+uses host-wide user/system/idle/nice ticks, never the Opscope process's CPU time.
+A tick decrease, including a 32-bit counter wrap, leaves a gap for that delta.
+macOS memory uses physical memory and the free/inactive page counts to estimate
+used memory: `100 * (totalBytes - (freePages + inactivePages) * pageSize) / totalBytes`.
+Speculative pages are already included in free pages and are not added again.
+Valid estimated samples retain `coverage.memory="estimated"`; failed or
+inconsistent native reads remain unavailable. This estimate is neither memory
+pressure nor the Activity Monitor memory-used definition. Native reads use a
+fixed system library, validate returned sizes/counts, release the Mach host port
+and start no processes. The session retains at most 720 identity-free
 observations in RAM, with sequence and elapsed-monotonic time ordering and a
 `clockAdjusted` marker for UTC corrections.
 

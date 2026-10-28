@@ -198,6 +198,100 @@ async function exerciseConnectionGuards(browser, bootstrap, origin, token) {
   }
   await context.close();
 }
+async function exerciseCloudFreshnessAndRetry(browser, bootstrap, origin) {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } }), page = await context.newPage();
+  const action = 'gcp-scope-1/metrics', observed = '2026-10-20T12:34:56+00:00';
+  const report = { kind: 'cloud/gcp/metrics', collectedAtUtc: observed, findings: [], warnings: [], operationSucceeded: true, data: { resources: [], coverage: { state: 'Complete', observedAtUtc: observed, enumeratedResources: 4 } } };
+  let mode = 'miss', reads = 0, collects = 0;
+  await page.route('**/api/capabilities', async route => {
+    const capabilities = await (await route.fetch()).json(); capabilities.cloud.push('gcp-scope-2/metrics');
+    await route.fulfill({ json: capabilities });
+  });
+  await page.route('**/api/cloud/catalog', async route => {
+    const catalog = await (await route.fetch()).json(), configured = catalog.actions.find(item => item.actionKey === action);
+    catalog.actions.push({ ...configured, scopeAlias: 'gcp-scope-2', actionKey: 'gcp-scope-2/metrics' });
+    await route.fulfill({ json: catalog });
+  });
+  await page.route('**/api/cloud/' + action, route => {
+    reads++;
+    const quota = mode === 'quota';
+    return route.fulfill({ status: quota ? 429 : 200, headers: quota ? { 'Retry-After': '30', 'X-Opscope-Retry-Scope': 'gcp-scope-1', 'X-Opscope-Retry-Reason': 'provider-quota' } : {
+      'X-Opscope-Cache': mode, 'X-Opscope-Cache-Age-Seconds': mode === 'hit' ? '7' : '0', 'X-Opscope-Cache-Remaining-Seconds': mode === 'hit' ? '53' : '60',
+      'X-Opscope-Cache-Cached-At': '2026-10-28T08:00:00Z', 'X-Opscope-Cache-Expires-At': '2026-10-28T08:01:00Z'
+    }, json: quota ? { ...report, operationSucceeded: false, data: { coverage: { state: 'RateLimited' } }, cloudProblem: { code: 'PROVIDER_RATE_LIMITED', message: 'Provider quota reached.', remediation: 'Wait before retrying this configured scope.' } } : report });
+  });
+  await page.route('**/api/collect', route => { collects++; return route.fulfill({ json: { collected: true } }); });
+  await page.goto(bootstrap); await page.getByRole('heading', { name: 'Host evidence', exact: true }).waitFor();
+  await page.locator('[data-view="cloud"]').click(); await page.locator('#cloud-provider').selectOption('gcp');
+  const query = () => page.locator('button[data-cloud-action="' + action + '"]');
+  await query().click(); await page.locator('.ops-cloud-cache[data-cache="miss"]').waitFor();
+  check(await page.locator('.ops-cloud-cache').innerText().then(text => text.includes('New action result') && text.includes('Stored in this session') && text.includes('Cache expiry')) && await page.locator('[data-cloud-cache-age]').innerText() === '0 s', 'A cache miss labels a new action result with session cache timing');
+  const observedFact = () => page.locator('.ops-cloud-result-summary > dl > div').filter({ has: page.locator('dt', { hasText: 'Observation time' }) }).locator('dd');
+  const originalTime = await observedFact().innerText();
+  mode = 'hit'; await query().click(); await page.locator('.ops-cloud-cache[data-cache="hit"]').waitFor();
+  check(await page.locator('.ops-cloud-cache').innerText().then(text => text.includes('Retained result · no new provider read') && text.includes('original observation time')) && await page.locator('[data-cloud-cache-age]').innerText() === '7 s' && await page.locator('[data-cloud-cache-remaining]').innerText() === '53 s', 'A cache hit explicitly identifies reused evidence and its age and remaining reuse time');
+  check(originalTime.includes('20 Oct 2026') && await observedFact().innerText() === originalTime && JSON.parse(await page.locator('.ops-cloud-result-summary pre').innerText()).collectedAtUtc === observed, 'Cache metadata preserves the original provider observation date instead of replacing it with cache storage time');
+  await page.screenshot({ path: path.join(results, 'cloud-cache-hit.png'), fullPage: true });
+  await page.waitForFunction(() => document.querySelector('[data-cloud-cache-age]')?.textContent !== '7 s');
+  check(Number.parseInt(await page.locator('[data-cloud-cache-age]').innerText(), 10) >= 8 && Number.parseInt(await page.locator('[data-cloud-cache-remaining]').innerText(), 10) <= 52 && reads === 2, 'Cache age and remaining reuse time advance locally without another provider request');
+  mode = 'quota'; await query().click(); await page.locator('#cloud-error').waitFor();
+  check(await page.locator('button[data-cloud-action^="gcp-scope-1/"]').evaluateAll(buttons => buttons.length > 1 && buttons.every(button => button.disabled && button.textContent.includes('Retry in'))) && await page.locator('#connection').getAttribute('data-state') !== 'disconnected', 'Provider quota headers disable every action in the affected alias with a countdown while preserving the session');
+  check(await page.locator('button[data-cloud-action="gcp-scope-2/metrics"]').isEnabled(), 'Provider quota isolation also leaves another alias of the same provider available');
+  await page.locator('#cloud-provider').selectOption('hetzner');
+  check(await page.locator('button[data-cloud-action="hetzner-scope-1/metrics"]').isEnabled(), 'A provider quota leaves a different configured provider available');
+  await page.locator('[data-view="connections"]').click(); await page.locator('#connection-provider').selectOption('gcp');
+  check(await page.locator('button[data-cloud-action="' + action + '"][data-cloud-mode="test"]').isDisabled(), 'Connections access tests share the affected alias cooldown');
+  await page.locator('#connection-provider').selectOption('hetzner');
+  check(await page.locator('button[data-cloud-action="hetzner-scope-1/metrics"][data-cloud-mode="test"]').isEnabled(), 'Connections access tests for other providers stay available during provider quota cooldown');
+  await page.locator('[data-view="cloud"]').click(); await page.locator('#cloud-provider').selectOption('gcp');
+  await page.waitForRequest(request => request.url() === origin + '/api/history', { timeout: 10000 });
+  check(await page.locator('#connection').getAttribute('data-state') === 'connected' && await query().isDisabled(), 'Live SSE evidence continues arriving while the provider scope is cooling down');
+  await page.locator('[data-view="overview"]').click();
+  check(await page.locator('#collect').isEnabled(), 'A provider quota does not disable host collection');
+  const collected = page.waitForResponse(response => response.url() === origin + '/api/collect' && response.request().method() === 'POST');
+  await page.locator('#collect').click(); await collected;
+  await page.waitForFunction(() => !document.getElementById('collect').disabled);
+  check(collects === 1, 'Host collection can complete during an unrelated provider quota cooldown');
+  await page.locator('[data-view="cloud"]').click(); await page.setViewportSize({ width: 390, height: 844 });
+  check(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'Scoped retry countdown controls fit the mobile viewport');
+  await page.screenshot({ path: path.join(results, 'cloud-provider-retry-mobile.png'), fullPage: true });
+  await context.close();
+  for (const kind of ['workspace-busy', 'local']) {
+    const limitedContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } }), limitedPage = await limitedContext.newPage();
+    const cloudLimited = kind === 'workspace-busy';
+    await limitedPage.route(cloudLimited ? '**/api/cloud/' + action : '**/api/collect', route => route.fulfill({ status: 429, headers: cloudLimited ? { 'Retry-After': '30', 'X-Opscope-Retry-Scope': 'gcp-scope-1', 'X-Opscope-Retry-Reason': 'workspace-busy' } : { 'Retry-After': '30' }, json: { error: 'Fixture workspace is busy.' } }));
+    await limitedPage.goto(bootstrap); await limitedPage.getByRole('heading', { name: 'Host evidence', exact: true }).waitFor();
+    if (cloudLimited) {
+      await limitedPage.locator('[data-view="cloud"]').click(); await limitedPage.locator('#cloud-provider').selectOption('gcp');
+      await limitedPage.locator('button[data-cloud-action="' + action + '"]').click(); await limitedPage.locator('#cloud-error').waitFor();
+    } else { await limitedPage.locator('#collect').click(); await limitedPage.locator('#notice').filter({ hasText: 'Retry in 30 seconds' }).waitFor(); }
+    await limitedPage.locator('[data-view="overview"]').click();
+    check(cloudLimited ? await limitedPage.locator('#collect').isEnabled() : await limitedPage.locator('#collect').isDisabled(), cloudLimited ? 'A cloud workspace-busy response leaves host collection enabled' : 'A generic local 429 preserves the existing global host collection cooldown');
+    await limitedPage.locator('[data-view="cloud"]').click(); await limitedPage.locator('#cloud-provider').selectOption('all');
+    check(await limitedPage.locator('button[data-cloud-action]').evaluateAll(buttons => buttons.length > 2 && buttons.every(button => button.disabled)), cloudLimited ? 'A cloud workspace-busy response temporarily disables all cloud provider actions' : 'A generic local 429 also disables cloud actions during the global cooldown');
+    await limitedPage.locator('[data-view="connections"]').click();
+    check(await limitedPage.locator('button[data-cloud-mode="test"]').evaluateAll(buttons => buttons.length > 2 && buttons.every(button => button.disabled)), kind + ' cooldown also applies to Connections access tests');
+    await limitedContext.close();
+  }
+}
+
+async function exerciseEstimatedMemory(browser, bootstrap) {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } }), page = await context.newPage();
+  const sample = { schemaVersion: 1, source: 'local-lightweight', sequence: 1, elapsedMilliseconds: 5000, sampleIntervalSeconds: 5, sampledAtUtc: new Date().toISOString(), cpuPercent: 12.5, memoryPercent: 62.5, coverage: { cpu: 'available', memory: 'estimated' } };
+  await page.route('**/api/metrics/history?*', route => route.fulfill({ json: { schemaVersion: 1, source: 'local-lightweight', samples: [sample] } }));
+  await page.route('**/api/events', route => route.fulfill({ contentType: 'text/event-stream', body: 'event: metrics\ndata: ' + JSON.stringify(sample) + '\n\n' }));
+  await page.goto(bootstrap); await page.getByRole('heading', { name: 'Host evidence', exact: true }).waitFor();
+  await page.locator('.ops-chart__estimate').waitFor();
+  check(await page.locator('.ops-chart__meta').innerText().then(text => text.includes('Memory includes estimates')) && await page.locator('.ops-chart__legend').innerText().then(text => text.includes('Memory *')), 'Estimated macOS memory samples have explicit chart metadata and legend labels');
+  check(await page.locator('.ops-chart__estimate').innerText().then(text => text.includes('free and inactive pages as reclaimable') && text.includes('do not measure memory pressure')) && await page.locator('.ops-chart svg').getAttribute('aria-describedby') === await page.locator('.ops-chart__estimate').getAttribute('id'), 'The visible and accessible memory estimate note explains reclaimable pages without claiming exact memory pressure');
+  await page.locator('.ops-chart details').evaluate(node => { node.open = true; });
+  check(await page.locator('.ops-chart__table tbody tr').first().locator('td').last().innerText() === '62.5 *' && await page.locator('.ops-chart__table caption').innerText().then(text => text.includes('Memory includes estimates')), 'The accessible sample table retains the measured value and marks estimated memory');
+  await page.screenshot({ path: path.join(results, 'macos-memory-estimate.png'), fullPage: true });
+  await page.locator('#language').selectOption('es');
+  check(await page.locator('.ops-chart__meta').innerText().then(text => text.includes('La memoria incluye estimaciones')) && await page.locator('.ops-chart__estimate').innerText().then(text => text.includes('No miden la presión de memoria')), 'Spanish charts preserve explicit memory estimate and pressure limitations');
+  await context.close();
+}
+
 async function exerciseProxyBootstrap(browser, origin, token) {
   const context=await browser.newContext({viewport:{width:1440,height:1000}}),page=await context.newPage(),observed=[];
   await context.addCookies([{name:'opscope-fixture-session',value:'authenticated-fixture',url:origin,httpOnly:true,sameSite:'Strict'}]);
@@ -725,6 +819,8 @@ async function main() {
   check(await guardedPage.getByRole('button').filter({ hasText: 'gcp-scope-1/scc' }).count() === 0 && await guardedPage.getByRole('button').filter({ hasText: 'gcp-scope-1/delete' }).count() === 0 && await guardedPage.getByRole('button').filter({ hasText: 'gcp-scope-1/cost' }).count() === 1, 'Cloud actions require a known operation, matching capability and an explicit read-only descriptor');
   await guardedContext.close();
   await exerciseConnectionGuards(browser, bootstrap, origin, token);
+  await exerciseCloudFreshnessAndRetry(browser, bootstrap, origin);
+  await exerciseEstimatedMemory(browser, bootstrap);
   await exerciseProxyBootstrap(browser, origin, token);
   console.log(`PASS: ${assertions} browser and accessibility assertions.`);
 }

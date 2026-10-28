@@ -34,10 +34,10 @@ Check(Marshal.OffsetOf<DarwinVmInfo64>(nameof(DarwinVmInfo64.Free)).ToInt32() ==
 var imports = typeof(DarwinMetricsNative).GetMethods(BindingFlags.Static | BindingFlags.NonPublic)
     .Select(method => (Method: method, Import: method.GetCustomAttribute<DllImportAttribute>()))
     .Where(pair => pair.Import is not null).ToArray();
-Check(imports.Length == 7 && imports.All(pair => pair.Import!.Value == "/usr/lib/libSystem.B.dylib" && pair.Import.ExactSpelling),
+Check(imports.Length == 6 && imports.All(pair => pair.Import!.Value == "/usr/lib/libSystem.B.dylib" && pair.Import.ExactSpelling),
     "Darwin imports use exact libSystem exports");
-Check(imports.Any(pair => pair.Import!.EntryPoint == "task_self_trap") && !imports.Any(pair => pair.Import!.EntryPoint == "mach_task_self"),
-    "Host-right deallocation uses an exported task-self trap, not a C macro");
+Check(!imports.Any(pair => pair.Import!.EntryPoint is "task_self_trap" or "mach_task_self"),
+    "Host-right deallocation reuses libSystem's cached task port without acquiring a task send right per sample");
 Check(imports.Single(pair => pair.Import!.EntryPoint == "host_page_size").Method.GetParameters()[1].ParameterType == typeof(nuint).MakeByRefType(),
     "host_page_size writes a native-width vm_size_t");
 var sysctl = imports.Single(pair => pair.Import!.EntryPoint == "sysctlbyname").Method.GetParameters();

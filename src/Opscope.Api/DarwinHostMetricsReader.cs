@@ -99,18 +99,34 @@ internal struct DarwinVmInfo64
 internal sealed class DarwinMetricsNative : IDarwinMetricsNative
 {
     private const string Library = "/usr/lib/libSystem.B.dylib";
-    public uint AcquireHost() => MachHostSelf();
+    private static readonly Lazy<uint> TaskPort = new(ReadTaskPort);
+    public uint AcquireHost()
+    {
+        _ = TaskPort.Value;
+        return MachHostSelf();
+    }
     public int ReadCpu(uint host, out DarwinCpuLoad cpu, ref uint count) => HostCpuStatistics(host, 3, out cpu, ref count);
     public int ReadVm(uint host, out DarwinVmInfo64 vm, ref uint count) => HostVmStatistics64(host, 4, out vm, ref count);
     public int ReadPageSize(uint host, out nuint pageSize) => HostPageSize(host, out pageSize);
     public int ReadMemorySize(out ulong bytes, ref nuint length) => SysctlByName("hw.memsize", out bytes, ref length, IntPtr.Zero, 0);
-    public int ReleaseHost(uint host) => MachPortDeallocate(TaskSelfTrap(), host);
+    public int ReleaseHost(uint host) => MachPortDeallocate(TaskPort.Value, host);
+
+    private static uint ReadTaskPort()
+    {
+        // Reuse libSystem's process-owned port; task_self_trap can acquire another send right.
+        // Se reutiliza el puerto del proceso de libSystem, sin adquirir derechos por muestra.
+        var library = NativeLibrary.Load(Library);
+        try
+        {
+            var address = NativeLibrary.GetExport(library, "mach_task_self_");
+            var port = unchecked((uint)Marshal.ReadInt32(address));
+            return port != 0 ? port : throw new InvalidOperationException("The process task port is unavailable.");
+        }
+        finally { NativeLibrary.Free(library); }
+    }
 
     [DllImport(Library, EntryPoint = "mach_host_self", ExactSpelling = true)]
     private static extern uint MachHostSelf();
-    // mach_task_self() is a C macro over a data symbol; use the exported trap instead.
-    [DllImport(Library, EntryPoint = "task_self_trap", ExactSpelling = true)]
-    private static extern uint TaskSelfTrap();
     [DllImport(Library, EntryPoint = "mach_port_deallocate", ExactSpelling = true)]
     private static extern int MachPortDeallocate(uint task, uint name);
     [DllImport(Library, EntryPoint = "host_statistics", ExactSpelling = true)]

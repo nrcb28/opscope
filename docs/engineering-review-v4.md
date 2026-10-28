@@ -6,6 +6,8 @@ La segunda fase continúa desde `bb51158`: incorpora lecturas SCC y de exportaci
 
 La tercera fase continúa desde `3f2ada8`: añade metadatos de jobs OS Config existentes, comparación de inventario GCP con una baseline privada compatible y vínculos exactos entre referencias de nodos Kubernetes y recursos GCP/Azure. Estos vínculos no verifican la identidad del controlplane ni la propiedad del clúster.
 
+La quinta fase continúa desde `b7c6410`, después de la distribución candidata verificada en la [PR #16](https://github.com/nrcb28/opscope/pull/16). Amplía configuración observada de Cloudflare y Alibaba e incorpora inventario regional de redes Scaleway. También añade guías de conexión cloud en la UI y un modo explícito de acceso mediante proxy HTTPS autenticado para un servidor remoto. Las comprobaciones con cuentas reales y el despliegue en un destino remoto siguen sin ejecutarse; las lecturas preservan ámbitos explícitos, estados desconocidos y límites por producto.
+
 ## Uso inmediato / Quick start
 
 ```sh
@@ -24,9 +26,10 @@ The local dashboard and aggregate host sampler work without cloud credentials. T
 ## Decisiones de arquitectura
 
 - La UI conserva JavaScript, HTML y CSS nativos embebidos. El módulo de gráficas es un recurso local conocido; no incorpora framework, CDN ni script remoto.
-- Una conexión SSE autenticada transporta eventos `snapshot` y `metrics`. El token permanece en cabecera y memoria; no se añade a URLs de métricas. El servidor mantiene los controles de loopback, Host/Origin, concurrencia y tiempos de escritura.
+- Una conexión SSE autenticada transporta eventos `snapshot` y `metrics`. En modo local el token permanece en cabecera y memoria del navegador; no se añade a URLs de métricas. En modo proxy el secreto de upstream permanece entre el proxy y Opscope y no se entrega al navegador. El servidor mantiene los controles de loopback, Host/Origin, concurrencia y tiempos de escritura.
 - El muestreo agregado se separa del snapshot completo. Un temporizador por servidor lee CPU/RAM cada cinco segundos sin enumerar procesos, servicios o sockets en cada muestra.
 - El registro cerrado describe once proveedores de infraestructura y un adaptador Kubernetes de categoría `cluster`. Las acciones web quedan vinculadas a ámbitos configurados en el servidor y usan alias anónimos; el navegador no elige endpoints, credenciales, kubeconfig o cuentas arbitrarias.
+- El menú Conexiones separa requisitos locales de credencial/herramienta/ámbito y último acceso observado. Sus enlaces oficiales y plantillas guían la configuración en el host sin ejecutar login, crear cuentas o interpretar una credencial presente como acceso autorizado.
 - Azure/AWS conservan sus CLI existentes. Google Cloud combina la sesión de `gcloud` para inventario/configuración con ADC para Monitoring, SCC, tablas de facturación y jobs OS Config existentes. Los demás adaptadores utilizan CLI con gramática de lectura fija o rutas HTTPS del proveedor verificadas. Kubernetes usa proyecciones de metadatos/status con un contexto y namespaces explícitos. Ninguna consulta instala agentes o activa servicios.
 
 ## Métricas de host y gráfica
@@ -46,7 +49,7 @@ La gráfica distingue muestras ligeras de snapshots, ofrece ventanas de 5/15/30 
 | IDs del PDF | Implementación | Límite verificable |
 | --- | --- | --- |
 | UI-101, TEST-101 | Pruebas de UI con fixtures, temas, resoluciones, privacidad y accesibilidad automatizada. | La revisión manual a 200% y con lectores de pantalla se realiza en los entornos correspondientes; no se afirma un resultado universal de todas las combinaciones. |
-| UI-102, UI-103 | Tokens/legibilidad, navegación agrupada, menú móvil con estado y Escape, foco de navegación. | La adaptación conserva doce vistas y los recursos embebidos. |
+| UI-102, UI-103 | Tokens/legibilidad, navegación agrupada, menú móvil con estado y Escape, foco de navegación. | Las vistas conservan sus recursos embebidos y la navegación por teclado. |
 | UI-104, UI-106 | Fuente, edad, recuperación, ausencia de datos y cobertura explícitas. | Ausencia de hallazgos no certifica seguridad ni salud. |
 | UI-105 | Se conservan las barreras full/redacted, exportación redactada y estados aislados del laboratorio. | La evidencia completa y el token no se persisten en almacenamiento del navegador. |
 | UI-107, UI-120, UI-124, UI-125 | DTO versionado, anillo acotado, sampler ligero y capacidades/historial autenticados. | CPU/RAM ligeras disponibles en Linux/Windows; sin muestreo inventado en otros sistemas. No hay benchmark de coste válido para cada equipo/SO. |
@@ -78,19 +81,19 @@ La gráfica distingue muestras ligeras de snapshots, ofrece ventanas de 5/15/30 
 | IDs | Resultado de esta implementación | Criterios restantes |
 | --- | --- | --- |
 | CLOUD-201–204 | Descriptores, operaciones/cobertura, catálogo autenticado y registro cerrado con ámbitos anónimos; Kubernetes conserva la categoría `cluster`. | Readiness describe configuración y última observación; no descubre permisos sin ejecutar una acción. |
-| CLOUD-205–207 | Transporte HTTPS de host/ruta fijos, redirects deshabilitados, límites de bytes/páginas/profundidad y credenciales solo del backend. | No se añade un secret store general ni una UI de autenticación. Los endpoints privados OpenStack proceden del `clouds.yaml` del administrador. |
+| CLOUD-205–207 | Transporte HTTPS de host/ruta fijos, redirects deshabilitados, límites de bytes/páginas/profundidad y credenciales solo del backend. | No se añade un secret store general ni captura de credenciales en la UI. Los endpoints privados OpenStack proceden del `clouds.yaml` del administrador. |
 | CLOUD-208 | Protección de concurrencia/tiempos por acción de sesión; respuestas de saturación y `Retry-After`. | Cuotas de proveedor y semánticas de reintento varían; no se afirma un rate-limit universal compartido entre todos los procesos. |
-| CLOUD-209–212 | Workspace guiado por catálogo, estados de cobertura y fixtures de contrato/transporte. | Los fixtures no certifican IAM, disponibilidad ni paginación de todas las cuentas reales. |
+| CLOUD-209–212 | Workspace guiado por catálogo, estados de cobertura, menú Conexiones de preparación local y fixtures de contrato/transporte. | Los fixtures no certifican IAM, disponibilidad ni paginación de todas las cuentas reales. El menú no implementa un OAuth universal ni un almacén de cuentas por usuario. |
 | CLOUD-213, CLOUD-214 | Series GCP, DigitalOcean, Hetzner y lectores opcionales OCI/Cloudflare/OpenStack/Alibaba/IBM/Scaleway; Kubernetes ofrece observaciones puntuales de CPU/RAM. | Cada fuente conserva unidad/cadencia: CPU, contadores, tráfico y gauge `up` no se comparan como si fueran la misma métrica. No se inventa historia para puntos aislados. |
 | CLOUD-215, CLOUD-216 | Guía de permisos por fuente y catálogo de once proveedores más un adaptador de clúster, consultable sin credenciales. | Ejecutar acciones reales exige permisos y servicios previamente configurados. |
 | OCI-01–05 | Registro, CLI existente, inventario acotado de instancias/volúmenes/VCN, estado y reglas de security lists. | Las reglas configuradas no prueban conectividad efectiva; cobertura experimental parcial. |
 | DO-01–06 | Token de lectura, proyecto explícito, droplets/volúmenes asociados, firewalls por membresía directa y series CPU nativas en segundos acumulados. | La membresía por tags y otros tipos de recursos del proyecto quedan fuera de cobertura. |
 | HET-01–06 | Token de proyecto, servidores/volúmenes/redes/load balancers, reglas de firewall e historia CPU acotada. | El label de proyecto es descriptivo; no establece una identidad independiente del token. Las reglas no prueban accesibilidad efectiva. |
-| CF-01–05 | Registro, token restringido, cuenta explícita e inventario/estado/configuración paused de zonas. | DNS, WAF y TLS no se consultan; postura avanzada queda sin implementar. Analytics se consulta solo en la operación opcional de métricas. |
+| CF-01–05 | Registro, token restringido, cuenta y zonas explícitas verificadas; postura TLS y metadatos DNS/WAF/Workers-routes seleccionados por check. | Observa configuración y agregados acotados; no evalúa reglas efectivas, tráfico o disponibilidad. Los productos/permisos ausentes quedan desconocidos. Analytics conserva su operación de métricas separada. |
 | OS-01–05 | CLI existente, proyecto/region/cloud fijados, inventario y reglas de security groups. | Endpoints/CA se administran fuera de Opscope; Gnocchi es opcional y no equivale a una evaluación completa de salud de la nube. |
-| ALI-01–05 | Identidad de cuenta explícita, instancias/discos/VPC, estado de ECS y cifrado declarado de discos. | La postura no evalúa todos los security groups ni IAM de cuenta; no se afirma visibilidad universal. |
+| ALI-01–05 | Identidad de cuenta STS explícita, instancias/discos/VPC, estado de ECS, cifrado declarado y lectura acotada de configuración de security groups. | Proyecciones exactas y selección de grupos limitada; una regla de ingress no demuestra accesibilidad efectiva. IAM de cuenta y todos los controles/adjuntos de red permanecen fuera de evaluación. |
 | IBM-01–05 | Token IAM externo, Resource Controller HTTPS fijo y comprobación de cuenta/resource-group/región para metadatos y estado de servicios. | No consulta VPC ni toda la configuración de cada servicio; Monitoring solo se consulta mediante la operación opcional de métricas. No inicia sesión ni renueva tokens. |
-| SCW-01–05 | Token SCW_SECRET_KEY del servidor, rutas HTTPS fijas y proyecto/zona explícitos para servidores/volúmenes de Instance. | VPC regional, gateways y postura completa quedan fuera de cobertura; Cockpit requiere una fuente y token de lectura existentes. |
+| SCW-01–05 | Token SCW_SECRET_KEY del servidor y rutas fijas; proyecto/zona para Instance, proyecto/región explícitos para `networks` de VPC/redes privadas con identidad verificada. | Gateways, load balancers y postura completa quedan fuera de cobertura; configuración no prueba aislamiento/conectividad. Cockpit requiere su fuente y token existentes. |
 | OCI-06 | Monitoring `oci_computeagent` CPU, porcentaje medio de 60 segundos en el compartimento/región explícitos. | Sin recorridos de subcompartimentos; agentes, IAM y límites pueden dejar cobertura parcial o sin datos. |
 | CF-06 | GraphQL de lectura fijo para requests/bytes/cache en zonas cuya cuenta coincide, con buckets de cinco minutos. | Son contadores de edge, no CPU ni una prueba de disponibilidad. Requiere zonas explícitas y permisos Analytics. |
 | OS-06 | Búsqueda Gnocchi de recursos del proyecto verificado y lectura de medidas con unidades nativas. | El contador CPU acumulado permanece en nanosegundos; no se convierte en utilización instantánea. Requiere el plugin y telemetría existentes. |
@@ -99,8 +102,14 @@ La gráfica distingue muestras ligeras de snapshots, ofrece ventanas de 5/15/30 
 
 MC-4 incorpora Kubernetes como fuente separada, con contexto kubeconfig aprobado, namespaces obligatorios, proyecciones de metadatos/status de cargas/servicios/eventos y observaciones Metrics Server en millicores/bytes. Los nodos son un opt-in separado. Con `--infrastructure-provider gcp|azure`, la referencia canónica `providerID` de un nodo puede contrastarse con el inventario normalizado del proveedor en ámbitos explícitos fijados en backend. La coincidencia verifica solo esa referencia de nodo: la identidad del controlplane y la propiedad del clúster permanecen **no verificadas**, y no se infieren por nombres. Las referencias AWS sin vínculo independiente de cuenta permanecen sin verificar. No se leen Secrets, variables de entorno/commands de pods, ConfigMaps, mensajes de eventos o logs remotos, y no se aplican recursos RBAC desde Opscope.
 
+## Conexiones y acceso a un servidor remoto
+
+`GET /api/cloud/connections` es una lectura autenticada de preparación local y del último resultado de las acciones configuradas. No consulta proveedores ni ejecuta procesos de autenticación. La UI permite abrir los enlaces oficiales de alta/consola y leer los pasos de configuración; las identidades CLI, ADC y los tokens se preparan en el host donde corre Opscope. Los errores de configuración, permisos, cuota y timeout cloud se conservan separados del rechazo de la propia sesión de Opscope.
+
+El modo `serve --public-origin https://dominio --proxy-token-env <variable>` exige un proxy HTTPS autenticado en el mismo host y un secreto de upstream externo de 64 caracteres hexadecimales. Kestrel permanece en loopback, el origen público es explícito y el navegador no recibe ese secreto. La [guía de acceso remoto](remote-hosting.md) incluye el proxy, su autenticación y la alternativa SSH. Todos los operadores autorizados de una instancia comparten sus ámbitos; los usuarios con accesos distintos requieren instancias separadas. Este trabajo prepara y prueba el modo remoto, sin afirmar un despliegue activo, un dominio/certificado emitido o una cuenta cloud autenticada.
+
 ## Verificación y publicación
 
 El [workflow CI](../.github/workflows/ci.yml) descubre todos los proyectos .NET, ejecuta CLI/smoke y tiene pruebas de navegador Chromium en Linux/Windows. Los proyectos cloud usan transportes inyectados; los checks concretos de cada commit son la evidencia del resultado. No se utilizaron cuentas de producción para afirmar mínimos IAM universales, precios, cuotas o frescura.
 
-La distribución mantiene el [workflow de releases](../.github/workflows/release.yml) y las herramientas de empaquetado existentes. Subir código a GitHub no equivale a publicar una nueva versión firmada en cada registro ni a desplegar un servicio público; la app se sigue ejecutando localmente con `serve`.
+La distribución mantiene el [workflow de releases](../.github/workflows/release.yml) y las herramientas de empaquetado existentes. Subir código a GitHub no equivale a publicar una nueva versión firmada en cada registro ni a desplegar un servicio público. `serve` se ejecuta en el host elegido; el acceso remoto requiere configurar el proxy o el túnel documentados.

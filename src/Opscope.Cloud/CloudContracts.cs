@@ -17,7 +17,7 @@ public sealed record CloudResource(string Provider, string Account, string Regio
 
 // EN: Capabilities describe implemented reads, not credentials or guarantees about provider coverage.
 // ES: Las capacidades describen lecturas implementadas, no credenciales ni garantías de cobertura.
-public enum CloudOperation { Inventory, Health, Posture, Metrics, Cost, Patches, Vm, Instance, Bundle, Drift, Arc, Metadata, Scc, Services }
+public enum CloudOperation { Inventory, Health, Posture, Metrics, Cost, Patches, Vm, Instance, Bundle, Drift, Arc, Metadata, Scc, Services, Networks }
 [System.Text.Json.Serialization.JsonConverter(typeof(System.Text.Json.Serialization.JsonStringEnumConverter<CoverageState>))]
 public enum CoverageState { Complete, Partial, NotConfigured, PermissionDenied, RateLimited, Failed, Unsupported }
 

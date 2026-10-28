@@ -4,6 +4,8 @@
 (() => {
 const $ = id => document.getElementById(id);
 const token = new URLSearchParams(location.hash.slice(1)).get('token');
+let authenticationMode = token ? 'local' : null;
+const hasSession = () => authenticationMode === 'proxy' || authenticationMode === 'local' && !!token;
 history.replaceState(null, '', location.pathname);
 const words = {
 en: {skip:'Skip to evidence',local:'LOCAL',connecting:'Connecting…',connected:'Local session',disconnected:'Session disconnected',readonly:'READ ONLY',redacted:'Identifiers redacted · No telemetry · Loopback only',full:'Show full identifiers',fullWarning:'Full identifiers visible in this session · History and exports remain redacted',workspace:'EVIDENCE WORKSPACE',overview:'Overview',findings:'Findings',processes:'Processes & ports',services:'Services',fleet:'Fleet comparison',fleetUpload:'Upload fleet snapshots',fleetCompare:'Compare fleet',fleetLocal:'Only local processing: snapshots are validated on this loopback session and are never sent to a cloud service or saved in history. Results always redact host identities.',fleetLimit:'Choose 2–100 JSON snapshots, up to 2 MiB total. Distinct host identities or distinct local pseudonyms are required; generic redacted labels cannot identify separate hosts.',fleetSelected:'snapshots selected',fleetEmpty:'Select saved snapshots from at least two hosts to compare their latest observations.',fleetInvalid:'Fleet files must contain valid snapshots with distinct host identities and fit within the 2 MiB total request limit.',fleetHosts:'Distinct hosts',fleetSnapshots:'Snapshots',fleetMedianCpu:'Median CPU',fleetMedianMemory:'Median memory',fleetMedianDisk:'Median disk use',fleetFindings:'Fleet findings',fleetOutliers:'Observed outliers and peer differences',failedServices:'Failed services',drift:'Drift comparison',history:'History & timeline',cloud:'Cloud',policy:'Policy',reports:'Reports & bundle',settings:'Settings',sideNote:'Local evidence. Clear decisions.',readOnlyNote:'No host changes are available.',observability:'HOST OBSERVABILITY',description:'A clear view of this host, from the evidence it provides.',collect:'Collect now',collecting:'Collecting…',search:'Search all evidence',footer:'Evidence stays on this device.',cpu:'CPU utilization',memory:'Memory utilization',disk:'Highest disk use',listeners:'Listening sockets',sample:'Observed sample',diskCount:'ready volumes',exposed:'wildcard listeners',priority:'Prioritized findings',allFindings:'View all findings',host:'Host evidence',platform:'Platform',os:'Operating system',uptime:'Uptime',privilege:'Privilege',elevated:'Elevated',standard:'Standard',processors:'Processors',firewall:'Firewall',verified:'Verified protection',unverified:'Unverified / unknown',warnings:'Collection warnings',noWarnings:'No collection warnings reported.',noFindings:'No findings in this evidence sample.',noData:'No evidence available.',trend:'Local resource history',trendNote:'Samples retained in the redacted SQLite history.',needHistory:'A trend needs at least two retained samples.',severity:'Severity',all:'All severities',critical:'Critical',warning:'Warning',info:'Information',evidence:'Evidence',recommendation:'Suggested remediation',code:'Code',name:'Name',pid:'PID',user:'User',workingSet:'Memory (MiB)',cpuTime:'CPU time',command:'Command line',protocol:'Protocol',address:'Local address',process:'Process',source:'Source',state:'State',serviceDescription:'Description',noRows:'No matching records in this sample.',processList:'Processes by memory',portList:'Listening ports',sort:'Sort processes by',memorySort:'Memory',nameSort:'Name',cpuSort:'CPU time',baseline:'Baseline',current:'Current evidence',upload:'Upload a snapshot JSON',uploadNote:'Maximum 2 MiB. Compared in memory; uploaded data is never stored.',compare:'Compare with current',selectHistory:'Use retained baseline',choose:'Choose a snapshot…',noBaseline:'Select a retained snapshot or upload a baseline to compare.',significant:'Significant changes detected',noSignificant:'No significant changes detected',metric:'Metric',delta:'Delta',changes:'Entity changes',category:'Category',identity:'Identity',change:'Change',details:'Details',retained:'Retained samples',boot:'Observed host boot',historyNote:'Timeline includes observed boot and snapshot collections. Native log events are available through the CLI timeline collector.',sampleFindings:'findings',viewSample:'View redacted sample',redactedSample:'Retained redacted evidence',cloudUnavailable:'No cloud queries are configured for this session. Use the CLI Azure or AWS commands with a configured read-only identity.',run:'Run read-only query',cloudNote:'Cloud queries use the configured shared provider. No credentials or commands can be entered here.',policyUnavailable:'No policy file is configured. The draft below can still be validated and previewed against current evidence.',policyNote:'Policy preview only. Edit a draft, validate it against current evidence, and download the YAML. This never applies policy or changes host configuration.',policyChanged:'Draft changed. Validate again to refresh findings.',policyDraft:'Draft policy YAML',previewPolicy:'Validate & preview',downloadPolicy:'Download validated YAML',policyValid:'Policy validated',policyInvalid:'Policy validation failed',configuredPolicy:'Configured policy view',observedTimeline:'Observed timeline',downloadChecksum:'Download bundle checksum',downloadBundle:'Download redacted bundle',downloadJson:'Download redacted JSON',downloadReport:'Download HTML report',downloadPdf:'Download PDF',downloadSarif:'Export findings as SARIF',printReport:'Print / save as PDF',reportNote:'All exports use shared redaction. Bundle includes its evidence manifest; download its checksum after the ZIP. The Print action opens the browser print dialog.',settingsNote:'Session settings are read only. Tokens are kept in memory and are never written to history.',setting:'Setting',value:'Value',noToken:'Open the complete bootstrap URL printed by opscope serve to start a local session. Reloading requires that URL again.',error:'The local request could not complete.',busy:'The local request is busy or rate limited. Try again shortly.',collected:'Collected',searchEmpty:'No matching evidence.',maxFile:'Choose a JSON file smaller than 2 MiB.',invalidFile:'The uploaded snapshot is invalid or exceeds the supported bounds.',live:'Live evidence',duration:'Collection duration',available:'available',unknown:'Unknown',days:'days',changed:'changed',comparisonReady:'Baseline loaded. Compare it with current evidence.',refreshError:'Live updates paused; reconnecting…'},
@@ -101,9 +103,22 @@ let analysisReport = null, analysisError = null, analysisBusy = false, analysisV
 let cloudAction = null, cloudBusy = false, cloudError = null, cloudVersion = 0;
 let analysisExportFormat = 'json', policyBusy = false, collectionBusy = false, cooldownUntil = 0, snapshotVersion = 0;
 const tablePages = new Map(), tableSizes = new Map(), tableSorts = new Map();
+Object.assign(words.en, {
+networks:'Regional networks', configurationEvidence:'Observed configuration', configurationNote:'These are observed configuration fields and counts. Missing or unavailable fields remain unknown. They do not establish effective reachability, application availability or complete security posture.', configurationProjection:'Allowed configuration fields', configurationProjectionNote:'Configuration evidence below is limited to the fields supported by this view.', configurationUnavailable:'This read is unavailable. Its configuration values are unknown.', configurationNoChecks:'No supported configuration observations were returned.', configurationTls:'TLS settings', configurationDns:'DNS metadata', configurationWaf:'WAF metadata', configurationRoutes:'Worker route metadata', configurationDisks:'Disk encryption observations', configurationGroups:'Security-group observations', configurationVpcs:'Regional VPC observations', configurationPrivateNetworks:'Regional private-network observations', configurationSsl:'Observed SSL mode', configurationMinimumTls:'Minimum TLS version', configurationHttps:'Always use HTTPS', configurationEnabled:'Enabled', configurationDisabled:'Disabled', configurationRecords:'Observed DNS records', configurationProxied:'Observed proxied records', configurationUnproxied:'Observed unproxied records', configurationProxyUnknown:'Records with unknown proxy state', configurationRecordTypes:'Observed record types', configurationRecordType:'DNS record type', configurationRulesets:'Observed rulesets', configurationPhases:'Observed rule phases', configurationRules:'Observed rules', configurationEnabledRules:'Observed enabled rules', configurationDisabledRules:'Observed disabled rules', configurationUnknownRules:'Rules with unknown state', configurationRoutesRead:'Observed routes', configurationDisksRead:'Observed disks', configurationUnencrypted:'Observed unencrypted disks', configurationEncryptionUnknown:'Disks with unknown encryption', configurationGroupsRead:'Observed security groups', configurationWorldIngress:'Observed global ingress allow rules', configurationAdminIngress:'Observed administrative ingress allow rules', configurationShadowed:'Possibly shadowed administrative allow rules', configurationResources:'Observed regional resources', configurationExpected:'Provider-declared resources'
+});
+Object.assign(words.es, {
+networks:'Redes regionales', configurationEvidence:'Configuración observada', configurationNote:'Son campos y recuentos de configuración observados. Los campos ausentes o no disponibles siguen siendo desconocidos. No demuestran accesibilidad efectiva, disponibilidad de aplicación ni una evaluación completa de seguridad.', configurationProjection:'Campos de configuración admitidos', configurationProjectionNote:'La evidencia de configuración se limita a los campos admitidos por esta vista.', configurationUnavailable:'La lectura no está disponible. Se desconocen sus valores de configuración.', configurationNoChecks:'No se recibieron observaciones de configuración compatibles.', configurationTls:'Configuración TLS', configurationDns:'Metadatos DNS', configurationWaf:'Metadatos WAF', configurationRoutes:'Metadatos de rutas Worker', configurationDisks:'Observaciones de cifrado de discos', configurationGroups:'Observaciones de security groups', configurationVpcs:'Observaciones de VPC regionales', configurationPrivateNetworks:'Observaciones de redes privadas regionales', configurationSsl:'Modo SSL observado', configurationMinimumTls:'Versión TLS mínima', configurationHttps:'Usar HTTPS siempre', configurationEnabled:'Activado', configurationDisabled:'Desactivado', configurationRecords:'Registros DNS observados', configurationProxied:'Registros observados con proxy', configurationUnproxied:'Registros observados sin proxy', configurationProxyUnknown:'Registros con estado de proxy desconocido', configurationRecordTypes:'Tipos de registro observados', configurationRecordType:'Tipo de registro DNS', configurationRulesets:'Rulesets observados', configurationPhases:'Fases de reglas observadas', configurationRules:'Reglas observadas', configurationEnabledRules:'Reglas activadas observadas', configurationDisabledRules:'Reglas desactivadas observadas', configurationUnknownRules:'Reglas con estado desconocido', configurationRoutesRead:'Rutas observadas', configurationDisksRead:'Discos observados', configurationUnencrypted:'Discos sin cifrar observados', configurationEncryptionUnknown:'Discos con cifrado desconocido', configurationGroupsRead:'Security groups observados', configurationWorldIngress:'Reglas allow de entrada global observadas', configurationAdminIngress:'Reglas allow de entrada administrativa observadas', configurationShadowed:'Reglas allow administrativas posiblemente anuladas', configurationResources:'Recursos regionales observados', configurationExpected:'Recursos declarados por el proveedor'
+});
 const knownProviders = new Set(['azure','aws','gcp','oci','digitalocean','hetzner','cloudflare','openstack','alibaba','ibm','scaleway','kubernetes']);
-const knownOperations = new Set(['inventory','health','posture','metrics','cost','patches','drift','scc','services']);
-const knownViews = new Set(['overview','findings','processes','services','analysis','drift','fleet','history','cloud','policy','reports','settings']);
+Object.assign(words.en, {
+connections:'Connections', connectionsDescription:'Connect authorized cloud accounts from the host running Opscope.', connectionsNote:'Creating an account, signing in and granting read access are separate steps. This guide checks host setup without signing in or contacting a provider. Credentials stay on the Opscope host.', connectionsUnavailable:'Connection guidance could not be loaded. Retry while the Opscope session is active.', refreshConnections:'Refresh setup checks', connectionSetup:'Host setup', connectionGuide:'Set up this provider', connectionScope:'Read scope', connectionCredential:'Credential setup', connectionTool:'Provider tool', connectionAccess:'Last provider read', connectionScopeReady:'Scope configured · access unverified', connectionScopeMissing:'No read scope configured', connectionPresent:'Present · authentication unverified', connectionExternal:'External session · unverified', connectionMissing:'Missing', connectionUnavailable:'Could not check', connectionAvailable:'Available · session unverified', connectionUntrusted:'Untrusted executable', connectionNotRequired:'Not required', connectionNotTested:'Access not tested', connectionSucceeded:'Last read succeeded · review its scope and time', connectionPartial:'Last read returned partial evidence', connectionNoData:'Last read returned no observations', connectionDenied:'Last read denied', connectionRateLimited:'Last read rate limited', connectionTimedOut:'Last read timed out', connectionFailed:'Last read failed', connectionNotConfigured:'Last read needs configuration', connectionUnsupported:'Read unsupported', connectionRequirements:'Operation-specific requirements', connectionSteps:'Steps on the Opscope host', connectionSignup:'Create an account', connectionConsole:'Open provider console', connectionDocs:'Official setup documentation', connectionTest:'Test read access', connectionTestNote:'Runs an existing configured read. Setup presence does not establish authentication or access.', connectionNoTest:'Configure an explicit authorized read scope to enable an access test.', connectionObserved:'Setup checked', connectionHelp:'Open Connections to review account setup and permissions.', proxy_local:'HOSTED', proxy_connected:'Authenticated hosted session', proxy_redacted:'Identifiers redacted · No telemetry · Authenticated proxy', proxy_footer:'Evidence stays on the Opscope host.', proxy_errorAuth:'The hosted session is no longer authorized. Sign in through your configured proxy again.'
+});
+Object.assign(words.es, {
+connections:'Conexiones', connectionsDescription:'Conecta tus cuentas cloud desde el host donde se ejecuta Opscope.', connectionsNote:'Crear una cuenta, iniciar sesión y conceder acceso de lectura son pasos distintos. Esta guía comprueba la preparación del host sin iniciar sesión ni consultar al proveedor. Las credenciales permanecen en el host de Opscope.', connectionsUnavailable:'No se pudo cargar la guía de conexión. Reintenta con la sesión de Opscope activa.', refreshConnections:'Actualizar comprobaciones', connectionSetup:'Preparación del host', connectionGuide:'Configurar este proveedor', connectionScope:'Ámbito de lectura', connectionCredential:'Credenciales', connectionTool:'Herramienta del proveedor', connectionAccess:'Última lectura del proveedor', connectionScopeReady:'Ámbito configurado · acceso sin verificar', connectionScopeMissing:'Sin ámbito de lectura configurado', connectionPresent:'Presente · autenticación sin verificar', connectionExternal:'Sesión externa · sin verificar', connectionMissing:'Ausente', connectionUnavailable:'No se pudo comprobar', connectionAvailable:'Disponible · sesión sin verificar', connectionUntrusted:'Ejecutable no confiable', connectionNotRequired:'No necesaria', connectionNotTested:'Acceso sin probar', connectionSucceeded:'Última lectura correcta · revisa su ámbito y fecha', connectionPartial:'Última lectura con evidencia parcial', connectionNoData:'Última lectura sin observaciones', connectionDenied:'Última lectura denegada', connectionRateLimited:'Última lectura limitada por cuota', connectionTimedOut:'Última lectura agotó el tiempo', connectionFailed:'Última lectura fallida', connectionNotConfigured:'Última lectura necesita configuración', connectionUnsupported:'Lectura no implementada', connectionRequirements:'Requisitos por operación', connectionSteps:'Pasos en el host de Opscope', connectionSignup:'Crear una cuenta', connectionConsole:'Abrir consola del proveedor', connectionDocs:'Documentación oficial', connectionTest:'Probar acceso de lectura', connectionTestNote:'Ejecuta una lectura ya configurada. La presencia de configuración no demuestra autenticación ni permisos.', connectionNoTest:'Configura un ámbito de lectura autorizado para habilitar una prueba de acceso.', connectionObserved:'Preparación comprobada', connectionHelp:'Abre Conexiones para revisar la cuenta y sus permisos.', proxy_local:'ALOJADA', proxy_connected:'Sesión alojada autenticada', proxy_redacted:'Identificadores redactados · Sin telemetría · Proxy autenticado', proxy_footer:'La evidencia permanece en el host de Opscope.', proxy_errorAuth:'La sesión alojada ya no está autorizada. Vuelve a iniciar sesión en el proxy configurado.'
+});
+const knownOperations = new Set(['inventory','health','posture','metrics','cost','patches','drift','scc','services','networks']);
+const knownViews = new Set(['overview','findings','processes','services','analysis','drift','fleet','history','cloud','connections','policy','reports','settings']);
+let cloudConnections = null, connectionsError = null, connectionsBusy = false, connectionProvider = 'all';
 let cloudCatalog = null, cloudProvider = 'all', cloudScope = 'all', findingCode = 'all', findingSource = 'all', serviceFilter = 'all', historyRange = 'all';
 let pendingEvidence = false, connectionState = 'connecting', streamController = null, lastTransportAt = 0, streamFailures = 0, chartHandle = null, chartNode = null, chartContext = null, lastMetricSequence = 0;
 const cloudPlotRenderers = new Set();
@@ -123,7 +138,7 @@ try {
 document.documentElement.dataset.density = density;
 history.replaceState({view:'overview'}, '', location.pathname);
 if(!words[lang])lang='en';
-const t = key => words[lang][key] || key;
+const t = key => words[lang][authenticationMode === 'proxy' && ['local','connected','redacted','footer','errorAuth'].includes(key) ? 'proxy_'+key : key] || words[lang][key] || key;
 const el = (tag, text, cls) => {const node=document.createElement(tag);if(text!==undefined&&text!==null)node.textContent=String(text);if(cls)node.className=cls;return node;};
 const append = (parent,...children)=>{children.flat().forEach(child=>{if(child)parent.append(child);});return parent;};
 const button = (text, callback, cls) => {const node=el('button',text,cls);node.type='button';node.addEventListener('click',callback);return node;};
@@ -141,7 +156,10 @@ async function api(path, options = {}) {
     let timedOut=false, response;
     const timeout=controller?setTimeout(()=>{timedOut=true;controller.abort();},path.startsWith('/api/cloud/')?65000:30000):null;
     try {
-        response=await fetch(path,{...options,signal:controller?.signal || options.signal,headers:{'X-Opscope-Token':token || '',...options.headers},credentials:'omit',cache:'no-store',referrerPolicy:'no-referrer'});
+        const headers = new Headers(options.headers);
+        if(authenticationMode === 'proxy') headers.delete('X-Opscope-Token');
+        else headers.set('X-Opscope-Token', token || '');
+        response=await fetch(path,{...options,signal:controller?.signal || options.signal,headers,credentials:authenticationMode === 'proxy'?'same-origin':'omit',cache:'no-store',referrerPolicy:'no-referrer'});
     } catch(error) {
         if(options.signal?.aborted)throw error;
         throw new Error(t(timedOut?'requestTimeout':'errorUnavailable'));
@@ -156,11 +174,14 @@ async function api(path, options = {}) {
         cooldownUntil = Math.max(cooldownUntil, Date.now() + seconds * 1000);
         message = `${t('busy')} ${t('retryIn')} ${seconds} ${t('seconds')}.`;
         updateCollectionControl();
-    } else if (['/api/policy/preview', '/api/fleet', '/api/analyze', '/api/report'].includes(path) || path.startsWith('/api/cloud/')) {
+    }
+    if (['/api/policy/preview', '/api/fleet', '/api/analyze', '/api/report'].includes(path) || path.startsWith('/api/cloud/')) {
         try {
             const problem = await response.json();
             if (typeof problem.kind === 'string' && Array.isArray(problem.findings) && Array.isArray(problem.warnings)) failureReport = problem;
             message = [problem.error, problem.detail].filter(value => typeof value === 'string').join(' ') || message;
+            if(path.startsWith('/api/cloud/') && problem.cloudProblem && typeof problem.cloudProblem === 'object')
+                message = [problem.cloudProblem.message, problem.cloudProblem.remediation].filter(value => typeof value === 'string' && value.length <= 1000).join(' ') || message;
         } catch {}
     }
     const error = new Error(message);
@@ -170,7 +191,7 @@ async function api(path, options = {}) {
 }
 function updateCollectionControl() {
     const control = $('collect'), remaining = Math.max(0, Math.ceil((cooldownUntil - Date.now()) / 1000));
-    control.disabled = !token || collectionBusy || remaining > 0;
+    control.disabled = !hasSession() || collectionBusy || remaining > 0;
     control.querySelector('[data-i18n]').textContent = collectionBusy ? t('collecting') : remaining ? `${t('retryIn')} ${remaining}s` : t('collect');
     control.title = remaining ? `${t('retryIn')} ${remaining} ${t('seconds')}` : '';
 }
@@ -191,7 +212,7 @@ function navigate(next, record = true) {
         const active = item.dataset.view === view; item.classList.toggle('active',active);
         if (active) item.setAttribute('aria-current','page'); else item.removeAttribute('aria-current');
     });
-    if (['analysis','history','fleet','cloud'].includes(view) && $('full').checked) {
+    if (['analysis','history','fleet','cloud','connections'].includes(view) && $('full').checked) {
         privacyVersion++; snapshotVersion++; $('full').checked = false; snapshot = safeSnapshot;
     }
     setNavigationOpen(false);
@@ -211,7 +232,7 @@ function setConnection(status) {
 function updateFreshness() {
     const stamp = snapshot?.collectedAtUtc, age = Number.isFinite(Date.parse(stamp)) ? Math.max(0,Math.floor((Date.now()-Date.parse(stamp))/1000)) : null;
     const stale = age !== null && age > Math.max(60,Number(settings?.refreshSeconds || 30)*3);
-    const saved = ['analysis','history','fleet','cloud'].includes(view);
+    const saved = ['analysis','history','fleet','cloud','connections'].includes(view);
     const node = $('sample-age');
     node.textContent = saved ? t('alwaysRedacted') : age === null ? t('noData') : `${stale ? t('stale') : t('sampleAge')}: ${age < 60 ? age+' s' : Math.floor(age/60)+' min'} · ${date(stamp)}`;
     node.parentElement.dataset.state = stale && !saved ? 'stale' : connectionState;
@@ -265,11 +286,11 @@ function table(headers, rows, key = `${view}:${headers.join(':')}`) {
     size.addEventListener('change',() => { tableSizes.set(key,Number(size.value)); tablePages.set(key,0); draw(); });
     label.append(size);
     const exportButton = button(t('tableExport'),() => {
-        if ($('full').checked && !['analysis','history','fleet','cloud'].includes(view)) { notice(t('fullTableExport')); return; }
+        if ($('full').checked && !['analysis','history','fleet','cloud','connections'].includes(view)) { notice(t('fullTableExport')); return; }
         const csv = [headers.map(t),...sortedRows()].map(row => row.map(csvValue).join(',')).join('\r\n');
         saveBlob(new Blob(['\uFEFF'+csv],{type:'text/csv;charset=utf-8'}),`opscope-${view}-redacted.csv`);
     });
-    exportButton.disabled = $('full').checked && !['analysis','history','fleet','cloud'].includes(view);
+    exportButton.disabled = $('full').checked && !['analysis','history','fleet','cloud','connections'].includes(view);
     append(controls,count,label,exportButton); append(root,controls,content);
     function sortedRows() {
         const order = tableSorts.get(key); if (!order) return rows;
@@ -318,10 +339,10 @@ function findingsList(findings, key = `${view}:findings`) {
             append(detail,el('summary',t('inspectedEvidence')), facts([['code',finding.code],['source',finding.source || finding.ruleId || t('sample')],['observation',date(observed)]]));
             if (finding.evidence !== undefined) detail.append(el('pre', typeof finding.evidence === 'string' ? finding.evidence : JSON.stringify(finding.evidence,null,2)));
             const copy = button(t('copyEvidence'),async() => {
-                if ($('full').checked && !['analysis','history','fleet','cloud'].includes(view)) return;
+                if ($('full').checked && !['analysis','history','fleet','cloud','connections'].includes(view)) return;
                 try { await navigator.clipboard.writeText(JSON.stringify(finding,null,2)); notice(t('copied')); } catch { notice(t('copyFailed')); }
             });
-            copy.disabled = $('full').checked && !['analysis','history','fleet','cloud'].includes(view);
+            copy.disabled = $('full').checked && !['analysis','history','fleet','cloud','connections'].includes(view);
             detail.append(copy); body.append(detail);
             append(item, el('span', null, `severity-dot ${level}`), body); list.append(item);
         });
@@ -565,8 +586,70 @@ async function runCloudQuery(action) {
     if(cloudBusy || !validatedCloudActions().some(item=>item.actionKey===action.actionKey))return;
     const version=++cloudVersion; cloudAction=action.actionKey;cloudBusy=true;cloudError=null;cloudResult=null;notice('');render();
     try {const result=await json(`/api/cloud/${action.scopeAlias}/${action.operation}`,{method:'POST'});if(version===cloudVersion)cloudResult=result;}
-    catch(error){if(version===cloudVersion){cloudError=`${t('cloudFailed')} ${error.status===504?t('cloudTimeout'):error.status===403?t('cloudDenied'):error.message}`;cloudResult=error.report||null;}}
-    finally{if(version===cloudVersion){cloudBusy=false;render();}}
+    catch(error){if(version===cloudVersion){cloudError=`${t('cloudFailed')} ${error.status===504?t('cloudTimeout'):error.status===424?t('cloudDenied')+' '+error.message:error.message}`;cloudResult=error.report||null;}}
+    finally{if(version===cloudVersion){cloudBusy=false;render();loadConnections(false).then(()=>{if(view==='connections')render();});}}
+}
+const connectionHosts = {
+    azure:['azure.microsoft.com','portal.azure.com','learn.microsoft.com'],aws:['portal.aws.amazon.com','console.aws.amazon.com','docs.aws.amazon.com'],gcp:['cloud.google.com','console.cloud.google.com'],oci:['signup.cloud.oracle.com','cloud.oracle.com','docs.oracle.com'],digitalocean:['cloud.digitalocean.com','docs.digitalocean.com'],hetzner:['accounts.hetzner.com','console.hetzner.cloud','docs.hetzner.cloud'],cloudflare:['dash.cloudflare.com','developers.cloudflare.com'],openstack:['docs.openstack.org'],alibaba:['account.alibabacloud.com','home.console.aliyun.com','www.alibabacloud.com'],ibm:['cloud.ibm.com'],scaleway:['console.scaleway.com','www.scaleway.com'],kubernetes:['kubernetes.io']
+};
+const connectionStateLabels = {'external-unverified':'connectionExternal',missing:'connectionMissing',present:'connectionPresent',unavailable:'connectionUnavailable',unknown:'unknown',available:'connectionAvailable',untrusted:'connectionUntrusted','not-required':'connectionNotRequired','not-tested':'connectionNotTested','last-read-succeeded':'connectionSucceeded',partial:'connectionPartial','no-data':'connectionNoData','permission-denied':'connectionDenied','rate-limited':'connectionRateLimited','timed-out':'connectionTimedOut',failed:'connectionFailed','not-configured':'connectionNotConfigured',unsupported:'connectionUnsupported'};
+const connectionRequirementNames = new Set(['az','aws','gcloud','oci','openstack','aliyun','kubectl','DIGITALOCEAN_ACCESS_TOKEN','HCLOUD_TOKEN','CLOUDFLARE_API_TOKEN','IBM_CLOUD_IAM_TOKEN','SCW_SECRET_KEY','SCW_COCKPIT_TOKEN','cli-session','cli-session-and-adc','kubeconfig','Application Default Credentials']);
+const safeConnectionText = (value, limit=1500) => typeof value === 'string' && value.length <= limit ? value : '';
+function connectionLink(providerId, value, label) {
+    if(typeof value !== 'string' || value.length>1024)return null;
+    try {
+        const url=new URL(value);
+        if(url.protocol!=='https:'||url.username||url.password||url.port||!connectionHosts[providerId]?.includes(url.hostname))return null;
+        const link=el('a',t(label));link.href=url.href;link.target='_blank';link.rel='noopener noreferrer';return link;
+    } catch{return null;}
+}
+async function loadConnections(showBusy=true) {
+    if(showBusy){connectionsBusy=true;connectionsError=null;render();}
+    try {
+        const result=await json('/api/cloud/connections');
+        if(result?.version!==1||result.mode!=='guided-setup'||result.authenticationActionsAvailable!==false||result.remoteRequestsMade!==false||!Array.isArray(result.providers))throw new Error(t('connectionsUnavailable'));
+        cloudConnections=result;connectionsError=null;
+    } catch(error){connectionsError=error.message;}
+    finally {if(showBusy){connectionsBusy=false;render();}}
+}
+function showConnections() {
+    const wrap=panel(t('connections')),controls=el('div',null,'control-row'),providers=providerDescriptors();
+    append(wrap,el('p',t('connectionsNote'),'muted coverage-note'));
+    controls.append(optionFilter('connection-provider','provider',providers.map(provider=>[provider.id,provider.displayName]),connectionProvider,value=>{connectionProvider=value;render();},'allProviders'));
+    const refresh=button(t('refreshConnections'),()=>loadConnections());refresh.disabled=connectionsBusy;controls.append(refresh);wrap.append(controls);
+    if(connectionsError){const error=el('p',t('connectionsUnavailable'),'notice');error.setAttribute('role','alert');wrap.append(error);}
+    if(!cloudConnections){empty(wrap,connectionsBusy?'loading':'connectionsUnavailable');$('view').append(wrap);return;}
+    wrap.append(el('p',`${t('connectionObserved')}: ${date(cloudConnections.observedAtUtc)} · ${t('connectionTestNote')}`,'muted'));
+    const cards=el('div',null,'ops-connections');
+    providers.filter(provider=>connectionProvider==='all'||connectionProvider===provider.id).forEach(provider=>{
+        const data=cloudConnections.providers.find(item=>item?.providerId===provider.id);
+        if(!data)return;
+        const card=el('section',null,'ops-cloud-card ops-connection-card');card.dataset.provider=provider.id;
+        const label=value=>t(connectionStateLabels[value]||'unknown');
+        append(card,el('h3',provider.displayName),facts([['connectionScope',t(data.scopeStatus==='configured'?'connectionScopeReady':'connectionScopeMissing')],['connectionCredential',label(data.credentialStatus)],['connectionTool',label(data.toolStatus)],['connectionAccess',label(data.accessStatus)]]));
+        if(validatedCloudActions().some(action=>action.actionKey===data.lastActionKey))card.append(el('p',`${data.lastActionKey} · ${date(data.lastObservedAtUtc)}`,'muted'));
+        const guide=data.guide,details=el('details');details.open=connectionProvider!=='all';details.append(el('summary',t('connectionGuide')));
+        if(guide&&typeof guide==='object'){
+            const links=el('div',null,'ops-connection-links');
+            append(links,connectionLink(provider.id,guide.signUpUrl,'connectionSignup'),connectionLink(provider.id,guide.consoleUrl,'connectionConsole'),connectionLink(provider.id,guide.documentationUrl,'connectionDocs'));details.append(links);
+            const steps=el('ol',null,'ops-connection-steps');
+            if(Array.isArray(guide.steps))guide.steps.slice(0,8).forEach(step=>{
+                if(!step||typeof step!=='object')return;
+                const item=el('li');append(item,el('h4',safeConnectionText(step.title,160)),el('p',safeConnectionText(step.description),'muted'));
+                const command=safeConnectionText(step.commandTemplate,300);
+                if(/^[\w <>.=\-]+$/.test(command)&&(/^(az login|aws sso login|gcloud auth)\b/.test(command)||command.startsWith('opscope serve --cloud '+provider.id+' ')))item.append(el('pre',command,'evidence'));
+                steps.append(item);
+            });
+            if(steps.children.length)append(details,el('h4',t('connectionSteps')),steps);
+        }
+        const requirements=Array.isArray(data.requirements)?data.requirements.filter(item=>item&&connectionRequirementNames.has(item.name)).slice(0,8):[];
+        if(requirements.length){const list=el('ul',null,'ops-connection-requirements');requirements.forEach(requirement=>{const operations=Array.isArray(requirement.operations)?requirement.operations.filter(operation=>knownOperations.has(operation)).map(operation=>t(operation==='drift'?'cloudDrift':operation)):[];list.append(el('li',`${requirement.name}: ${label(requirement.state)}${operations.length?' · '+operations.join(', '):''}`));});append(details,el('h4',t('connectionRequirements')),list);}
+        card.append(details);
+        const testActions=Array.isArray(data.testActions)?data.testActions:[],actions=validatedCloudActions().filter(action=>action.providerId===provider.id&&['inventory','health','networks','metrics'].includes(action.operation)&&testActions.some(test=>test?.actionKey===action.actionKey&&test.operation===action.operation&&test.scopeAlias===action.scopeAlias));
+        const tests=el('div',null,'ops-cloud-actions');actions.forEach(action=>{const test=button(`${t('connectionTest')} · ${action.actionKey}`,()=>{cloudProvider=action.providerId;cloudScope=action.scopeAlias;navigate('cloud');runCloudQuery(action);});test.disabled=cloudBusy;tests.append(test);});
+        if(!actions.length)card.append(el('p',t('connectionNoTest'),'muted'));else append(card,el('p',t('connectionTestNote'),'muted'),tests);
+        cards.append(card);
+    });wrap.append(cards);$('view').append(wrap);
 }
 function normalizedCoverage(status) {
     const key=String(status || '').replace(/[_\s-]/g,'').toLowerCase();
@@ -579,6 +662,64 @@ function resourceState(resource) {
         const entry=Object.entries(object).find(([key,value])=>['state','status','lifecyclestate','provisioningstate','powerstate'].includes(key.replace(/[_-]/g,'').toLowerCase())&&['string','number','boolean'].includes(typeof value));
         if(entry)return String(entry[1]);
     }return t('unknown');
+}
+
+const configurationSources={cloudflare:'cloudflare-fixed-configuration-get',alibaba:'aliyun-fixed-projections',scaleway:'scaleway-vpc-v2'};
+const configurationChecks={cloudflare:['tls','dns','waf','routes'],alibaba:['disks','security-groups'],scaleway:['vpcs','private-networks']};
+const configurationTitles={tls:'configurationTls',dns:'configurationDns',waf:'configurationWaf',routes:'configurationRoutes',disks:'configurationDisks','security-groups':'configurationGroups',vpcs:'configurationVpcs','private-networks':'configurationPrivateNetworks'};
+const configurationFields={
+    tls:[['sslMode','configurationSsl','ssl'],['minimumTlsVersion','configurationMinimumTls','tls'],['alwaysUseHttps','configurationHttps','boolean']],
+    dns:[['observedRecords','configurationRecords'],['observedProxiedRecords','configurationProxied'],['observedUnproxiedRecords','configurationUnproxied'],['unknownProxyRecords','configurationProxyUnknown']],
+    waf:[['observedRulesets','configurationRulesets'],['phasesObserved','configurationPhases'],['observedRules','configurationRules'],['observedEnabledRules','configurationEnabledRules'],['observedDisabledRules','configurationDisabledRules'],['unknownEnabledRules','configurationUnknownRules']],
+    routes:[['observedRoutes','configurationRoutesRead']],
+    disks:[['disksRead','configurationDisksRead'],['unencryptedDisks','configurationUnencrypted'],['unknownEncryption','configurationEncryptionUnknown']],
+    'security-groups':[['groupsRead','configurationGroupsRead'],['rulesRead','configurationRules'],['worldIngressAllowRules','configurationWorldIngress'],['administrativeIngressAllowRules','configurationAdminIngress'],['possiblyShadowedAdminAllowRules','configurationShadowed'],['unknownRules','configurationUnknownRules']],
+    vpcs:[['observedResources','configurationResources'],['expectedResources','configurationExpected']],
+    'private-networks':[['observedResources','configurationResources'],['expectedResources','configurationExpected']]
+};
+const configurationRecordTypes=new Set(['A','AAAA','CNAME','MX','NS','TXT','SOA','SRV','PTR','CAA','DNSKEY','DS','RRSIG','NAPTR','TLSA','HTTPS','SVCB','URI','CERT','LOC','SSHFP','SMIMEA']);
+function configurationValue(value,type) {
+    if(type==='boolean')return typeof value==='boolean'?value:null;
+    if(type==='ssl')return ['off','flexible','full','strict','origin_pull'].includes(value)?value:null;
+    if(type==='tls')return ['1.0','1.1','1.2','1.3'].includes(value)?value:null;
+    return Number.isSafeInteger(value)&&value>=0?value:null;
+}
+function projectConfigurationEvidence(evidence,provider,state) {
+    const supported=configurationChecks[provider]||[], observed=['complete','partial','noDataCoverage'].includes(state);
+    const checks=Array.isArray(evidence?.checks)?evidence.checks.filter(check=>check&&typeof check==='object'&&supported.includes(check.check)).slice(0,100).map(check=>{
+        const declaredState=normalizedCoverage(check.state)||'unknown';
+        const timestamp=typeof check.observedAtUtc==='string'?Date.parse(check.observedAtUtc):NaN;
+        const time=Number.isFinite(timestamp)&&timestamp<=Date.now()+120000?new Date(timestamp).toISOString():null;
+        const checkState=!observed?state:['complete','partial','noDataCoverage'].includes(declaredState)&&!time?'unknown':declaredState;
+        const values=observed&&['complete','partial','noDataCoverage'].includes(checkState)&&time&&check.observations&&typeof check.observations==='object'&&!Array.isArray(check.observations)?check.observations:null;
+        const observations=values?Object.fromEntries(configurationFields[check.check].map(([field,,type])=>[field,configurationValue(values[field],type)])):null;
+        if(observations&&check.check==='dns')observations.recordTypes=Array.isArray(values.recordTypes)?values.recordTypes.filter(row=>row&&configurationRecordTypes.has(row.type)&&Number.isSafeInteger(row.count)&&row.count>=0).slice(0,50).map(row=>({type:row.type,count:row.count})):[];
+        return {check:check.check,state:checkState,observedAtUtc:time,observations};
+    }):[];
+    const source=configurationSources[provider];
+    return {source:typeof source==='string'&&evidence?.source===source?source:'unknown',checks};
+}
+function cloudConfigurationEvidence(evidence) {
+    const section=el('section',null,'report-group ops-configuration-evidence');
+    append(section,el('h3',t('configurationEvidence')),el('p',t('configurationNote'),'coverage-note muted'));
+    section.append(facts([['source',evidence.source]]));
+    evidence.checks.forEach((check,index)=>{
+        const item=el('article',null,'ops-configuration-check');item.dataset.check=check.check;
+        append(item,el('h4',`${t(configurationTitles[check.check])} · ${index+1}`));
+        const status=el('span',cloudStatus(check.state),'ops-cloud-status');status.dataset.state=check.state;item.append(status);
+        item.append(facts([['cloudObserved',date(check.observedAtUtc)]]));
+        if(!check.observations)item.append(el('p',t('configurationUnavailable'),'empty'));
+        else {
+            item.append(facts(configurationFields[check.check].map(([field,label,type])=>{
+                const value=check.observations[field];
+                return [label,value===null?t('unknown'):type==='boolean'?t(value?'configurationEnabled':'configurationDisabled'):value];
+            })));
+            if(check.check==='dns'&&check.observations.recordTypes.length)item.append(table(['configurationRecordType','rows'],check.observations.recordTypes.map(row=>[row.type,row.count]),'cloud:configuration-dns:'+index));
+        }
+        section.append(item);
+    });
+    if(!evidence.checks.length)section.append(el('p',t('configurationNoChecks'),'empty'));
+    return section;
 }
 
 function cloudBillingEvidence(billing, state) {
@@ -676,7 +817,8 @@ function cloudMetricSeries(series) {
 }
 function showCloud() {
     const wrap=panel(t('cloud')), providers=providerDescriptors(), actions=validatedCloudActions(), controls=el('div',null,'control-row');
-    append(wrap,el('p',t('cloudCatalogNote'),'muted'),el('p',t(actions.length?'cloudNote':'cloudUnavailable'),'muted workspace-note'));
+    const help=button(t('connectionHelp'),()=>navigate('connections'));help.disabled=cloudBusy;
+    append(wrap,el('p',t('cloudCatalogNote'),'muted'),el('p',t(actions.length?'cloudNote':'cloudUnavailable'),'muted workspace-note'),help);
     controls.append(optionFilter('cloud-provider','provider',providers.map(item=>[item.id,item.displayName]),cloudProvider,value=>{cloudProvider=value;cloudScope='all';cloudAction=null;cloudResult=null;cloudError=null;render();},'allProviders'));
     const scopes=[...new Set(actions.filter(action=>cloudProvider==='all'||action.providerId===cloudProvider).map(action=>action.scopeAlias))];
     controls.append(optionFilter('cloud-scope','scope',scopes.map(alias=>[alias,alias]),cloudScope,value=>{cloudScope=value;cloudAction=null;cloudResult=null;cloudError=null;render();},'allScopes'));
@@ -705,28 +847,31 @@ function showCloud() {
     else if(!cloudResult&&actions.length)empty(wrap,'cloudEmpty');
     if(cloudResult){
         const data=cloudResult.data, success=cloudResult.operationSucceeded!==false;
-        const state=normalizedCoverage(data?.coverage?.state)||(!success?'failed':cloudResult.warnings?.length?'partial':'complete');
+        const declaredState=normalizedCoverage(data?.coverage?.state);
+        const state=!success&&declaredState==='complete'?'failed':declaredState||(!success?'failed':cloudResult.warnings?.length?'partial':'complete');
         const count=Number.isInteger(data?.coverage?.enumeratedResources)?data.coverage.enumeratedResources:Number.isInteger(data?.resourceCount)?data.resourceCount:Array.isArray(data?.resources)?data.resources.length:null;
         const visibleCount=['complete','partial'].includes(state)&&count!==null?state==='partial'?`${count} · ${t('observedOnly')}`:count:t('unknown');
         const summary=el('section',null,'ops-cloud-result-summary');summary.append(el('h3',t('cloudResult')));
         const badge=el('span',cloudStatus(state),'ops-cloud-status');badge.dataset.state=state;summary.append(badge);
         const factsRows=[['source',cloudResult.kind || cloudAction],['cloudObserved',date(data?.coverage?.observedAtUtc || cloudResult.collectedAtUtc)]];
-        if(!data?.billing&&!data?.scc&&!data?.patches)factsRows.push(['resourceCount',visibleCount]);
+        if(!data?.billing&&!data?.scc&&!data?.patches&&!data?.configurationEvidence)factsRows.push(['resourceCount',visibleCount]);
         summary.append(facts(factsRows));
         if(state==='partial')summary.append(el('p',t('observedOnly'),'coverage-note muted'));
         else if(!['complete'].includes(state))summary.append(el('p',t(state==='denied'?'cloudDenied':state==='timed-out'?'cloudTimeout':'cloudFailedCoverage'),'coverage-note muted'));
-        else if(count===0&&!['metrics','cost','scc'].includes(cloudAction?.split('/')[1]))summary.append(el('p',t('cloudEmptyCoverage'),'coverage-note muted'));
+        else if(count===0&&!data?.configurationEvidence&&!['metrics','cost','scc'].includes(cloudAction?.split('/')[1]))summary.append(el('p',t('cloudEmptyCoverage'),'coverage-note muted'));
         reportWarnings(summary,cloudResult.warnings);
         if(data?.cluster&&typeof data.cluster==='object')summary.append(cloudClusterEvidence(data.cluster,data.infrastructureCorrelation,state));
         if(data?.billing&&typeof data.billing==='object')summary.append(cloudBillingEvidence(data.billing,state));
         if(data?.scc&&typeof data.scc==='object')summary.append(cloudSccEvidence(data.scc,state));
         if(data?.patches&&typeof data.patches==='object')summary.append(cloudPatchEvidence(data.patches,state));
         if(data?.drift&&typeof data.drift==='object')summary.append(cloudDriftEvidence(data.drift,state));
+        const configuration=data&&typeof data==='object'&&Object.hasOwn(data,'configurationEvidence')?projectConfigurationEvidence(data.configurationEvidence,validatedCloudActions().find(action=>action.actionKey===cloudAction)?.providerId,state):null;
+        if(configuration)summary.append(cloudConfigurationEvidence(configuration));
         if(cloudResult.findings?.length)summary.append(findingsList(cloudResult.findings,'cloud:findings'));
         if(Array.isArray(data?.metrics))summary.append(cloudMetricSeries(data.metrics));
         const resources=Array.isArray(data?.resources)?data.resources:[];
         if(resources.length)summary.append(table(['provider','name','category','state'],resources.map(item=>[item.provider || cloudAction?.split('/')[0],item.name || item.id,item.type,resourceState(item)]),'cloud:resources'));
-        const raw=el('details');raw.open=true;append(raw,el('summary',t('rawJson')),el('pre',JSON.stringify(cloudResult,null,2),'evidence'));summary.append(raw);wrap.append(summary);
+        const raw=el('details');raw.open=true;append(raw,el('summary',t(configuration?'configurationProjection':'rawJson')));if(configuration)raw.append(el('p',t('configurationProjectionNote'),'muted'));raw.append(el('pre',JSON.stringify(configuration?{...cloudResult,data:{...data,configurationEvidence:configuration}}:cloudResult,null,2),'evidence'));summary.append(raw);wrap.append(summary);
     }
     $('view').append(wrap);
 }
@@ -1011,12 +1156,13 @@ function showAnalysis() {
     showAnalysisResult(result); $('view').append(result);
 }
 function updateSourceContext() {
-    const saved = view === 'analysis', redactedView = ['analysis','history','fleet','cloud'].includes(view), context = $('source-context');
-    const label = saved ? 'savedSource' : view === 'history' ? 'retainedSource' : view === 'fleet' ? 'fleetSource' : view === 'cloud' ? 'cloudSource' : 'liveSource';
+    const saved = view === 'analysis', redactedView = ['analysis','history','fleet','cloud','connections'].includes(view), context = $('source-context');
+    const label = saved ? 'savedSource' : view === 'history' ? 'retainedSource' : view === 'fleet' ? 'fleetSource' : view === 'cloud' ? 'cloudSource' : view === 'connections' ? 'connectionSetup' : 'liveSource';
     let detail = snapshot ? date(snapshot.collectedAtUtc) : t('connecting');
     if (saved) detail = `${t('alwaysRedacted')} · ${analysisSafe ? date(analysisSafe.collectedAtUtc) : t('sourceEmpty')}`;
     else if (view === 'history') detail = `${t('alwaysRedacted')} · ${entries.length} ${t('retained')}`;
     else if (view === 'fleet') detail = `${t('alwaysRedacted')} · ${fleetSnapshots.length} ${t('fleetSelected')}`;
+    else if (view === 'connections') detail = t('connectionsNote');
     else if (view === 'cloud') detail = `${t('alwaysRedacted')}${cloudAction ? ` · ${cloudAction}` : ''}`;
     if(pendingEvidence&&!redactedView)detail+=` · ${t('pendingEvidence')}`;
     context.replaceChildren(el('span', t(label), 'source-badge'), el('span', detail, 'muted'));
@@ -1025,9 +1171,9 @@ function updateSourceContext() {
     document.querySelector('.full-toggle').hidden = redactedView;
     $('privacy').textContent = t(!redactedView && $('full').checked ? 'fullWarning' : 'redacted');
     context.setAttribute('aria-label', t('source'));
-    $('collect').hidden = ['analysis','cloud','fleet','history'].includes(view);
+    $('collect').hidden = ['analysis','cloud','fleet','history','connections'].includes(view);
     document.querySelector('.search-wrap').hidden = redactedView;
-    $('page-description').textContent = t(saved ? 'analysisDescription' : 'description');
+    $('page-description').textContent = t(saved ? 'analysisDescription' : view === 'connections' ? 'connectionsDescription' : 'description');
     if (redactedView) { $('search-results').hidden = true; $('search-results').replaceChildren(); }
 }
 
@@ -1062,7 +1208,7 @@ function showSettings() {
 }
 
 function searchResults() {
-    const target=$('search-results');target.replaceChildren();if(['analysis','history','fleet','cloud'].includes(view)){target.hidden=true;return;}
+    const target=$('search-results');target.replaceChildren();if(['analysis','history','fleet','cloud','connections'].includes(view)){target.hidden=true;return;}
     const query=$('search').value.trim();target.hidden=!query;if(!query||!snapshot)return;
     const groups=[['findings',snapshot.findings.filter(match).map(item=>item.title)],['processes',snapshot.processes.filter(match).map(item=>`${item.name} · ${item.id}`)],['portList',snapshot.listeners.filter(match).map(item=>`${item.protocol} · ${item.localAddress}`)],['services',snapshot.services.filter(match).map(item=>`${item.name} · ${item.state}`)]];
     const total=groups.reduce((sum,[,rows])=>sum+rows.length,0);target.append(el('p',`${total} ${t('searchCount')} · ${t('showing')} ${Math.min(total,30)}`,'search-summary'));
@@ -1073,7 +1219,7 @@ function searchResults() {
 
 function render(reason = 'explicit') {
     const target=$('view'), active=document.activeElement;
-    if(reason==='sample'&&(target.contains(active)||['policy','fleet','analysis','drift','cloud','reports','settings'].includes(view))){
+    if(reason==='sample'&&(target.contains(active)||['policy','fleet','analysis','drift','cloud','connections','reports','settings'].includes(view))){
         pendingEvidence=true;updateSourceContext();updateFreshness();return;
     }
     const focusedId=target.contains(active)?active.id:null;
@@ -1085,12 +1231,13 @@ function render(reason = 'explicit') {
     target.replaceChildren();
     updateSourceContext();
     updateCollectionControl();
-    if (view === 'analysis' && token) {
+    if (view === 'connections' && hasSession()) { showConnections(); return; }
+    if (view === 'analysis' && hasSession()) {
         showAnalysis();
         $('collected-at').textContent = analysisSafe ? `${t('savedSource')}: ${date(analysisSafe.collectedAtUtc)}` : t('sourceEmpty');
         return;
     }
-    if (!snapshot) { empty(target, token ? 'connecting' : 'noToken'); return; }
+    if (!snapshot) { empty(target, hasSession() ? 'connecting' : 'noToken'); return; }
     const handlers = {overview, findings:showFindings, processes:showProcesses, services:showServices, drift:showDrift, fleet:showFleet, history:showHistory, cloud:showCloud, policy:showPolicy, reports:showReports, settings:showSettings};
     handlers[view]();
     $('finding-badge').textContent = snapshot.findings.length;
@@ -1151,7 +1298,7 @@ async function processStreamEvent(event) {
     applyLiveSample(next,history,timeline,generation,version,wantsFull);
 }
 async function live() {
-    while(!disposed&&token&&connectionState!=='disconnected'){
+    while(!disposed&&hasSession()&&connectionState!=='disconnected'){
         let reader,watchdog;
         streamController=new AbortController();
         try{
@@ -1189,7 +1336,7 @@ $('show-latest').addEventListener('click',()=>{render();$('content').focus();});
 window.addEventListener('popstate',event=>{const next=event.state?.view;if(knownViews.has(next))navigate(next,false);});
 window.addEventListener('resize',()=>{for(const draw of cloudPlotRenderers)draw();});
 document.addEventListener('keydown',event=>{
-    if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'&&!['analysis','history','fleet','cloud'].includes(view)){event.preventDefault();$('search').focus();}
+    if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'&&!['analysis','history','fleet','cloud','connections'].includes(view)){event.preventDefault();$('search').focus();}
     if(event.key==='Escape'){
         if(document.body.classList.contains('navigation-open')){event.preventDefault();setNavigationOpen(false,true);return;}
         $('search').value='';render();
@@ -1215,12 +1362,18 @@ $('full').addEventListener('change', async () => {
 $('collect').addEventListener('click',async()=>{collectionBusy=true;updateCollectionControl();$('collect').disabled=true;$('collect').querySelector('[data-i18n]').textContent=t('collecting');notice('');try{await json('/api/collect',{method:'POST'});await refresh();}catch(error){notice(error.message);}finally{collectionBusy=false;updateCollectionControl();}});
 window.addEventListener('beforeunload',()=>{disposed=true;streamController?.abort();chartHandle?.dispose();window.OpscopeCharts?.reset();});
 translate();
-if(!token){notice(t('noToken'));$('collect').disabled=true;return;}
 (async()=>{
     try{
+        if(!token){
+            const response=await fetch('/api/session',{credentials:'same-origin',cache:'no-store',referrerPolicy:'no-referrer'});
+            const session=response.ok?await response.json():null;
+            if(session?.authenticationMode!=='proxy'||session.authenticated!==true||session.readOnly!==true){notice(t('noToken'));$('collect').disabled=true;return;}
+            authenticationMode='proxy';translate();
+        }
         [settings,capabilities]=await Promise.all([json('/api/settings'),json('/api/capabilities')]);
         const catalog=await json('/api/cloud/catalog').catch(()=>null);
         if(catalog?.version===2&&Array.isArray(catalog.providers)&&Array.isArray(catalog.actions))cloudCatalog=catalog;
+        await loadConnections(false);
         if(capabilities.policy)policyResult=await json('/api/policy');
         await refresh();
         const history=await json('/api/metrics/history?window=30m&limit=720').catch(()=>null);

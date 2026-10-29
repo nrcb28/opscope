@@ -11,6 +11,7 @@ internal sealed class ConfigurationCloudProvider(ICloudProvider provider, ICloud
             ("cloudflare", "posture") => new CloudflarePostureProvider().CollectAsync("posture", options, cancellationToken),
             ("alibaba", "posture") => new AlibabaSecurityProvider(runner).CollectAsync("posture", options, cancellationToken),
             ("scaleway", "networks") => new ScalewayNetworkProvider().CollectAsync("networks", options, cancellationToken),
+            ("ibm", "networks") => new IbmVpcProvider().CollectAsync("networks", options, cancellationToken),
             _ => provider.CollectAsync(operation, options, cancellationToken)
         };
 }

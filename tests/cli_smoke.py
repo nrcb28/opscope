@@ -119,6 +119,23 @@ class CliTests(unittest.TestCase):
                 self.run_cli("serve", "--history", history, *args, expected=2)
                 self.assertFalse(history.exists(), "Invalid hosting setup must fail before collecting or saving host evidence")
 
+    def test_ibm_networks_catalog_and_invalid_scopes_stay_offline(self):
+        catalog = json.loads(self.run_cli("cloud", "catalog", "--provider", "ibm"))
+        capabilities = catalog["data"]["providers"][0]["capabilities"]
+        network = next(item for item in capabilities if item["operation"] == "networks")
+        self.assertEqual(set(network["resourceTypes"]), {"network.vpc", "network.subnet", "network.securityGroup"})
+        self.assertIn("inventory", {item["operation"] for item in capabilities})
+        scope = ("--account", "a" * 32, "--resource-group", "b" * 32)
+        for args in [
+            (),
+            ("--account", "https://untrusted.invalid", "--resource-group", "b" * 32, "--region", "us-south"),
+            ("--account", "a" * 32, "--resource-group", "../group", "--region", "us-south"),
+            (*scope, "--region", "https://untrusted.invalid"),
+            (*scope, "--region", "us-south", "--endpoint", "https://untrusted.invalid"),
+        ]:
+            with self.subTest(args=args):
+                self.run_cli("ibm", "networks", *args, expected=2)
+
     def test_drift_without_baseline_and_node_correlation_configuration_stay_offline(self):
         drift = json.loads(self.run_cli("gcp", "drift", "--project", "example-project", expected=2))
         self.assertEqual(drift["data"]["coverage"]["state"], "NotConfigured")

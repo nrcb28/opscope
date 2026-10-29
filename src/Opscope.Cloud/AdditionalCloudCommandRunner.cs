@@ -13,7 +13,7 @@ public sealed class AdditionalCloudCommandRunner : ICloudCommandRunner
     internal static string? GcpProjection(string command) => command switch
     {
         "projects describe" => "json(projectId,projectNumber)",
-        "container clusters list" => "json(name,location,selfLink,status,currentMasterVersion,currentNodeVersion,currentNodeCount)",
+        "container clusters list" => "json(name,location,selfLink,status,currentMasterVersion,currentNodeVersion,currentNodeCount,nodePools.name,nodePools.status,nodePools.version,nodePools.initialNodeCount,nodePools.autoscaling.enabled,nodePools.autoscaling.minNodeCount,nodePools.autoscaling.maxNodeCount,nodePools.autoscaling.totalMinNodeCount,nodePools.autoscaling.totalMaxNodeCount,nodePools.autoscaling.locationPolicy,nodePools.management.autoRepair,nodePools.management.autoUpgrade)",
         "sql instances list" => "json(name,project,region,selfLink,state,databaseVersion,settings.tier,settings.availabilityType,settings.backupConfiguration.enabled,settings.storageAutoResize,settings.dataDiskSizeGb)",
         "run services list" => "json(metadata.name,metadata.namespace,status.conditions.type,status.conditions.status,status.latestReadyRevisionName,status.observedGeneration)",
         "storage buckets list" => "json(name,project_number,projectNumber,location,storage_class,storageClass,uniform_bucket_level_access,public_access_prevention,iamConfiguration.uniformBucketLevelAccess.enabled,iamConfiguration.publicAccessPrevention)",

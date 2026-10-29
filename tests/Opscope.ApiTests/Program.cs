@@ -46,9 +46,11 @@ internal static class Program
                         ["gcp-scope-1/cost"] = _ => Task.FromResult(AdvancedCloudFixture("cost")),
                         ["gcp-scope-1/patches"] = _ => Task.FromResult(AdvancedCloudFixture("patches")),
                         ["gcp-scope-1/drift"] = _ => Task.FromResult(AdvancedCloudFixture("drift")),
+                        ["gcp-scope-1/services"] = _ => Task.FromResult(ServiceTopologyFixture()),
                         ["cloudflare-scope-1/posture"] = _ => Task.FromResult(ConfigurationFixture("cloudflare")),
                         ["alibaba-scope-1/posture"] = _ => Task.FromResult(ConfigurationFixture("alibaba")),
                         ["scaleway-scope-1/networks"] = _ => Task.FromResult(ConfigurationFixture("scaleway")),
+                        ["ibm-scope-1/networks"] = _ => Task.FromResult(IbmNetworkFixture()),
                         ["kubernetes-scope-1/inventory"] = _ => Task.FromResult(AdvancedCloudFixture("kubernetes-inventory")),
                         ["kubernetes-scope-1/metrics"] = _ => Task.FromResult(AdvancedCloudFixture("kubernetes-metrics"))
                     }
@@ -171,6 +173,53 @@ internal static class Program
                     }
                 }
             }, ["Selected configuration only. Coverage does not establish effective access or a healthy account."]);
+    }
+
+    private static AnalysisReport ServiceTopologyFixture()
+    {
+        var now = DateTimeOffset.UtcNow;
+        const string project = "browser-private-project";
+        const string location = "europe-west1-b";
+        const string parent = "//container.googleapis.com/projects/browser-private-project/locations/europe-west1-b/clusters/private-cluster";
+        var resources = new[]
+        {
+            new CloudResource("gcp", project, location, parent, "gke.cluster", "private-cluster", new
+            {
+                state = "RUNNING", masterVersion = "1.33.1-gke.1234000", nodeVersion = "1.33.1-gke.1234000", nodeCount = 2,
+                nodePools = new { state = "complete", observedCount = 1, returnedCount = 1, pools = new[]
+                {
+                    new { resourceId = parent + "/nodePools/private-pool", state = "RUNNING", version = "1.33.1-gke.1234000", initialNodeCount = 0,
+                        autoscaling = new { enabled = false, minNodeCount = 0, maxNodeCount = 0, totalMinNodeCount = 0, totalMaxNodeCount = 0, locationPolicy = "BALANCED" },
+                        management = new { autoRepair = true, autoUpgrade = false } }
+                } }
+            }),
+            new CloudResource("gcp", project, location, parent + "-unknown", "gke.cluster", "private-cluster-unknown", new
+            {
+                state = "RUNNING", nodePools = new { state = "partial", observedCount = (int?)null, returnedCount = (int?)null, pools = Array.Empty<object>() }
+            })
+        };
+        return new("cloud/gcp/services", now, [], new { provider = "gcp", resources,
+            coverage = new CloudCoverage(CoverageState.Partial, now, 2, 1, 0, []) },
+            ["Selected service configuration only. Initial node counts and management flags do not establish current scale, availability or verified cluster ownership."])
+        { OperationSucceeded = false };
+    }
+
+    private static AnalysisReport IbmNetworkFixture()
+    {
+        var now = DateTimeOffset.UtcNow;
+        const string account = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        var resources = new[]
+        {
+            new CloudResource("ibm", account, "us-south", "vpc/regions/us-south/vpcs/private-vpc", "network.vpc", "", new { status = "available", classicAccess = false }),
+            new CloudResource("ibm", account, "us-south", "vpc/regions/us-south/subnets/private-subnet", "network.subnet", "", new { status = "available", ipVersion = "ipv4", vpc = "private-vpc" }),
+            new CloudResource("ibm", account, "us-south", "vpc/regions/us-south/security_groups/private-sg", "network.securityGroup", "", new { ruleCount = 0, targetCount = 0, vpc = "private-vpc" })
+        };
+        return new("cloud/ibm/networks", now, [], new { provider = "ibm", resources,
+            coverage = new CloudCoverage(CoverageState.Partial, now, 3, 1, 0, []),
+            configurationEvidence = new { source = "ibm-vpc-fixed-read", scopeVerification = new { source = "ibm-resource-manager-v2", state = "verified" },
+                checks = new[] { "vpcs", "subnets", "security-groups" }.Select(check => new { check, state = "complete", observedAtUtc = now, observations = new { observedResources = 1, expectedResources = 1 } }).ToArray() }
+        }, ["Selected VPC metadata only; counts and lifecycle configuration do not prove effective access or application health."])
+        { OperationSucceeded = false };
     }
 
     private static void TestHistory()
@@ -365,9 +414,11 @@ internal static class Program
                 ["gcp-scope-3/cost"] = _ => Task.FromResult(AdvancedCloudFixture("cost")),
                 ["gcp-scope-3/patches"] = _ => Task.FromResult(AdvancedCloudFixture("patches")),
                 ["gcp-scope-3/drift"] = _ => Task.FromResult(AdvancedCloudFixture("drift")),
+                ["gcp-scope-3/services"] = _ => Task.FromResult(ServiceTopologyFixture()),
                 ["cloudflare-scope-4/posture"] = _ => Task.FromResult(ConfigurationFixture("cloudflare")),
                 ["alibaba-scope-4/posture"] = _ => Task.FromResult(ConfigurationFixture("alibaba")),
                 ["scaleway-scope-4/networks"] = _ => Task.FromResult(ConfigurationFixture("scaleway")),
+                ["ibm-scope-4/networks"] = _ => Task.FromResult(IbmNetworkFixture()),
                 ["kubernetes-scope-2/inventory"] = _ => Task.FromResult(AdvancedCloudFixture("kubernetes-inventory")),
                 ["kubernetes-scope-2/metrics"] = _ => Task.FromResult(AdvancedCloudFixture("kubernetes-metrics")),
                 ["kubernetes-scope-2/health"] = _ => Task.FromResult(new AnalysisReport("cloud/kubernetes/health", DateTimeOffset.UtcNow, [], new { coverage = new { state = "no_data" } }))
@@ -670,7 +721,7 @@ internal static class Program
         Assert(unconfigured.GetProperty("scopes").GetArrayLength() == 0 && unconfigured.GetProperty("operations").EnumerateArray().Any(operation => operation.GetProperty("name").GetString() == "inventory" && operation.GetProperty("availability").GetString() == "not-configured"), "Known unconfigured providers expose their missing scope instead of an empty successful inventory");
         var actions = catalog.RootElement.GetProperty("actions").EnumerateArray().ToArray();
         Assert(actions.Any(action => action.GetProperty("actionKey").GetString() == "azure-scope-2/inventory") && actions.All(action => action.GetProperty("readOnly").GetBoolean()), "Catalog preserves explicitly configured action aliases as read-only actions");
-        foreach (var action in new[] { "gcp-scope-3/scc", "gcp-scope-3/cost", "gcp-scope-3/patches", "gcp-scope-3/drift", "cloudflare-scope-4/posture", "alibaba-scope-4/posture", "scaleway-scope-4/networks", "kubernetes-scope-2/inventory", "kubernetes-scope-2/metrics" })
+        foreach (var action in new[] { "gcp-scope-3/scc", "gcp-scope-3/cost", "gcp-scope-3/patches", "gcp-scope-3/drift", "gcp-scope-3/services", "cloudflare-scope-4/posture", "alibaba-scope-4/posture", "scaleway-scope-4/networks", "ibm-scope-4/networks", "kubernetes-scope-2/inventory", "kubernetes-scope-2/metrics" })
             Assert(actions.Any(item => item.GetProperty("actionKey").GetString() == action), "Catalog exposes only the explicitly configured advanced action: " + action);
         Assert(!text.Contains(token, StringComparison.Ordinal) && !text.Contains("api-private-host", StringComparison.Ordinal), "Cloud discovery reveals no host evidence or session secret");
         foreach (var (path, status) in new[]
@@ -697,6 +748,7 @@ internal static class Program
         {
             ("gcp-scope-3/scc", "cloud/gcp/scc"), ("gcp-scope-3/cost", "cloud/gcp/cost"),
             ("gcp-scope-3/patches", "cloud/gcp/patches"), ("gcp-scope-3/drift", "cloud/gcp/drift"),
+            ("gcp-scope-3/services", "cloud/gcp/services"), ("ibm-scope-4/networks", "cloud/ibm/networks"),
             ("cloudflare-scope-4/posture", "cloud/cloudflare/posture"), ("alibaba-scope-4/posture", "cloud/alibaba/posture"), ("scaleway-scope-4/networks", "cloud/scaleway/networks"),
             ("kubernetes-scope-2/inventory", "cloud/kubernetes/inventory"), ("kubernetes-scope-2/metrics", "cloud/kubernetes/metrics")
         })
@@ -716,6 +768,14 @@ internal static class Program
                 Assert(data.GetProperty("patches").GetProperty("complianceState").GetString() == "unknown" && data.GetProperty("patches").GetProperty("jobs")[0].GetProperty("isStale").GetBoolean(), "Existing successful patch jobs preserve stale evidence and unknown current compliance");
             if (action.EndsWith("/drift", StringComparison.Ordinal))
                 Assert(data.GetProperty("drift").GetProperty("changedResources").GetInt32() == 1 && data.GetProperty("drift").GetProperty("comparedFieldAllowlist").EnumerateArray().Select(field => field.GetString()).SequenceEqual(new[] { "region", "state" }), "Drift exposes only the configured baseline comparison and allowlisted field names");
+            if (action.EndsWith("/services", StringComparison.Ordinal))
+            {
+                var pool = data.GetProperty("resources")[0].GetProperty("properties").GetProperty("nodePools").GetProperty("pools")[0];
+                Assert(pool.GetProperty("initialNodeCount").GetInt32() == 0 && !pool.GetProperty("autoscaling").GetProperty("enabled").GetBoolean() && !pool.GetProperty("management").GetProperty("autoUpgrade").GetBoolean(), "Partial GKE service evidence preserves observed zero and false configuration values");
+                Assert(!text.Contains("private-pool", StringComparison.Ordinal) && !text.Contains("browser-private-project", StringComparison.Ordinal), "GKE parent and child identifiers remain redacted in authenticated API responses");
+            }
+            if (action.StartsWith("ibm", StringComparison.Ordinal))
+                Assert(data.GetProperty("configurationEvidence").GetProperty("scopeVerification").GetProperty("state").GetString() == "verified", "IBM network evidence preserves its resource-group/account scope verification independently of partial product coverage");
             if (action.StartsWith("kubernetes", StringComparison.Ordinal))
                 Assert(!data.GetProperty("cluster").GetProperty("cloudCorrelationVerified").GetBoolean(), "Kubernetes observations cannot infer a cloud identity match from a context name");
             if (action == "kubernetes-scope-2/metrics")

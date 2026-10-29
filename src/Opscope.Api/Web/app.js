@@ -113,6 +113,12 @@ networks:'Redes regionales', configurationEvidence:'Configuración observada', c
 });
 const knownProviders = new Set(['azure','aws','gcp','oci','digitalocean','hetzner','cloudflare','openstack','alibaba','ibm','scaleway','kubernetes']);
 Object.assign(words.en, {
+configurationSubnets:'Regional subnet observations', configurationScopeVerification:'Account and resource-group scope', configurationScopeVerified:'Verified by the resource-manager read', configurationScopeUnknown:'Unknown / unverified', nodePoolEvidence:'GKE node-pool configuration', nodePoolNote:'Each observation belongs to the cluster shown. Initial counts and autoscaling bounds describe configuration, not current or desired node counts. Management flags do not establish node health. This metadata does not verify Kubernetes cluster or control-plane identity.', nodePoolCluster:'Parent cluster', nodePoolObserved:'Observed node pools', nodePoolReturned:'Provider-returned node-pool rows', nodePoolUnavailable:'Node-pool configuration is unavailable. Its values remain unknown.', nodePoolEmpty:'No node pools were observed in this complete cluster read.', nodePoolState:'Observed pool state', nodePoolVersion:'Configured node version', nodePoolInitial:'Configured initial node count', nodePoolAutoscaling:'Autoscaling enabled', nodePoolMin:'Configured minimum nodes per zone', nodePoolMax:'Configured maximum nodes per zone', nodePoolTotalMin:'Configured total minimum nodes', nodePoolTotalMax:'Configured total maximum nodes', nodePoolPolicy:'Configured location policy', nodePoolRepair:'Automatic repair configured', nodePoolUpgrade:'Automatic upgrade configured', nodePoolProjection:'Allowed service metadata', nodePoolProjectionNote:'Only supported service metadata fields are shown. Missing or invalid values remain unknown.'
+});
+Object.assign(words.es, {
+configurationSubnets:'Observaciones de subredes regionales', configurationScopeVerification:'Ámbito de cuenta y grupo de recursos', configurationScopeVerified:'Verificado por la lectura de Resource Manager', configurationScopeUnknown:'Desconocido / sin verificar', nodePoolEvidence:'Configuración de pools de nodos GKE', nodePoolNote:'Cada observación pertenece al clúster indicado. Los recuentos iniciales y límites de autoescalado describen configuración, no el número actual ni deseado de nodos. Los indicadores de gestión no demuestran la salud de los nodos. Estos metadatos no verifican la identidad del clúster Kubernetes ni del plano de control.', nodePoolCluster:'Clúster padre', nodePoolObserved:'Pools de nodos observados', nodePoolReturned:'Filas de pools devueltas por el proveedor', nodePoolUnavailable:'La configuración de pools de nodos no está disponible. Sus valores siguen siendo desconocidos.', nodePoolEmpty:'No se observaron pools de nodos en esta lectura completa del clúster.', nodePoolState:'Estado observado del pool', nodePoolVersion:'Versión de nodos configurada', nodePoolInitial:'Recuento inicial de nodos configurado', nodePoolAutoscaling:'Autoescalado activado', nodePoolMin:'Mínimo de nodos configurado por zona', nodePoolMax:'Máximo de nodos configurado por zona', nodePoolTotalMin:'Mínimo total de nodos configurado', nodePoolTotalMax:'Máximo total de nodos configurado', nodePoolPolicy:'Política de ubicación configurada', nodePoolRepair:'Reparación automática configurada', nodePoolUpgrade:'Actualización automática configurada', nodePoolProjection:'Metadatos de servicios admitidos', nodePoolProjectionNote:'Solo se muestran los campos de metadatos admitidos. Los valores ausentes o inválidos siguen siendo desconocidos.'
+});
+Object.assign(words.en, {
 connections:'Connections', connectionsDescription:'Connect authorized cloud accounts from the host running Opscope.', connectionsNote:'Creating an account, signing in and granting read access are separate steps. This guide checks host setup without signing in or contacting a provider. Credentials stay on the Opscope host.', connectionsUnavailable:'Connection guidance could not be loaded. Retry while the Opscope session is active.', refreshConnections:'Refresh setup checks', connectionSetup:'Host setup', connectionGuide:'Set up this provider', connectionScope:'Read scope', connectionCredential:'Credential setup', connectionTool:'Provider tool', connectionAccess:'Last provider read', connectionScopeReady:'Scope configured · access unverified', connectionScopeMissing:'No read scope configured', connectionPresent:'Present · authentication unverified', connectionExternal:'External session · unverified', connectionMissing:'Missing', connectionUnavailable:'Could not check', connectionAvailable:'Available · session unverified', connectionUntrusted:'Untrusted executable', connectionNotRequired:'Not required', connectionNotTested:'Access not tested', connectionSucceeded:'Last read succeeded · review its scope and time', connectionPartial:'Last read returned partial evidence', connectionNoData:'Last read returned no observations', connectionDenied:'Last read denied', connectionRateLimited:'Last read rate limited', connectionTimedOut:'Last read timed out', connectionFailed:'Last read failed', connectionNotConfigured:'Last read needs configuration', connectionUnsupported:'Read unsupported', connectionRequirements:'Operation-specific requirements', connectionSteps:'Steps on the Opscope host', connectionSignup:'Create an account', connectionConsole:'Open provider console', connectionDocs:'Official setup documentation', connectionTest:'Test read access', connectionTestNote:'Runs an existing configured read. Setup presence does not establish authentication or access.', connectionNoTest:'Configure an explicit authorized read scope to enable an access test.', connectionObserved:'Setup checked', connectionHelp:'Open Connections to review account setup and permissions.', proxy_local:'HOSTED', proxy_connected:'Authenticated hosted session', proxy_redacted:'Identifiers redacted · No telemetry · Authenticated proxy', proxy_footer:'Evidence stays on the Opscope host.', proxy_errorAuth:'The hosted session is no longer authorized. Sign in through your configured proxy again.'
 });
 Object.assign(words.es, {
@@ -736,9 +742,9 @@ function resourceState(resource) {
     }return t('unknown');
 }
 
-const configurationSources={cloudflare:'cloudflare-fixed-configuration-get',alibaba:'aliyun-fixed-projections',scaleway:'scaleway-vpc-v2'};
-const configurationChecks={cloudflare:['tls','dns','waf','routes'],alibaba:['disks','security-groups'],scaleway:['vpcs','private-networks']};
-const configurationTitles={tls:'configurationTls',dns:'configurationDns',waf:'configurationWaf',routes:'configurationRoutes',disks:'configurationDisks','security-groups':'configurationGroups',vpcs:'configurationVpcs','private-networks':'configurationPrivateNetworks'};
+const configurationSources={cloudflare:'cloudflare-fixed-configuration-get',alibaba:'aliyun-fixed-projections',scaleway:'scaleway-vpc-v2',ibm:'ibm-vpc-fixed-read'};
+const configurationChecks={cloudflare:['tls','dns','waf','routes'],alibaba:['disks','security-groups'],scaleway:['vpcs','private-networks'],ibm:['vpcs','subnets','security-groups']};
+const configurationTitles={tls:'configurationTls',dns:'configurationDns',waf:'configurationWaf',routes:'configurationRoutes',disks:'configurationDisks','security-groups':'configurationGroups',vpcs:'configurationVpcs',subnets:'configurationSubnets','private-networks':'configurationPrivateNetworks'};
 const configurationFields={
     tls:[['sslMode','configurationSsl','ssl'],['minimumTlsVersion','configurationMinimumTls','tls'],['alwaysUseHttps','configurationHttps','boolean']],
     dns:[['observedRecords','configurationRecords'],['observedProxiedRecords','configurationProxied'],['observedUnproxiedRecords','configurationUnproxied'],['unknownProxyRecords','configurationProxyUnknown']],
@@ -749,7 +755,13 @@ const configurationFields={
     vpcs:[['observedResources','configurationResources'],['expectedResources','configurationExpected']],
     'private-networks':[['observedResources','configurationResources'],['expectedResources','configurationExpected']]
 };
+const regionalConfigurationFields=[['observedResources','configurationResources'],['expectedResources','configurationExpected']];
+const configurationFieldsFor=(provider,check)=>provider==='ibm'?regionalConfigurationFields:configurationFields[check];
 const configurationRecordTypes=new Set(['A','AAAA','CNAME','MX','NS','TXT','SOA','SRV','PTR','CAA','DNSKEY','DS','RRSIG','NAPTR','TLSA','HTTPS','SVCB','URI','CERT','LOC','SSHFP','SMIMEA']);
+function ibmScopeVerification(evidence){
+    const scope=evidence?.scopeVerification,source=scope?.source==='ibm-resource-manager-v2'?scope.source:'unknown',failure=normalizedCoverage(scope?.state);
+    return {source,state:evidence?.source==='ibm-vpc-fixed-read'&&source!=='unknown'?(scope.state==='verified'?'verified':['denied','failed','notConfigured','notRequested','rateLimited','timed-out','unsupported'].includes(failure)?failure:'unknown'):'unknown'};
+}
 function configurationValue(value,type) {
     if(type==='boolean')return typeof value==='boolean'?value:null;
     if(type==='ssl')return ['off','flexible','full','strict','origin_pull'].includes(value)?value:null;
@@ -757,32 +769,35 @@ function configurationValue(value,type) {
     return Number.isSafeInteger(value)&&value>=0?value:null;
 }
 function projectConfigurationEvidence(evidence,provider,state) {
-    const supported=configurationChecks[provider]||[], observed=['complete','partial','noDataCoverage'].includes(state);
+    const scopeVerification=provider==='ibm'?ibmScopeVerification(evidence):null;
+    const supported=configurationChecks[provider]||[], observed=['complete','partial','noDataCoverage'].includes(state)&&(!scopeVerification||scopeVerification.state==='verified');
     const checks=Array.isArray(evidence?.checks)?evidence.checks.filter(check=>check&&typeof check==='object'&&supported.includes(check.check)).slice(0,100).map(check=>{
         const declaredState=normalizedCoverage(check.state)||'unknown';
         const timestamp=typeof check.observedAtUtc==='string'?Date.parse(check.observedAtUtc):NaN;
         const time=Number.isFinite(timestamp)&&timestamp<=Date.now()+120000?new Date(timestamp).toISOString():null;
         const checkState=!observed?state:['complete','partial','noDataCoverage'].includes(declaredState)&&!time?'unknown':declaredState;
         const values=observed&&['complete','partial','noDataCoverage'].includes(checkState)&&time&&check.observations&&typeof check.observations==='object'&&!Array.isArray(check.observations)?check.observations:null;
-        const observations=values?Object.fromEntries(configurationFields[check.check].map(([field,,type])=>[field,configurationValue(values[field],type)])):null;
+        const observations=values?Object.fromEntries(configurationFieldsFor(provider,check.check).map(([field,,type])=>[field,configurationValue(values[field],type)])):null;
         if(observations&&check.check==='dns')observations.recordTypes=Array.isArray(values.recordTypes)?values.recordTypes.filter(row=>row&&configurationRecordTypes.has(row.type)&&Number.isSafeInteger(row.count)&&row.count>=0).slice(0,50).map(row=>({type:row.type,count:row.count})):[];
         return {check:check.check,state:checkState,observedAtUtc:time,observations};
     }):[];
     const source=configurationSources[provider];
-    return {source:typeof source==='string'&&evidence?.source===source?source:'unknown',checks};
+    return {source:typeof source==='string'&&evidence?.source===source?source:'unknown',...(scopeVerification?{scopeVerification}:{}),checks};
 }
-function cloudConfigurationEvidence(evidence) {
+function cloudConfigurationEvidence(evidence,provider) {
     const section=el('section',null,'report-group ops-configuration-evidence');
     append(section,el('h3',t('configurationEvidence')),el('p',t('configurationNote'),'coverage-note muted'));
     section.append(facts([['source',evidence.source]]));
+    if(evidence.scopeVerification)section.append(facts([['configurationScopeVerification',t(evidence.scopeVerification.state==='verified'?'configurationScopeVerified':'configurationScopeUnknown')]]));
     evidence.checks.forEach((check,index)=>{
         const item=el('article',null,'ops-configuration-check');item.dataset.check=check.check;
         append(item,el('h4',`${t(configurationTitles[check.check])} · ${index+1}`));
         const status=el('span',cloudStatus(check.state),'ops-cloud-status');status.dataset.state=check.state;item.append(status);
         item.append(facts([['cloudObserved',date(check.observedAtUtc)]]));
+        if(check.state==='partial')item.append(el('p',t('observedOnly'),'coverage-note muted'));
         if(!check.observations)item.append(el('p',t('configurationUnavailable'),'empty'));
         else {
-            item.append(facts(configurationFields[check.check].map(([field,label,type])=>{
+            item.append(facts(configurationFieldsFor(provider,check.check).map(([field,label,type])=>{
                 const value=check.observations[field];
                 return [label,value===null?t('unknown'):type==='boolean'?t(value?'configurationEnabled':'configurationDisabled'):value];
             })));
@@ -792,6 +807,83 @@ function cloudConfigurationEvidence(evidence) {
     });
     if(!evidence.checks.length)section.append(el('p',t('configurationNoChecks'),'empty'));
     return section;
+}
+
+const cloudObject=value=>value&&typeof value==='object'&&!Array.isArray(value)?value:{};
+const cloudCount=value=>Number.isInteger(value)&&value>=0&&value<=2147483647?value:null;
+const cloudBoolean=value=>typeof value==='boolean'?value:null;
+const cloudIdentifier=value=>typeof value==='string'&&/^\[redacted-(?:identifier|host|service|process)(?:-[0-9]{1,4})?\]$/.test(value)?value:null;
+const gkeStates=['STATUS_UNSPECIFIED','PROVISIONING','RUNNING','RECONCILING','STOPPING','ERROR','DEGRADED'];
+const gkePoolStates=['STATUS_UNSPECIFIED','PROVISIONING','RUNNING','RUNNING_WITH_ERROR','RECONCILING','STOPPING','ERROR'];
+const gkeEnum=(value,allowed)=>allowed.includes(value)?value:null;
+const gkeVersion=value=>typeof value==='string'&&/^[0-9]{1,2}\.[0-9]{1,2}\.[0-9]{1,5}(?:-gke\.[0-9]{1,10})?$/.test(value)?value:null;
+function projectNodePools(value,state,budget) {
+    const evidence=cloudObject(value), observed=['complete','partial'].includes(state), rows=Array.isArray(evidence.pools)?evidence.pools:[];
+    let complete=observed&&evidence.state==='complete'&&Array.isArray(evidence.pools);
+    const allowed=observed&&['complete','partial'].includes(evidence.state)&&Array.isArray(evidence.pools);
+    const pools=[];
+    if(allowed)for(const row of rows.slice(0,Math.min(100,budget.remaining))){
+        budget.remaining--;
+        const pool=cloudObject(row), resourceId=cloudIdentifier(pool.resourceId);
+        if(!resourceId){complete=false;continue;}
+        const autoscaling=cloudObject(pool.autoscaling),management=cloudObject(pool.management);
+        if(pool.autoscaling!==undefined&&pool.autoscaling!==null&&pool.autoscaling!==autoscaling||pool.management!==undefined&&pool.management!==null&&pool.management!==management)complete=false;
+        const projected={resourceId,state:gkeEnum(pool.state,gkePoolStates),version:gkeVersion(pool.version),initialNodeCount:cloudCount(pool.initialNodeCount),autoscaling:{enabled:cloudBoolean(autoscaling.enabled),minNodeCount:cloudCount(autoscaling.minNodeCount),maxNodeCount:cloudCount(autoscaling.maxNodeCount),totalMinNodeCount:cloudCount(autoscaling.totalMinNodeCount),totalMaxNodeCount:cloudCount(autoscaling.totalMaxNodeCount),locationPolicy:gkeEnum(autoscaling.locationPolicy,['LOCATION_POLICY_UNSPECIFIED','BALANCED','ANY'])},management:{autoRepair:cloudBoolean(management.autoRepair),autoUpgrade:cloudBoolean(management.autoUpgrade)}};
+        // EN: Optional omissions remain unknown; invalid supplied values cannot support complete coverage.
+        // ES: Las omisiones opcionales siguen siendo desconocidas; los valores inválidos no avalan cobertura completa.
+        for(const [source,target] of [[pool,projected],[autoscaling,projected.autoscaling],[management,projected.management]])for(const key of Object.keys(target))if(key!=='resourceId'&&source[key]!==undefined&&source[key]!==null&&target[key]===null)complete=false;
+        pools.push(projected);
+    }
+    if(pools.length!==rows.length)complete=false;
+    const observedCount=allowed&&cloudCount(evidence.observedCount)===pools.length?cloudCount(evidence.observedCount):null;
+    const returnedCount=allowed&&cloudCount(evidence.returnedCount)!==null&&evidence.returnedCount>=rows.length?evidence.returnedCount:null;
+    if(observedCount===null||returnedCount===null||returnedCount!==pools.length)complete=false;
+    return {state:!observed?state:complete?'complete':'partial',observedCount,returnedCount,pools};
+}
+function projectMetadataResources(resources,provider,state) {
+    const budget={remaining:1000},observed=['complete','partial'].includes(state);
+    return resources.slice(0,10000).map(resource=>{
+        if(!resource||typeof resource!=='object')return null;
+        const type=resource.type,properties=cloudObject(resource.properties);
+        const gke=provider==='gcp'&&type==='gke.cluster',ibm=provider==='ibm'&&['network.vpc','network.subnet','network.securityGroup'].includes(type);
+        if(!gke&&!ibm&&!(provider==='gcp'&&['sql.instance','run.service','storage.bucket'].includes(type)))return null;
+        let projected;
+        if(gke)projected={state:observed?gkeEnum(properties.state,gkeStates):null,masterVersion:observed?gkeVersion(properties.masterVersion):null,nodeVersion:observed?gkeVersion(properties.nodeVersion):null,nodeCount:observed?cloudCount(properties.nodeCount):null,nodePools:projectNodePools(properties.nodePools,state,budget)};
+        else if(type==='sql.instance'){
+            const numeric=typeof properties.diskSizeGb==='string'&&/^[0-9]{1,15}$/.test(properties.diskSizeGb)?Number(properties.diskSizeGb):properties.diskSizeGb;
+            projected={state:gkeEnum(properties.state,['SQL_INSTANCE_STATE_UNSPECIFIED','RUNNABLE','SUSPENDED','PENDING_DELETE','PENDING_CREATE','MAINTENANCE','FAILED','ONLINE_MAINTENANCE']),databaseVersion:typeof properties.databaseVersion==='string'&&/^[A-Z][A-Z0-9_]{0,63}$/.test(properties.databaseVersion)?properties.databaseVersion:null,tier:typeof properties.tier==='string'&&/^db-[a-z0-9-]{1,80}$/.test(properties.tier)?properties.tier:null,availabilityType:gkeEnum(properties.availabilityType,['ZONAL','REGIONAL']),backupsEnabled:cloudBoolean(properties.backupsEnabled),storageAutoResize:cloudBoolean(properties.storageAutoResize),diskSizeGb:Number.isSafeInteger(numeric)&&numeric>=0?numeric:null};
+        }
+        else if(type==='run.service'){
+            const numeric=typeof properties.observedGeneration==='string'&&/^[0-9]{1,15}$/.test(properties.observedGeneration)?Number(properties.observedGeneration):properties.observedGeneration;
+            projected={state:gkeEnum(properties.state,['True','False','Unknown']),ingress:gkeEnum(properties.ingress,['all','internal','internal-and-cloud-load-balancing','unavailable']),observedGeneration:Number.isSafeInteger(numeric)&&numeric>=0?numeric:null,readyRevisionObserved:cloudBoolean(properties.readyRevisionObserved)};
+        }
+        else if(type==='storage.bucket')projected={state:gkeEnum(properties.state,['configuration-observed']),storageClass:gkeEnum(properties.storageClass,['STANDARD','NEARLINE','COLDLINE','ARCHIVE','MULTI_REGIONAL','REGIONAL','DURABLE_REDUCED_AVAILABILITY']),uniformBucketLevelAccess:cloudBoolean(properties.uniformBucketLevelAccess),publicAccessPrevention:gkeEnum(properties.publicAccessPrevention,['enforced','inherited','unspecified'])};
+        else if(type==='network.vpc')projected={status:observed?gkeEnum(properties.status,['available','deleting','failed','pending']):null,classicAccess:observed?cloudBoolean(properties.classicAccess):null};
+        else if(type==='network.subnet')projected={status:observed?gkeEnum(properties.status,['available','deleting','failed','pending']):null,ipVersion:observed?gkeEnum(properties.ipVersion,['ipv4']):null,vpc:observed?cloudIdentifier(properties.vpc):null};
+        else projected={ruleCount:observed?cloudCount(properties.ruleCount):null,targetCount:observed?cloudCount(properties.targetCount):null,vpc:observed?cloudIdentifier(properties.vpc):null};
+        if(!observed&&!gke)projected=Object.fromEntries(Object.keys(projected).map(key=>[key,null]));
+        return {provider,id:cloudIdentifier(resource.id),type,name:cloudIdentifier(resource.name),properties:projected};
+    }).filter(Boolean);
+}
+function cloudNodePoolEvidence(resources) {
+    const section=el('section',null,'report-group ops-node-pool-evidence');
+    append(section,el('h3',t('nodePoolEvidence')),el('p',t('nodePoolNote'),'coverage-note muted'));
+    resources.filter(resource=>resource.type==='gke.cluster').forEach((resource,index)=>{
+        const item=el('article',null,'ops-node-pool-cluster'),evidence=resource.properties.nodePools;
+        item.dataset.cluster=String(index);append(item,el('h4',`${t('nodePoolCluster')} · ${index+1}`));
+        const badge=el('span',cloudStatus(evidence.state),'ops-cloud-status');badge.dataset.state=evidence.state;item.append(badge);
+        const count=value=>value===null?t('unknown'):evidence.state==='partial'?`${value} · ${t('observedOnly')}`:value;
+        item.append(facts([['identity',resource.id||t('unknown')],['nodePoolObserved',count(evidence.observedCount)],['nodePoolReturned',count(evidence.returnedCount)]]));
+        if(!['complete','partial'].includes(evidence.state))item.append(el('p',t('nodePoolUnavailable'),'empty'));
+        else if(evidence.state==='complete'&&evidence.observedCount===0)item.append(el('p',t('nodePoolEmpty'),'empty'));
+        else if(evidence.state==='partial')item.append(el('p',t('observedOnly'),'coverage-note muted'));
+        evidence.pools.forEach((pool,poolIndex)=>{
+            const detail=el('section',null,'ops-node-pool');append(detail,el('h5',`${t('identity')} · ${poolIndex+1}`),el('p',pool.resourceId,'muted'));
+            const flag=value=>value===null?t('unknown'):t(value?'configurationEnabled':'configurationDisabled');
+            const known=value=>value===null?t('unknown'):value;
+            detail.append(facts([['nodePoolState',known(pool.state)],['nodePoolVersion',known(pool.version)],['nodePoolInitial',known(pool.initialNodeCount)],['nodePoolAutoscaling',flag(pool.autoscaling.enabled)],['nodePoolMin',known(pool.autoscaling.minNodeCount)],['nodePoolMax',known(pool.autoscaling.maxNodeCount)],['nodePoolTotalMin',known(pool.autoscaling.totalMinNodeCount)],['nodePoolTotalMax',known(pool.autoscaling.totalMaxNodeCount)],['nodePoolPolicy',known(pool.autoscaling.locationPolicy)],['nodePoolRepair',flag(pool.management.autoRepair)],['nodePoolUpgrade',flag(pool.management.autoUpgrade)]]));item.append(detail);
+        });section.append(item);
+    });return section;
 }
 
 function cloudBillingEvidence(billing, state) {
@@ -920,13 +1012,16 @@ function showCloud() {
     if(cloudResult){
         const data=cloudResult.data, success=cloudResult.operationSucceeded!==false;
         const declaredState=normalizedCoverage(data?.coverage?.state);
-        const state=!success&&declaredState==='complete'?'failed':declaredState||(!success?'failed':cloudResult.warnings?.length?'partial':'complete');
+        let state=!success&&['complete','noDataCoverage'].includes(declaredState)?'failed':declaredState||(!success?'failed':cloudResult.warnings?.length?'partial':'complete');
+        const provider=validatedCloudActions().find(action=>action.actionKey===cloudAction)?.providerId;
+        const metadataProjection=provider==='ibm'&&cloudAction?.endsWith('/networks')||provider==='gcp'&&cloudAction?.endsWith('/services');
+        if(metadataProjection&&provider==='ibm'&&ibmScopeVerification(data?.configurationEvidence).state!=='verified')state=normalizedCoverage(ibmScopeVerification(data?.configurationEvidence).state)||'failed';
         const count=Number.isInteger(data?.coverage?.enumeratedResources)?data.coverage.enumeratedResources:Number.isInteger(data?.resourceCount)?data.resourceCount:Array.isArray(data?.resources)?data.resources.length:null;
         const visibleCount=['complete','partial'].includes(state)&&count!==null?state==='partial'?`${count} · ${t('observedOnly')}`:count:t('unknown');
         const summary=el('section',null,'ops-cloud-result-summary');summary.append(el('h3',t('cloudResult')));
         const badge=el('span',cloudStatus(state),'ops-cloud-status');badge.dataset.state=state;summary.append(badge);
         const factsRows=[['source',cloudResult.kind || cloudAction],['cloudObserved',date(data?.coverage?.observedAtUtc || cloudResult.collectedAtUtc)]];
-        if(!data?.billing&&!data?.scc&&!data?.patches&&!data?.configurationEvidence)factsRows.push(['resourceCount',visibleCount]);
+        if(metadataProjection||!data?.billing&&!data?.scc&&!data?.patches&&!data?.configurationEvidence)factsRows.push(['resourceCount',visibleCount]);
         summary.append(facts(factsRows));
         if(cloudReadMetadata){
             const metadata=el('section',null,'ops-cloud-cache');metadata.dataset.cache=cloudReadMetadata.cache;
@@ -939,18 +1034,23 @@ function showCloud() {
         else if(!['complete'].includes(state))summary.append(el('p',t(state==='denied'?'cloudDenied':state==='timed-out'?'cloudTimeout':'cloudFailedCoverage'),'coverage-note muted'));
         else if(count===0&&!data?.configurationEvidence&&!['metrics','cost','scc'].includes(cloudAction?.split('/')[1]))summary.append(el('p',t('cloudEmptyCoverage'),'coverage-note muted'));
         reportWarnings(summary,cloudResult.warnings);
-        if(data?.cluster&&typeof data.cluster==='object')summary.append(cloudClusterEvidence(data.cluster,data.infrastructureCorrelation,state));
-        if(data?.billing&&typeof data.billing==='object')summary.append(cloudBillingEvidence(data.billing,state));
-        if(data?.scc&&typeof data.scc==='object')summary.append(cloudSccEvidence(data.scc,state));
-        if(data?.patches&&typeof data.patches==='object')summary.append(cloudPatchEvidence(data.patches,state));
-        if(data?.drift&&typeof data.drift==='object')summary.append(cloudDriftEvidence(data.drift,state));
-        const configuration=data&&typeof data==='object'&&Object.hasOwn(data,'configurationEvidence')?projectConfigurationEvidence(data.configurationEvidence,validatedCloudActions().find(action=>action.actionKey===cloudAction)?.providerId,state):null;
-        if(configuration)summary.append(cloudConfigurationEvidence(configuration));
+        if(!metadataProjection){
+            if(data?.cluster&&typeof data.cluster==='object')summary.append(cloudClusterEvidence(data.cluster,data.infrastructureCorrelation,state));
+            if(data?.billing&&typeof data.billing==='object')summary.append(cloudBillingEvidence(data.billing,state));
+            if(data?.scc&&typeof data.scc==='object')summary.append(cloudSccEvidence(data.scc,state));
+            if(data?.patches&&typeof data.patches==='object')summary.append(cloudPatchEvidence(data.patches,state));
+            if(data?.drift&&typeof data.drift==='object')summary.append(cloudDriftEvidence(data.drift,state));
+        }
+        const configuration=(!metadataProjection||provider==='ibm')&&data&&typeof data==='object'&&Object.hasOwn(data,'configurationEvidence')?projectConfigurationEvidence(data.configurationEvidence,provider,state):null;
+        if(configuration)summary.append(cloudConfigurationEvidence(configuration,provider));
         if(cloudResult.findings?.length)summary.append(findingsList(cloudResult.findings,'cloud:findings'));
-        if(Array.isArray(data?.metrics))summary.append(cloudMetricSeries(data.metrics));
-        const resources=Array.isArray(data?.resources)?data.resources:[];
+        if(!metadataProjection&&Array.isArray(data?.metrics))summary.append(cloudMetricSeries(data.metrics));
+        const resources=metadataProjection?projectMetadataResources(Array.isArray(data?.resources)?data.resources:[],provider,state):Array.isArray(data?.resources)?data.resources:[];
+        if(metadataProjection&&provider==='gcp'&&resources.some(resource=>resource.type==='gke.cluster'))summary.append(cloudNodePoolEvidence(resources));
         if(resources.length)summary.append(table(['provider','name','category','state'],resources.map(item=>[item.provider || cloudAction?.split('/')[0],item.name || item.id,item.type,resourceState(item)]),'cloud:resources'));
-        const raw=el('details');raw.open=true;append(raw,el('summary',t(configuration?'configurationProjection':'rawJson')));if(configuration)raw.append(el('p',t('configurationProjectionNote'),'muted'));raw.append(el('pre',JSON.stringify(configuration?{...cloudResult,data:{...data,configurationEvidence:configuration}}:cloudResult,null,2),'evidence'));summary.append(raw);wrap.append(summary);
+        const projectedData=metadataProjection?{provider,coverage:{state,enumeratedResources:['complete','partial'].includes(state)?cloudCount(count):null,observedAtUtc:typeof data?.coverage?.observedAtUtc==='string'&&Number.isFinite(Date.parse(data.coverage.observedAtUtc))?new Date(data.coverage.observedAtUtc).toISOString():null},resources,...(configuration?{configurationEvidence:configuration}:{})}:configuration?{...data,configurationEvidence:configuration}:data;
+        const projectedReport=metadataProjection?{kind:cloudResult.kind,collectedAtUtc:cloudResult.collectedAtUtc,operationSucceeded:cloudResult.operationSucceeded,findings:Array.isArray(cloudResult.findings)?cloudResult.findings.map(item=>Object.fromEntries(['severity','code','title','detail','recommendation'].filter(key=>Object.hasOwn(cloudObject(item),key)&&['string','number'].includes(typeof item[key])).map(key=>[key,item[key]]))):[],warnings:Array.isArray(cloudResult.warnings)?cloudResult.warnings.filter(item=>typeof item==='string'):[],data:projectedData}:configuration?{...cloudResult,data:projectedData}:cloudResult;
+        const raw=el('details');raw.open=true;append(raw,el('summary',t(configuration?'configurationProjection':metadataProjection?'nodePoolProjection':'rawJson')));if(configuration||metadataProjection)raw.append(el('p',t(configuration?'configurationProjectionNote':'nodePoolProjectionNote'),'muted'));const evidenceJson=el('pre',JSON.stringify(projectedReport,null,2),'evidence');evidenceJson.tabIndex=0;raw.append(evidenceJson);summary.append(raw);wrap.append(summary);
     }
     $('view').append(wrap);updateCloudControls();
 }

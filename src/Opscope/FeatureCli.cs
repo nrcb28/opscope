@@ -35,6 +35,7 @@ Extended commands:
   kubernetes inventory|health|metrics --context <name> --namespaces <names>
   oci|digitalocean|hetzner|cloudflare|openstack|alibaba|ibm|scaleway <operation>
   scaleway networks --project <uuid> --region <region>
+  ibm networks --account <id> --resource-group <id> --region <region>
   cloud catalog                         Describe providers and actual capabilities
   cloud <operation> --provider <id>      Query a configured read-only provider
   cloud metadata [--provider azure|aws] Explicit identity-only metadata lookup

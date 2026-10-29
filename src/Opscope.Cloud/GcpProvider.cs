@@ -11,6 +11,8 @@ public sealed class GcpProvider(ICloudCommandRunner runner, IGcpMonitoringReader
     private const int MaxRowsPerRead = 500;
     private const int MaxResources = 10000;
     private const int MaxQueries = 60;
+    private const int MaxNodePoolsPerCluster = 100;
+    private const int MaxNodePoolRows = 1000;
     private const string AssetTypes = "compute.googleapis.com/Instance,compute.googleapis.com/Disk,compute.googleapis.com/Address,compute.googleapis.com/Network,compute.googleapis.com/Firewall,container.googleapis.com/Cluster,sqladmin.googleapis.com/Instance,run.googleapis.com/Service,storage.googleapis.com/Bucket";
     private readonly IGcpMonitoringReader metrics = monitoring ?? new GcpMonitoringReader();
     private readonly IGcpAdvancedReader advancedReads = advanced ?? new GcpAdvancedReader();
@@ -235,12 +237,18 @@ public sealed class GcpProvider(ICloudCommandRunner runner, IGcpMonitoringReader
                 object properties;
                 if (service == "gke")
                 {
-                    name = Text(row, "name"); location = Text(row, "location");
-                    var selfLink = Text(row, "selfLink");
-                    if (!ServiceName(name) || !OwnedLink(selfLink, "container.googleapis.com", project)) { Invalid(); continue; }
+                    name = ExactText(row, "name"); location = ExactText(row, "location");
+                    if (!GkeResourceName(name) || !GkeLocation(location) || !GkeParentLink(ExactText(row, "selfLink"), project, location, name)) { Invalid(); continue; }
                     if (!InRegion(location, region)) continue;
                     id = $"//container.googleapis.com/projects/{project}/locations/{location}/clusters/{name}";
-                    properties = new { state = Text(row, "status"), masterVersion = Text(row, "currentMasterVersion"), nodeVersion = Text(row, "currentNodeVersion"), nodeCount = Integer(row, "currentNodeCount") };
+                    if (!context.AcceptGkeParent(id)) { context.IncompleteGkeMetadata(); continue; }
+                    var incomplete = false;
+                    var state = GkeEnum(row, "status", ["STATUS_UNSPECIFIED", "PROVISIONING", "RUNNING", "RECONCILING", "STOPPING", "ERROR", "DEGRADED"], ref incomplete);
+                    var masterVersion = GkeVersion(row, "currentMasterVersion", ref incomplete);
+                    var nodeVersion = GkeVersion(row, "currentNodeVersion", ref incomplete);
+                    var nodeCount = GkeInteger(row, "currentNodeCount", ref incomplete);
+                    if (incomplete) context.IncompleteGkeMetadata();
+                    properties = new { state, masterVersion, nodeVersion, nodeCount, nodePools = context.NodePools(row, id) };
                 }
                 else if (service == "sql")
                 {
@@ -274,10 +282,73 @@ public sealed class GcpProvider(ICloudCommandRunner runner, IGcpMonitoringReader
                 context.Add(new("gcp", project, location, id, service switch { "gke" => "gke.cluster", "sql" => "sql.instance", "run" => "run.service", _ => "storage.bucket" }, name, properties));
             }
         }
-        void Invalid() { context.Partial = true; context.Warnings.Add("A service metadata row lacked a verified project identity or valid resource name and was omitted."); }
+        void Invalid() { context.IncompleteServiceMetadata(); context.Warnings.Add("A service metadata row lacked a verified project identity or valid resource name and was omitted."); }
     }
 
     private static bool ServiceName(string value, int limit = 63) => value.Length <= limit && Regex.IsMatch(value, @"\A[a-z][a-z0-9-]*\z", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+    private static bool GkeResourceName(string value) => value.Length <= 63 && Regex.IsMatch(value, @"\A[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?\z", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+    private static bool GkeLocation(string value) => value.Length <= 64 && Regex.IsMatch(value, @"\A[a-z]+(?:-[a-z0-9]+)+[0-9](?:-[a-z])?\z", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+    private static bool GkeParentLink(string value, string project, string location, string name) =>
+        new[] { "v1", "v1beta1" }.Any(version => value == $"https://container.googleapis.com/{version}/projects/{project}/locations/{location}/clusters/{name}" ||
+            Regex.IsMatch(location, @"\A[a-z]+(?:-[a-z0-9]+)+[0-9]-[a-z]\z", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100)) &&
+            value == $"https://container.googleapis.com/{version}/projects/{project}/zones/{location}/clusters/{name}");
+
+    // Only an exact, unique property is evidence. Duplicate keys cannot select an alternate identity or field value.
+    private static JsonElement GkeField(JsonElement row, string key, ref bool incomplete)
+    {
+        if (row.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null) return default;
+        if (row.ValueKind != JsonValueKind.Object) { incomplete = true; return default; }
+        var found = default(JsonElement); var count = 0;
+        foreach (var field in row.EnumerateObject())
+            if (field.Name == key) { found = field.Value; count++; }
+        if (count > 1) { incomplete = true; return default; }
+        return found;
+    }
+    private static string ExactText(JsonElement row, string key)
+    {
+        var incomplete = false; var value = GkeField(row, key, ref incomplete);
+        return !incomplete && value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : "";
+    }
+    private static string? GkeEnum(JsonElement row, string key, string[] allowed, ref bool incomplete)
+    {
+        var value = GkeField(row, key, ref incomplete);
+        if (value.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null) return null;
+        if (value.ValueKind == JsonValueKind.String && allowed.Contains(value.GetString(), StringComparer.Ordinal)) return value.GetString();
+        incomplete = true; return null;
+    }
+    private static string? GkeVersion(JsonElement row, string key, ref bool incomplete)
+    {
+        var value = GkeField(row, key, ref incomplete);
+        if (value.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null) return null;
+        if (value.ValueKind == JsonValueKind.String && value.GetString() is { Length: <= 40 } version &&
+            Regex.IsMatch(version, @"\A[0-9]{1,2}\.[0-9]{1,2}\.[0-9]{1,5}(?:-gke\.[0-9]{1,10})?\z", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100))) return version;
+        incomplete = true; return null;
+    }
+    private static int? GkeInteger(JsonElement row, string key, ref bool incomplete)
+    {
+        var value = GkeField(row, key, ref incomplete);
+        if (value.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null) return null;
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number) && number >= 0) return number;
+        incomplete = true; return null;
+    }
+    private static bool? GkeBoolean(JsonElement row, string key, ref bool incomplete)
+    {
+        var value = GkeField(row, key, ref incomplete);
+        if (value.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null) return null;
+        if (value.ValueKind is JsonValueKind.True or JsonValueKind.False) return value.GetBoolean();
+        incomplete = true; return null;
+    }
+    private static JsonElement GkeObject(JsonElement row, string key, ref bool incomplete)
+    {
+        var value = GkeField(row, key, ref incomplete);
+        if (value.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null or JsonValueKind.Object) return value;
+        incomplete = true; return default;
+    }
+    private sealed record GkeNodePoolEvidence(string State, int? ObservedCount, int? ReturnedCount, IReadOnlyList<GkeNodePoolObservation> Pools);
+    private sealed record GkeNodePoolObservation(string ResourceId, string? State, string? Version, int? InitialNodeCount,
+        GkeNodePoolAutoscaling Autoscaling, GkeNodePoolManagement Management);
+    private sealed record GkeNodePoolAutoscaling(bool? Enabled, int? MinNodeCount, int? MaxNodeCount, int? TotalMinNodeCount, int? TotalMaxNodeCount, string? LocationPolicy);
+    private sealed record GkeNodePoolManagement(bool? AutoRepair, bool? AutoUpgrade);
     private static bool InRegion(string location, string? region) => region is null || location == region || location.StartsWith(region + "-", StringComparison.Ordinal);
     private static bool OwnedLink(string value, string host, string project)
     {
@@ -287,7 +358,6 @@ public sealed class GcpProvider(ICloudCommandRunner runner, IGcpMonitoringReader
     }
     private static JsonElement Property(JsonElement value, string key) => value.ValueKind == JsonValueKind.Object && value.TryGetProperty(key, out var property) ? property : default;
     private static bool? NullableBoolean(JsonElement value, string key) => Property(value, key).ValueKind switch { JsonValueKind.True => true, JsonValueKind.False => false, _ => null };
-    private static int? Integer(JsonElement value, string key) => Property(value, key) is { ValueKind: JsonValueKind.Number } number && number.TryGetInt32(out var parsed) && parsed >= 0 ? parsed : null;
     private static string Numeric(JsonElement value, string key)
     {
         var text = Property(value, key).ValueKind == JsonValueKind.Number ? Property(value, key).GetRawText() : Text(value, key);
@@ -385,6 +455,53 @@ public sealed class GcpProvider(ICloudCommandRunner runner, IGcpMonitoringReader
         public bool Partial { get; set; }
         private int queries;
         private int metricPointCount;
+        private int nodePoolRows;
+        private readonly HashSet<string> gkeParents = new(StringComparer.Ordinal);
+
+        public bool AcceptGkeParent(string id) => gkeParents.Add(id);
+        public void IncompleteServiceMetadata() { Partial = true; IncompleteReads++; }
+
+        public void IncompleteGkeMetadata()
+        {
+            Partial = true;
+            IncompleteReads++;
+            Warnings.Add("GKE metadata is incomplete because a selected field, node-pool identity or node-pool collection was missing, invalid, duplicated or exceeded a bound. Unknown values were omitted; each cluster is limited to 100 node-pool rows and the whole operation to 1,000 node-pool rows across all projects. Cluster metadata remains available independently of node-pool coverage.");
+        }
+
+        public GkeNodePoolEvidence NodePools(JsonElement cluster, string parentId)
+        {
+            var incomplete = false;
+            var rows = GkeField(cluster, "nodePools", ref incomplete);
+            var pools = new List<GkeNodePoolObservation>();
+            int? returned = null;
+            if (rows.ValueKind != JsonValueKind.Array) incomplete = true;
+            else
+            {
+                returned = rows.GetArrayLength();
+                var count = Math.Min(returned.Value, Math.Min(MaxNodePoolsPerCluster, MaxNodePoolRows - nodePoolRows));
+                if (count != returned.Value) incomplete = true;
+                nodePoolRows += count;
+                var names = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var row in rows.EnumerateArray().Take(count))
+                {
+                    var name = ExactText(row, "name");
+                    if (!GkeResourceName(name) || !names.Add(name)) { incomplete = true; continue; }
+                    var state = GkeEnum(row, "status", ["STATUS_UNSPECIFIED", "PROVISIONING", "RUNNING", "RUNNING_WITH_ERROR", "RECONCILING", "STOPPING", "ERROR"], ref incomplete);
+                    var version = GkeVersion(row, "version", ref incomplete);
+                    var initialNodeCount = GkeInteger(row, "initialNodeCount", ref incomplete);
+                    var scaling = GkeObject(row, "autoscaling", ref incomplete);
+                    var autoscaling = new GkeNodePoolAutoscaling(GkeBoolean(scaling, "enabled", ref incomplete),
+                        GkeInteger(scaling, "minNodeCount", ref incomplete), GkeInteger(scaling, "maxNodeCount", ref incomplete),
+                        GkeInteger(scaling, "totalMinNodeCount", ref incomplete), GkeInteger(scaling, "totalMaxNodeCount", ref incomplete),
+                        GkeEnum(scaling, "locationPolicy", ["LOCATION_POLICY_UNSPECIFIED", "BALANCED", "ANY"], ref incomplete));
+                    var management = GkeObject(row, "management", ref incomplete);
+                    pools.Add(new(parentId + "/nodePools/" + name, state, version, initialNodeCount, autoscaling,
+                        new(GkeBoolean(management, "autoRepair", ref incomplete), GkeBoolean(management, "autoUpgrade", ref incomplete))));
+                }
+            }
+            if (incomplete) IncompleteGkeMetadata();
+            return new(incomplete ? "partial" : "complete", pools.Count == 0 && incomplete ? null : pools.Count, returned, pools);
+        }
 
         public void AddMetrics(GcpMetricResult result, string? region, string? target)
         {

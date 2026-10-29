@@ -104,7 +104,12 @@ public static class ReportSecurity
 
     private static readonly HashSet<string> SchemaKeys = new(
         typeof(Snapshot).Assembly.GetExportedTypes().SelectMany(t => t.GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)).Select(p => p.Name)
-            .Concat(new[] { "resources", "provider", "account", "region", "id", "type", "name", "properties", "scope", "subscriptions", "regions", "profiles", "identity", "records", "coverage", "summary", "source", "metadata", "group", "state", "status", "evidence", "count", "metrics", "agentVersion", "timestampUtc", "resourceGroup", "operation" }),
+            .Concat(new[] { "resources", "provider", "account", "region", "id", "type", "name", "properties", "scope", "subscriptions", "regions", "profiles", "identity", "records", "coverage", "summary", "source", "metadata", "group", "state", "status", "evidence", "count", "metrics", "agentVersion", "timestampUtc", "resourceGroup", "operation",
+                "nodePools", "observedCount", "returnedCount", "pools", "resourceId", "version", "initialNodeCount", "autoscaling", "enabled",
+                "minNodeCount", "maxNodeCount", "totalMinNodeCount", "totalMaxNodeCount", "locationPolicy", "management", "autoRepair", "autoUpgrade",
+                "masterVersion", "nodeVersion", "nodeCount", "databaseVersion", "tier", "availabilityType", "backupsEnabled", "storageAutoResize", "diskSizeGb",
+                "ingress", "observedGeneration", "readyRevisionObserved", "storageClass", "uniformBucketLevelAccess", "publicAccessPrevention",
+                "configurationEvidence", "checks", "check", "scopeVerification", "observedAtUtc", "observedResources", "expectedResources", "classicAccess", "ipVersion", "ruleCount", "targetCount" }),
         StringComparer.OrdinalIgnoreCase);
 
     private static bool SensitiveKey(string key, string[] identifiers)

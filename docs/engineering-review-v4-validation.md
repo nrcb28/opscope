@@ -89,6 +89,8 @@ Los tests de proveedores utilizan transportes y respuestas simulados. La validac
 
 Esta fase parte de `88e5e91e6364025da243c790228cd922f353dac9`, después de la PR #17. Separa las consultas cloud de la recolección del host, conserva el alcance de las esperas y las fechas de caché, y añade un lector ligero macOS con contadores nativos agregados. La verificación local del 28 de octubre de 2026 corresponde a Linux x64.
 
+Antes de integrar la [PR #18](https://github.com/nrcb28/opscope/pull/18), aprobaron los quince trabajos de [CI remoto](https://github.com/nrcb28/opscope/actions/runs/40781692186), incluidas regresiones Linux/Windows/macOS, navegador Linux/Windows y generación/verificación de paquetes candidatos. En el runner ARM64 `macos-14`, la suite Darwin aprobó 187 comprobaciones: las 178 de fixtures y nueve comprobaciones nativas de contadores y liberación de puertos Mach. Ese resultado añade ejecución nativa de esa combinación concreta; los resultados locales Linux de la tabla se conservan sin cambios.
+
 | Comprobación | Resultado local de la sexta fase |
 | --- | --- |
 | Compilación CLI y módulos, Release | Aprobada, cero errores y cero advertencias. |
@@ -101,3 +103,23 @@ Esta fase parte de `88e5e91e6364025da243c790228cd922f353dac9`, después de la PR
 | Humo Unix, gráficas y distribución | Prueba de humo y pruebas unitarias de gráficas aprobadas; 31 pruebas de herramientas de empaquetado aprobadas. |
 
 Las pruebas cloud siguen usando callbacks y transportes simulados, sin cuentas reales ni un despliegue público. Los fixtures nativos comprueban límites, ABI, datos inválidos y errores sin afirmar ejecución local en macOS. El test condicional del sistema real solo aporta evidencia nativa cuando se ejecuta en macOS; publicar un binario de otra arquitectura no sustituye esa ejecución. La memoria macOS es una estimación recuperable y no una lectura de presión de memoria ni una réplica de Activity Monitor. La recolección completa y la serie ligera conservan sus fuentes separadas.
+
+## Séptima fase: node pools GKE y redes IBM
+
+Esta fase parte de `2c5382e`, después de la [PR #18](https://github.com/nrcb28/opscope/pull/18). La lectura existente de servicios GKE incorpora metadatos acotados de node pools sin añadir llamadas API ni permisos. La operación `ibm networks` añade metadatos regionales de VPC, subnets y security groups mediante una credencial IAM que se configura y renueva fuera de Opscope, validación previa del resource group/cuenta y comprobación de identidad/ubicación por recurso. El alcance y sus límites se describen en [cloud.md](cloud.md).
+
+La verificación local del 29 de octubre de 2026 corresponde a Linux x64. Las cifras históricas anteriores se conservan como resultados de sus fases.
+
+| Comprobación | Resultado local de la séptima fase |
+| --- | --- |
+| Compilación CLI y módulos, Release | Aprobada, cero errores y cero advertencias. |
+| Proyectos de regresión .NET | Los veintinueve proyectos aprobados, incluidas las nuevas suites de topología GKE y redes IBM. |
+| API, SQLite y MCP | 341 comprobaciones aprobadas; incluyen despacho del ámbito/operación exactos, contrato proyectado, privacidad y conservación de valores observados con cobertura parcial. |
+| Topología GKE | 97 comprobaciones aprobadas de vínculo canónico, metadatos de pools, valores cero/falso/desconocidos, límites, padres duplicados y redacción. La suite GCP avanzada conserva sus 54 comprobaciones aprobadas. |
+| Redes IBM | 102 comprobaciones aprobadas de verificación previa de cuenta/resource group, identidad y ubicación, paginación fija, presupuestos, cobertura y privacidad mediante transporte simulado. |
+| Fiabilidad cloud y métricas Darwin | 2.105 y 178 comprobaciones aprobadas, respectivamente. Las 178 Darwin utilizan fixtures; la lectura nativa se omite explícitamente en Linux. |
+| Navegador Chromium | 225 comprobaciones aprobadas de interfaz y accesibilidad, incluidas topología GKE, redes IBM, estados desconocidos, proyección segura y navegación por teclado del JSON. Las pruebas unitarias de gráficas también aprobaron. |
+| CLI real, pruebas Python | 22 pruebas aprobadas, incluido catálogo IBM y rechazo de ámbitos inválidos sin acceso remoto. |
+| Humo Unix y distribución | Prueba de humo aprobada; 31 pruebas de herramientas de empaquetado aprobadas. |
+
+La ampliación comprueba identidades repetidas, colisiones entre identificadores y claves del esquema, y el límite independiente del contexto de redacción: agotar sus 1.024 identidades omite texto con aviso sin eliminar las claves fijas o la evidencia numérica. El lector examina como máximo 100 filas de pools por clúster y 1.000 por operación; ese límite no garantiza que quepa todo el texto en el contexto de redacción. Los padres canónicos repetidos se omiten y hacen incompleta la lectura: un ámbito único afectado conserva `completedScopes=0`. Las pruebas de proveedores utilizan transportes simulados; no aportan evidencia de cuentas reales, IAM efectivo, conectividad, despliegue público o firmas de distribución.

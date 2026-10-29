@@ -29,7 +29,7 @@ public static class CloudProviderRegistry
         Descriptor("alibaba", "Alibaba Cloud", "public-cloud", true,
             [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Posture, CloudOperation.Metrics], ["compute.vm", "storage.disk"], ["ECS DescribeInstances and DescribeDisks"]),
         Descriptor("ibm", "IBM Cloud", "public-cloud", true,
-            [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Metrics], ["service.instance"], ["IBM Resource Controller viewer in the configured account and resource group"]),
+            [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Metrics, CloudOperation.Networks], ["service.instance"], ["IBM Resource Controller viewer in the configured account and resource group"]),
         Descriptor("scaleway", "Scaleway", "public-cloud", true,
             [CloudOperation.Inventory, CloudOperation.Health, CloudOperation.Metrics, CloudOperation.Networks], ["compute.vm"], ["Scaleway Instance read permissions"]),
         Descriptor("kubernetes", "Kubernetes", "cluster", true,
@@ -85,7 +85,7 @@ public static class CloudProviderRegistry
                 CloudOperation.Vm => (["compute.vm.state"], ["compute.instances.list"]),
                 CloudOperation.Scc => (["security.finding"], ["resourcemanager.projects.get", "securitycenter.findings.list (ADC)"]),
                 CloudOperation.Cost => (["billing.observed-export-rows"], ["bigquery.tables.get", "bigquery.tables.getData (ADC); preconfigured billing export"]),
-                CloudOperation.Services => (["gke.cluster", "sql.instance", "run.service", "storage.bucket"], ["resourcemanager.projects.get", "Service-specific configuration list permissions for selected GCP services"]),
+                CloudOperation.Services => (["gke.cluster", "gke.node-pool.configuration", "sql.instance", "run.service", "storage.bucket"], ["resourcemanager.projects.get", "Service-specific configuration list permissions for selected GCP services"]),
                 CloudOperation.Patches => (["osconfig.patch-job.observation"], ["resourcemanager.projects.get", "osconfig.patchJobs.list (ADC); existing OS Config jobs"]),
                 CloudOperation.Drift => (["inventory.baseline.comparison"], ["cloudasset.assets.searchAllResources; private normalized inventory baseline with matching scopes"]),
                 _ => (["compute.vm.state", "compute.vm.cpu", "network.firewall"], ["compute.instances.list", "compute.firewalls.list", "monitoring.timeSeries.list (ADC)"])
@@ -122,6 +122,11 @@ public static class CloudProviderRegistry
         {
             resourceTypes = ["network.vpc", "network.privateNetwork"];
             permissions = ["VPC and Private Network list permissions in the explicit Scaleway project and region"];
+        }
+        else if (operation == CloudOperation.Networks && id == "ibm")
+        {
+            resourceTypes = ["network.vpc", "network.subnet", "network.securityGroup"];
+            permissions = ["Read the selected Resource Group and list VPCs, subnets and security groups in its explicit account and region"];
         }
         else if (id is not ("azure" or "aws") && operation == CloudOperation.Health)
             resourceTypes = id == "cloudflare" ? ["edge.zone.state"] : id == "ibm" ? ["service.instance.state"] : id == "kubernetes" ? ["cluster.workload.state"] : ["compute.vm.state"];

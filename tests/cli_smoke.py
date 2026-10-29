@@ -119,6 +119,19 @@ class CliTests(unittest.TestCase):
                 self.run_cli("serve", "--history", history, *args, expected=2)
                 self.assertFalse(history.exists(), "Invalid hosting setup must fail before collecting or saving host evidence")
 
+    def test_digitalocean_project_capabilities_and_invalid_scopes_stay_offline(self):
+        catalog = json.loads(self.run_cli("cloud", "catalog", "--provider", "digitalocean"))
+        capabilities = catalog["data"]["providers"][0]["capabilities"]
+        inventory = next(item for item in capabilities if item["operation"] == "inventory")
+        self.assertEqual(set(inventory["resourceTypes"]), {"compute.vm", "storage.volume", "network.load-balancer", "network.vpc"})
+        posture = next(item for item in capabilities if item["operation"] == "posture")
+        self.assertEqual(set(posture["resourceTypes"]), {"compute.vm", "network.firewall"})
+        for operation in ("inventory", "posture"):
+            for args in [(), ("--project", "https://untrusted.invalid"), ("--project", "../project"),
+                         ("--project", "11111111-1111-1111-1111-111111111111", "--endpoint", "https://untrusted.invalid")]:
+                with self.subTest(operation=operation, args=args):
+                    self.run_cli("digitalocean", operation, *args, expected=2)
+
     def test_ibm_networks_catalog_and_invalid_scopes_stay_offline(self):
         catalog = json.loads(self.run_cli("cloud", "catalog", "--provider", "ibm"))
         capabilities = catalog["data"]["providers"][0]["capabilities"]

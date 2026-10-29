@@ -110,6 +110,8 @@ Esta fase parte de `2c5382e`, después de la [PR #18](https://github.com/nrcb28/
 
 La verificación local del 29 de octubre de 2026 corresponde a Linux x64. Las cifras históricas anteriores se conservan como resultados de sus fases.
 
+Antes de integrar la [PR #19](https://github.com/nrcb28/opscope/pull/19), aprobaron los quince trabajos de [CI remoto](https://github.com/nrcb28/opscope/actions/runs/40881256828): los 29 proyectos de regresión en Linux, Windows y macOS, 225 comprobaciones de navegador en Linux y Windows, y la generación/verificación de los seis binarios y el paquete `dotnet tool`. El runner ARM64 `macos-14` aprobó las 187 comprobaciones Darwin, incluidas nueve nativas; la tabla conserva sus 178 resultados locales con fixtures en Linux.
+
 | Comprobación | Resultado local de la séptima fase |
 | --- | --- |
 | Compilación CLI y módulos, Release | Aprobada, cero errores y cero advertencias. |
@@ -123,3 +125,23 @@ La verificación local del 29 de octubre de 2026 corresponde a Linux x64. Las ci
 | Humo Unix y distribución | Prueba de humo aprobada; 31 pruebas de herramientas de empaquetado aprobadas. |
 
 La ampliación comprueba identidades repetidas, colisiones entre identificadores y claves del esquema, y el límite independiente del contexto de redacción: agotar sus 1.024 identidades omite texto con aviso sin eliminar las claves fijas o la evidencia numérica. El lector examina como máximo 100 filas de pools por clúster y 1.000 por operación; ese límite no garantiza que quepa todo el texto en el contexto de redacción. Los padres canónicos repetidos se omiten y hacen incompleta la lectura: un ámbito único afectado conserva `completedScopes=0`. Las pruebas de proveedores utilizan transportes simulados; no aportan evidencia de cuentas reales, IAM efectivo, conectividad, despliegue público o firmas de distribución.
+
+## Octava fase: DigitalOcean y metadatos Cloud Run
+
+Esta fase parte de `909b55d`, después de la [PR #19](https://github.com/nrcb28/opscope/pull/19). La ampliación usa el proyecto explícito y las referencias devueltas por el proveedor para delimitar recursos visibles; una VPC referenciada no se presenta como propiedad exclusiva del proyecto. Cloud Run añade una única anotación de ingress proyectada, conserva como desconocida la fecha de actualización no disponible en v1 y no añade llamadas ni permisos. El alcance final de la ampliación se describe en [cloud.md](cloud.md).
+
+La verificación local del 29 de octubre de 2026 corresponde a Linux x64. Las cifras de la séptima fase conservan su carácter histórico; los resultados siguientes pertenecen a la ampliación de la octava fase.
+
+| Comprobación | Resultado local de la octava fase |
+| --- | --- |
+| Compilación CLI y módulos, Release, y fixture Debug | Ambas aprobadas, cero errores y cero advertencias. |
+| Proyectos de regresión .NET | Los treinta proyectos aprobados, incluida la nueva suite DigitalOcean. |
+| API, SQLite y MCP | 357 comprobaciones aprobadas de contrato, despacho, proyección y privacidad. |
+| DigitalOcean | 140 comprobaciones aprobadas de proyecto, referencias VPC, metadatos de balanceadores, membresía de firewalls, cobertura, límites y privacidad. |
+| GCP avanzado | 84 comprobaciones aprobadas, incluidas proyección exclusiva de ingress Cloud Run, valores ausentes/inválidos y fecha de actualización desconocida en v1. |
+| Regresiones de topología y fiabilidad cloud | GKE conserva sus 97 comprobaciones, IBM sus 102 y fiabilidad cloud sus 2.105; todas aprobadas. |
+| Navegador Chromium | 255 comprobaciones aprobadas de interfaz y accesibilidad; las pruebas unitarias de gráficas también aprobaron. Incluyen estados cero/falso/desconocidos, cobertura parcial, proyección cerrada y ausencia de desbordamiento en móvil. |
+| CLI real, pruebas Python | 23 pruebas aprobadas, incluido catálogo DigitalOcean y rechazo de ámbitos inválidos sin acceso remoto. |
+| Humo Unix y distribución | Prueba de humo aprobada; 31 pruebas de herramientas de empaquetado aprobadas. |
+
+Las comprobaciones de DigitalOcean incluyen CIDRs válidos con prefijo cero, reglas no interpretables con recuento global desconocido y cobertura parcial heredada desde la membresía del proyecto. La proyección de interfaz conserva como desconocidos los resúmenes inválidos o negativos. Las cuentas cloud reales y el despliegue remoto permanecen aplazados; los fixtures no prueban IAM efectivo, conectividad ni un login real.

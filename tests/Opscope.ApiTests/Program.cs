@@ -50,6 +50,7 @@ internal static class Program
                         ["cloudflare-scope-1/posture"] = _ => Task.FromResult(ConfigurationFixture("cloudflare")),
                         ["alibaba-scope-1/posture"] = _ => Task.FromResult(ConfigurationFixture("alibaba")),
                         ["scaleway-scope-1/networks"] = _ => Task.FromResult(ConfigurationFixture("scaleway")),
+                        ["scaleway-scope-2/networks"] = _ => Task.FromResult(ScalewayZonalFixture()),
                         ["ibm-scope-1/networks"] = _ => Task.FromResult(IbmNetworkFixture()),
                         ["digitalocean-scope-1/inventory"] = _ => Task.FromResult(DigitalOceanProjectFixture("inventory")),
                         ["digitalocean-scope-1/posture"] = _ => Task.FromResult(DigitalOceanProjectFixture("posture")),
@@ -169,7 +170,7 @@ internal static class Program
                 provider, coverage = new CloudCoverage(CoverageState.Partial, now, 2, 1, 1, []),
                 configurationEvidence = new
                 {
-                    source = "fixed-read-only-configuration", checks = new[]
+                    source = provider == "scaleway" ? "scaleway-vpc-v2" : "fixed-read-only-configuration", checks = new[]
                     {
                         new { check = provider == "cloudflare" ? "tls" : provider == "alibaba" ? "security-groups" : "vpcs", state = "complete", observedAtUtc = now, observations }
                     }
@@ -225,6 +226,48 @@ internal static class Program
             configurationEvidence = new { source = "ibm-vpc-fixed-read", scopeVerification = new { source = "ibm-resource-manager-v2", state = "verified" },
                 checks = new[] { "vpcs", "subnets", "security-groups" }.Select(check => new { check, state = "complete", observedAtUtc = now, observations = new { observedResources = 1, expectedResources = 1 } }).ToArray() }
         }, ["Selected VPC metadata only; counts and lifecycle configuration do not prove effective access or application health."])
+        { OperationSucceeded = false };
+    }
+
+    private static AnalysisReport ScalewayZonalFixture()
+    {
+        var now = DateTimeOffset.UtcNow;
+        const string project = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const string region = "fr-par";
+        const string zone = "fr-par-1";
+        var resources = new[]
+        {
+            new CloudResource("scaleway", project, region, "vpc/regions/fr-par/vpcs/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "network.vpc", "", new
+            {
+                isDefault = false, routingEnabled = true, customRoutesPropagationEnabled = false
+            }),
+            new CloudResource("scaleway", project, region, "vpc/regions/fr-par/private-networks/cccccccc-cccc-4ccc-8ccc-cccccccccccc", "network.privateNetwork", "", new
+            {
+                dhcpEnabled = false, defaultRoutePropagationEnabled = false, vpc = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+            }),
+            new CloudResource("scaleway", project, region, "vpc-gw/zones/fr-par-1/gateways/dddddddd-dddd-4ddd-8ddd-dddddddddddd", "network.gateway", "", new
+            {
+                zone, state = "running", bastionEnabled = false, smtpEnabled = false, isLegacy = true
+            }),
+            new CloudResource("scaleway", project, region, "lb/zones/fr-par-1/lbs/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "network.load-balancer", "", new
+            {
+                zone, state = "ready", frontendCount = 0, backendCount = 0, privateNetworkCount = (int?)null, routeCount = (int?)null
+            })
+        };
+        return new("cloud/scaleway/networks", now, [], new
+        {
+            provider = "scaleway", operation = "networks", resources,
+            scope = new { schemaVersion = 1, accounts = new[] { project }, region, zone },
+            coverage = new CloudCoverage(CoverageState.Partial, now, resources.Length, 1, 0, []),
+            configurationEvidence = new
+            {
+                source = "scaleway-network-fixed-read", selection = new { region, zone, zonalProductsRequested = true },
+                checks = new[] { "vpcs", "private-networks", "gateways", "load-balancers" }.Select(check => new
+                {
+                    check, state = "complete", observedAtUtc = now, observations = new { observedResources = 1, expectedResources = 1 }
+                }).ToArray()
+            }
+        }, ["Regional VPC metadata and explicitly selected zonal gateway/load-balancer configuration only. Lifecycle state and configuration do not establish effective reachability, project IAM authorization or application health."])
         { OperationSucceeded = false };
     }
 
@@ -465,6 +508,7 @@ internal static class Program
                 ["cloudflare-scope-4/posture"] = _ => Task.FromResult(ConfigurationFixture("cloudflare")),
                 ["alibaba-scope-4/posture"] = _ => Task.FromResult(ConfigurationFixture("alibaba")),
                 ["scaleway-scope-4/networks"] = _ => Task.FromResult(ConfigurationFixture("scaleway")),
+                ["scaleway-scope-5/networks"] = _ => Task.FromResult(ScalewayZonalFixture()),
                 ["ibm-scope-4/networks"] = _ => Task.FromResult(IbmNetworkFixture()),
                 ["digitalocean-scope-4/inventory"] = _ => Task.FromResult(DigitalOceanProjectFixture("inventory")),
                 ["digitalocean-scope-4/posture"] = _ => Task.FromResult(DigitalOceanProjectFixture("posture")),
@@ -772,6 +816,7 @@ internal static class Program
         Assert(actions.Any(action => action.GetProperty("actionKey").GetString() == "azure-scope-2/inventory") && actions.All(action => action.GetProperty("readOnly").GetBoolean()), "Catalog preserves explicitly configured action aliases as read-only actions");
         foreach (var action in new[] { "gcp-scope-3/scc", "gcp-scope-3/cost", "gcp-scope-3/patches", "gcp-scope-3/drift", "gcp-scope-3/services", "cloudflare-scope-4/posture", "alibaba-scope-4/posture", "scaleway-scope-4/networks", "ibm-scope-4/networks", "digitalocean-scope-4/inventory", "digitalocean-scope-4/posture", "kubernetes-scope-2/inventory", "kubernetes-scope-2/metrics" })
             Assert(actions.Any(item => item.GetProperty("actionKey").GetString() == action), "Catalog exposes only the explicitly configured advanced action: " + action);
+        Assert(actions.Any(item => item.GetProperty("actionKey").GetString() == "scaleway-scope-5/networks"), "Scaleway zonal network metadata requires its explicitly configured action alias");
         Assert(!text.Contains(token, StringComparison.Ordinal) && !text.Contains("api-private-host", StringComparison.Ordinal), "Cloud discovery reveals no host evidence or session secret");
         foreach (var (path, status) in new[]
         {
@@ -800,6 +845,7 @@ internal static class Program
             ("gcp-scope-3/services", "cloud/gcp/services"), ("ibm-scope-4/networks", "cloud/ibm/networks"),
             ("digitalocean-scope-4/inventory", "cloud/digitalocean/inventory"), ("digitalocean-scope-4/posture", "cloud/digitalocean/posture"),
             ("cloudflare-scope-4/posture", "cloud/cloudflare/posture"), ("alibaba-scope-4/posture", "cloud/alibaba/posture"), ("scaleway-scope-4/networks", "cloud/scaleway/networks"),
+            ("scaleway-scope-5/networks", "cloud/scaleway/networks"),
             ("kubernetes-scope-2/inventory", "cloud/kubernetes/inventory"), ("kubernetes-scope-2/metrics", "cloud/kubernetes/metrics")
         })
         {
@@ -846,6 +892,17 @@ internal static class Program
             }
             if (action.StartsWith("ibm", StringComparison.Ordinal))
                 Assert(data.GetProperty("configurationEvidence").GetProperty("scopeVerification").GetProperty("state").GetString() == "verified", "IBM network evidence preserves its resource-group/account scope verification independently of partial product coverage");
+            if (action == "scaleway-scope-5/networks")
+            {
+                var selected = data.GetProperty("configurationEvidence").GetProperty("selection");
+                Assert(data.GetProperty("configurationEvidence").GetProperty("source").GetString() == "scaleway-network-fixed-read" && selected.GetProperty("zonalProductsRequested").GetBoolean() && selected.GetProperty("zone").GetString() == "fr-par-1" && selected.GetProperty("region").GetString() == "fr-par", "Scaleway preserves the explicit zonal selection independently of useful partial overall coverage");
+                var rows = data.GetProperty("resources").EnumerateArray().ToArray();
+                var gateway = rows.Single(row => row.GetProperty("type").GetString() == "network.gateway").GetProperty("properties");
+                var loadBalancer = rows.Single(row => row.GetProperty("type").GetString() == "network.load-balancer").GetProperty("properties");
+                Assert(!gateway.GetProperty("bastionEnabled").GetBoolean() && !gateway.GetProperty("smtpEnabled").GetBoolean() && gateway.GetProperty("isLegacy").GetBoolean(), "Scaleway gateway metadata preserves false settings and the observed generation flag");
+                Assert(loadBalancer.GetProperty("frontendCount").GetInt32() == 0 && loadBalancer.GetProperty("backendCount").GetInt32() == 0 && !loadBalancer.TryGetProperty("privateNetworkCount", out _) && !loadBalancer.TryGetProperty("routeCount", out _), "Scaleway load-balancer observations distinguish real empty arrays from unavailable counters");
+                Assert(!text.Contains("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", StringComparison.Ordinal) && !text.Contains("dddddddd-dddd-4ddd-8ddd-dddddddddddd", StringComparison.Ordinal), "Scaleway exports redact selected project and zonal resource identities");
+            }
             if (action.StartsWith("kubernetes", StringComparison.Ordinal))
                 Assert(!data.GetProperty("cluster").GetProperty("cloudCorrelationVerified").GetBoolean(), "Kubernetes observations cannot infer a cloud identity match from a context name");
             if (action == "kubernetes-scope-2/metrics")

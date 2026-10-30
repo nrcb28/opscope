@@ -11,8 +11,10 @@ const string Secret = "fixture-private-scaleway-secret";
 var assertions = 0;
 void Check(bool value, string reason) { if (!value) throw new InvalidOperationException(reason); assertions++; }
 Dictionary<string, string> Options() => new(StringComparer.Ordinal) { ["project"] = Project, ["region"] = "fr-par" };
+Dictionary<string, string> ZonalOptions(string zone = "fr-par-1") => new(StringComparer.Ordinal) { ["project"] = Project, ["region"] = zone[..^2], ["zone"] = zone };
 JsonElement Data(AnalysisReport report) => JsonSerializer.SerializeToElement(report.Data, ReportSecurity.JsonOptions);
 string State(AnalysisReport report) => Data(report).GetProperty("coverage").GetProperty("state").GetString()!;
+JsonElement ProductCheck(AnalysisReport report, string check) => Data(report).GetProperty("configurationEvidence").GetProperty("checks").EnumerateArray().Single(value => value.GetProperty("check").GetString() == check);
 JsonObject Vpc(int id = 1, string? region = null) => new()
 {
     ["id"] = Id(id), ["project_id"] = Project, ["region"] = region ?? "fr-par", ["is_default"] = false,
@@ -26,6 +28,25 @@ JsonObject Network(int id = 2, string? region = null) => new()
     ["name"] = "private-network-name", ["tags"] = new JsonArray("PRIVATE-TAG"),
     ["subnets"] = new JsonArray(new JsonObject { ["subnet"] = "192.0.2.0/24", ["project_id"] = OtherProject })
 };
+JsonObject Gateway(int id = 3, string zone = "fr-par-1") => new()
+{
+    ["id"] = Id(id), ["project_id"] = Project, ["zone"] = zone, ["status"] = "running",
+    ["bastion_enabled"] = false, ["smtp_enabled"] = true, ["is_legacy"] = false,
+    ["name"] = "PRIVATE-GATEWAY-NAME", ["tags"] = new JsonArray("PRIVATE-GATEWAY-TAG"),
+    ["ipv4"] = new JsonObject { ["address"] = "192.0.2.30" }, ["bastion_allowed_ips"] = new JsonArray("192.0.2.0/24"),
+    ["gateway_networks"] = new JsonArray(new JsonObject { ["private_network_id"] = Id(900), ["ipam_ip_id"] = Secret }),
+    ["version"] = "PRIVATE-GATEWAY-SOFTWARE", ["unexpected"] = Secret
+};
+JsonObject LoadBalancer(int id = 4, string zone = "fr-par-1") => new()
+{
+    ["id"] = Id(id), ["project_id"] = Project, ["zone"] = zone, ["region"] = zone[..^2], ["status"] = "ready",
+    ["frontend_count"] = 0, ["backend_count"] = 2, ["private_network_count"] = 0, ["route_count"] = 0,
+    ["name"] = "PRIVATE-LOAD-BALANCER-NAME", ["description"] = Secret, ["tags"] = new JsonArray("PRIVATE-LOAD-BALANCER-TAG"),
+    ["ip"] = new JsonArray(new JsonObject { ["ip_address"] = "192.0.2.40" }),
+    ["subscriber"] = new JsonObject { ["email"] = "private-subscriber@example.invalid" },
+    ["certificates"] = new JsonArray(new JsonObject { ["private_key"] = Secret }),
+    ["instances"] = new JsonArray(new JsonObject { ["id"] = Id(901), ["ip_address"] = "192.0.2.41" })
+};
 HttpResponseMessage JsonResponse(string kind, IEnumerable<JsonNode?> rows, int total, int padding = 0)
 {
     var root = new JsonObject { [kind] = new JsonArray(rows.ToArray()), ["total_count"] = total };
@@ -34,6 +55,19 @@ HttpResponseMessage JsonResponse(string kind, IEnumerable<JsonNode?> rows, int t
 }
 HttpResponseMessage Normal(HttpRequestMessage request, int _) => request.RequestUri!.AbsolutePath.EndsWith("/vpcs", StringComparison.Ordinal)
     ? JsonResponse("vpcs", [Vpc()], 1) : JsonResponse("private_networks", [Network()], 1);
+string CollectionName(HttpRequestMessage request) => request.RequestUri!.AbsolutePath.Split('/')[^1] switch
+{
+    "vpcs" => "vpcs", "private-networks" => "private_networks", "gateways" => "gateways", "lbs" => "lbs",
+    _ => throw new InvalidOperationException("Unlisted fixed product request")
+};
+HttpResponseMessage ZonalNormal(HttpRequestMessage request, int _) => CollectionName(request) switch
+{
+    "vpcs" => JsonResponse("vpcs", [Vpc(region: request.RequestUri!.AbsolutePath.Split('/')[4])], 1),
+    "private_networks" => JsonResponse("private_networks", [Network(region: request.RequestUri!.AbsolutePath.Split('/')[4])], 1),
+    "gateways" => JsonResponse("gateways", [Gateway(zone: request.RequestUri!.AbsolutePath.Split('/')[4])], 1),
+    "lbs" => JsonResponse("lbs", [LoadBalancer(zone: request.RequestUri!.AbsolutePath.Split('/')[4])], 1),
+    _ => throw new InvalidOperationException("Unlisted fixed product request")
+};
 async Task<(AnalysisReport Report, FixtureHandler Handler)> Read(Func<HttpRequestMessage, int, HttpResponseMessage>? response = null,
     IReadOnlyDictionary<string, string>? options = null, string? credential = Secret, string operation = "networks")
 {
@@ -63,6 +97,7 @@ foreach (var mutation in new Action<Dictionary<string, string>>[]
     options => options.Remove("project"), options => options.Remove("region"), options => { options.Remove("region"); options["zone"] = "fr-par-1"; },
     options => options["region"] = "fr-par-1", options => options["region"] = "https://127.0.0.1", options => options["region"] = "other-region",
     options => options["project"] = "../project", options => options["project"] = Project + "," + OtherProject,
+    options => options["project"] = Project + "\n", options => options["region"] = "fr-par\n",
     options => options["endpoint"] = "https://untrusted.invalid", options => options["api-url"] = "https://untrusted.invalid",
     options => options["resource"] = Id(1), options => options["regions"] = "fr-par,nl-ams"
 })
@@ -79,8 +114,8 @@ foreach (var token in new[] { "", "\r\nprivate", "secret with space", "secret-é
 var unsupported = await Read(operation: "delete");
 Check(State(unsupported.Report) == "unsupported" && unsupported.Handler.Requests.Count == 0, "The regional reader cannot be used for a mutation operation");
 var zoneOptions = Options(); zoneOptions["zone"] = "nl-ams-1";
-var zoneIgnored = await Read(options: zoneOptions);
-Check(zoneIgnored.Report.OperationSucceeded && zoneIgnored.Handler.Requests.All(request => request.Path.StartsWith("/vpc/v2/regions/fr-par/", StringComparison.Ordinal)) && zoneIgnored.Report.Warnings!.Any(warning => warning.Contains("zone option does not", StringComparison.Ordinal)), "An unrelated zone never changes or silently narrows the explicit region");
+var zoneMismatch = await Read(options: zoneOptions);
+Check(!zoneMismatch.Report.OperationSucceeded && State(zoneMismatch.Report) == "not_configured" && zoneMismatch.Handler.Requests.Count == 0, "A supplied zone outside the explicit region is rejected before any regional or zonal request");
 
 foreach (var region in new[] { "fr-par", "nl-ams", "pl-waw" })
 {
@@ -185,7 +220,7 @@ var budget = await Read((request, _) =>
     return JsonResponse("vpcs", Enumerable.Range((page - 1) * 100 + 1, 100).Select(number => Vpc(number)), 1001);
 });
 Check(State(budget.Report) == "partial" && Data(budget.Report).GetProperty("resources").GetArrayLength() == 1000 && budget.Handler.Requests.Count == 10, "The global resource and per-product page bounds prevent unlimited enumeration");
-Check(Data(budget.Report).GetProperty("configurationEvidence").GetProperty("checks")[1].GetProperty("state").GetString() == "partial", "A product omitted by the global bound is explicitly incomplete");
+Check(Data(budget.Report).GetProperty("configurationEvidence").GetProperty("checks")[1].GetProperty("state").GetString() == "not_requested", "A product omitted by the global bound remains explicitly unrequested");
 
 var oversized = await Read((_, _) => Response(new string('x', 4 * 1024 * 1024 + 1)));
 Check(State(oversized.Report) == "partial" && Data(oversized.Report).GetProperty("resources").GetArrayLength() == 0, "Content-Length limits reject oversized provider data before parsing");
@@ -199,7 +234,187 @@ var aggregated = await Read((request, _) =>
 });
 Check(State(aggregated.Report) == "partial" && Data(aggregated.Report).GetProperty("resources").GetArrayLength() == 200, "Aggregate response bytes remain bounded across successful pages and separate products");
 
-Console.WriteLine($"PASS: {assertions} Scaleway regional network checks.");
+var regionalSelection = Data(valid.Report).GetProperty("configurationEvidence");
+Check(regionalSelection.GetProperty("source").GetString() == "scaleway-vpc-v2" && !regionalSelection.GetProperty("selection").GetProperty("zonalProductsRequested").GetBoolean(), "Region-only evidence preserves its established source and explicitly leaves zonal products unrequested");
+Check(regionalSelection.GetProperty("selection").GetProperty("region").GetString() == "fr-par" && !regionalSelection.GetProperty("selection").TryGetProperty("zone", out _), "A missing zone remains absent rather than inferred from the configured region");
+
+var zonal = await Read(ZonalNormal, ZonalOptions());
+var zonalData = Data(zonal.Report);
+var zonalResources = zonalData.GetProperty("resources").EnumerateArray().ToArray();
+Check(zonal.Report.OperationSucceeded && State(zonal.Report) == "complete" && zonalResources.Length == 4, "An explicit compatible zone adds gateway and load-balancer metadata to the two regional products");
+Check(zonalResources.Select(resource => resource.GetProperty("type").GetString()).SequenceEqual(new[] { "network.vpc", "network.privateNetwork", "network.gateway", "network.load-balancer" }), "Regional and zonal products retain four distinct normalized resource types");
+Check(zonal.Handler.Requests.Select(request => request.Path).SequenceEqual(new[] { "/vpc/v2/regions/fr-par/vpcs", "/vpc/v2/regions/fr-par/private-networks", "/vpc-gw/v2/zones/fr-par-1/gateways", "/lb/v1/zones/fr-par-1/lbs" }), "Only the two approved regional and two approved zonal routes are constructed");
+Check(zonal.Handler.Requests.All(request => request.Method == "GET" && request.Host == "api.scaleway.com" && request.Scheme == "https" && request.Query == $"?project_id={Project}&page=1&page_size=100" + (request.Path.EndsWith("/gateways", StringComparison.Ordinal) ? "&include_legacy=true" : "") && request.Token == Secret), "All four products share exact project filtering and fixed backend-only HTTPS GET authentication, with gateway legacy inclusion explicit");
+var selection = zonalData.GetProperty("configurationEvidence").GetProperty("selection");
+Check(zonalData.GetProperty("configurationEvidence").GetProperty("source").GetString() == "scaleway-network-fixed-read" && selection.GetProperty("zonalProductsRequested").GetBoolean() && selection.GetProperty("zone").GetString() == "fr-par-1", "Mixed evidence declares its fixed network source and explicit zonal selection");
+Check(zonalData.GetProperty("scope").GetProperty("zone").GetString() == "fr-par-1" && zonalData.GetProperty("coverage").GetProperty("completedScopes").GetInt32() == 1, "A compatible zone is retained in the declared scope and all selected products can complete it");
+Check(zonalData.GetProperty("configurationEvidence").GetProperty("checks").EnumerateArray().Select(check => check.GetProperty("check").GetString()).SequenceEqual(new[] { "vpcs", "private-networks", "gateways", "load-balancers" }), "Each selected product has its own observation check");
+var gatewayProperties = zonalResources[2].GetProperty("properties");
+var lbProperties = zonalResources[3].GetProperty("properties");
+Check(gatewayProperties.GetProperty("state").GetString() == "running" && !gatewayProperties.GetProperty("bastionEnabled").GetBoolean() && gatewayProperties.GetProperty("smtpEnabled").GetBoolean() && !gatewayProperties.GetProperty("isLegacy").GetBoolean(), "Gateway lifecycle and explicit false/true flags survive without becoming a health verdict");
+Check(lbProperties.GetProperty("state").GetString() == "ready" && lbProperties.GetProperty("frontendCount").GetInt32() == 0 && lbProperties.GetProperty("backendCount").GetInt32() == 2 && lbProperties.GetProperty("privateNetworkCount").GetInt32() == 0 && lbProperties.GetProperty("routeCount").GetInt32() == 0, "Load-balancer metadata preserves genuine zero counts independently of availability");
+Check(zonalResources[2].GetProperty("id").GetString() == $"vpc-gw/zones/fr-par-1/gateways/{Id(3)}" && zonalResources[3].GetProperty("id").GetString() == $"lb/zones/fr-par-1/lbs/{Id(4)}" && zonalResources.Skip(2).All(resource => resource.GetProperty("region").GetString() == "fr-par" && resource.GetProperty("properties").GetProperty("zone").GetString() == "fr-par-1"), "Zonal resource identities include the exact selected zone while their region remains explicit");
+var zonalRaw = JsonSerializer.Serialize(zonal.Report, ReportSecurity.JsonOptions);
+Check(new[] { Secret, "PRIVATE-GATEWAY-NAME", "PRIVATE-GATEWAY-TAG", "PRIVATE-LOAD-BALANCER-NAME", "PRIVATE-LOAD-BALANCER-TAG", "PRIVATE-GATEWAY-SOFTWARE", "192.0.2.", "private-subscriber", Id(900), Id(901) }.All(value => !zonalRaw.Contains(value, StringComparison.Ordinal)) && !zonalData.GetRawText().Contains("\"certificates\":", StringComparison.Ordinal) && !zonalData.GetRawText().Contains("\"gateway_networks\":", StringComparison.Ordinal), "Zonal reads discard names, tags, software strings, addresses, subscribers, certificates, nested networks and underlying instance identities before reports");
+var zonalRedacted = ReportSecurity.Serialize(zonal.Report);
+using var zonalRedactedDocument = JsonDocument.Parse(zonalRedacted);
+var redactedLoadBalancer = zonalRedactedDocument.RootElement.GetProperty("data").GetProperty("resources").EnumerateArray()
+    .Single(resource => resource.GetProperty("type").GetString() == "network.load-balancer");
+Check(new[] { Project, Id(1), Id(2), Id(3), Id(4) }.All(value => !zonalRedacted.Contains(value, StringComparison.Ordinal)) &&
+    redactedLoadBalancer.GetProperty("properties").GetProperty("frontendCount").GetInt32() == 0,
+    "Exports redact every zonal identity while preserving numeric evidence");
+Check(!zonal.Report.Findings.Any() && zonal.Report.Warnings!.Any(warning => warning.Contains("do not establish", StringComparison.Ordinal)), "Gateway and load-balancer configuration do not manufacture an isolation, reachability or health assessment");
+
+foreach (var zone in new[] { "fr-par-1", "fr-par-2", "nl-ams-1", "nl-ams-2", "nl-ams-3", "pl-waw-1", "pl-waw-2", "pl-waw-3" })
+{
+    var selected = await Read(ZonalNormal, ZonalOptions(zone));
+    Check(selected.Report.OperationSucceeded && selected.Handler.Requests.Count == 4 && selected.Handler.Requests.Skip(2).All(request => request.Path.Contains($"/zones/{zone}/", StringComparison.Ordinal)), "Every explicitly supported zone retains its own gateway and load-balancer routes");
+}
+foreach (var zone in new[] { "fr-par-3", "fr-par", "fr-par-0", "fr-par-10", "FR-PAR-1", "fr-par-1\n", "fr-par-\n1", "fr-par-1,fr-par-2", "../zone", "https://untrusted.invalid" })
+{
+    var options = Options(); options["zone"] = zone;
+    var rejected = await Read(ZonalNormal, options);
+    Check(State(rejected.Report) == "not_configured" && rejected.Handler.Requests.Count == 0, "Unapproved, malformed and ambiguous zones cannot initiate any network read");
+}
+
+var zonalEmpty = await Read((request, _) => JsonResponse(CollectionName(request), [], 0), ZonalOptions());
+Check(zonalEmpty.Report.OperationSucceeded && Data(zonalEmpty.Report).GetProperty("resources").GetArrayLength() == 0 && Data(zonalEmpty.Report).GetProperty("configurationEvidence").GetProperty("checks").EnumerateArray().All(check => check.GetProperty("observations").GetProperty("observedResources").GetInt32() == 0), "Only completed explicit empty envelopes establish zero observations for all four selected products");
+
+foreach (var kind in new[] { "gateways", "lbs" })
+{
+    foreach (var mutation in new Action<JsonObject>[]
+    {
+        row => row["id"] = "invalid", row => row.Remove("id"), row => row["project_id"] = OtherProject, row => row.Remove("project_id"),
+        row => row["zone"] = "fr-par-2", row => row["zone"] = "nl-ams-1", row => row.Remove("zone"), row => row["zone"] = "fr-par-1\n"
+    })
+    {
+        var mismatch = await Read((request, number) =>
+        {
+            if (CollectionName(request) != kind) return ZonalNormal(request, number);
+            var row = kind == "gateways" ? Gateway() : LoadBalancer(); mutation(row);
+            return JsonResponse(kind, [row], 1);
+        }, ZonalOptions());
+        Check(State(mismatch.Report) == "partial" && Data(mismatch.Report).GetProperty("resources").GetArrayLength() == 3 && ProductCheck(mismatch.Report, kind == "gateways" ? "gateways" : "load-balancers").GetProperty("state").GetString() != "complete", "A foreign or missing zonal identity is omitted without discarding independent valid products");
+    }
+}
+var foreignLbRegion = await Read((request, number) =>
+{
+    if (CollectionName(request) != "lbs") return ZonalNormal(request, number);
+    var row = LoadBalancer(); row["region"] = "nl-ams"; return JsonResponse("lbs", [row], 1);
+}, ZonalOptions());
+Check(State(foreignLbRegion.Report) == "partial" && Data(foreignLbRegion.Report).GetProperty("resources").GetArrayLength() == 3, "A supplied load-balancer region must agree with the configured region and its selected zone");
+var omittedLbRegion = await Read((request, number) =>
+{
+    if (CollectionName(request) != "lbs") return ZonalNormal(request, number);
+    var row = LoadBalancer(); row.Remove("region"); return JsonResponse("lbs", [row], 1);
+}, ZonalOptions());
+Check(omittedLbRegion.Report.OperationSucceeded && Data(omittedLbRegion.Report).GetProperty("resources").GetArrayLength() == 4, "The deprecated optional load-balancer region is not required when exact zone identity is verified");
+
+var optionalUnknown = await Read((request, number) =>
+{
+    var kind = CollectionName(request);
+    if (kind is not ("gateways" or "lbs")) return ZonalNormal(request, number);
+    JsonObject row = new() { ["id"] = Id(kind == "gateways" ? 3 : 4), ["project_id"] = Project, ["zone"] = "fr-par-1" };
+    return JsonResponse(kind, [row], 1);
+}, ZonalOptions());
+var optionalResources = Data(optionalUnknown.Report).GetProperty("resources").EnumerateArray().Skip(2).Select(resource => resource.GetProperty("properties")).ToArray();
+Check(optionalUnknown.Report.OperationSucceeded && optionalResources.All(properties => !properties.TryGetProperty("state", out _)), "Absent optional lifecycle metadata remains unknown without fabricating a failed read");
+Check(!optionalResources[0].TryGetProperty("bastionEnabled", out _) && !optionalResources[1].TryGetProperty("frontendCount", out _), "Absent flags and counts are not converted to false or zero");
+var explicitNulls = await Read((request, number) =>
+{
+    var kind = CollectionName(request);
+    if (kind is not ("gateways" or "lbs")) return ZonalNormal(request, number);
+    var row = kind == "gateways" ? Gateway() : LoadBalancer();
+    foreach (var field in kind == "gateways" ? new[] { "status", "bastion_enabled", "smtp_enabled", "is_legacy" } : new[] { "status", "frontend_count", "backend_count", "private_network_count", "route_count" }) row[field] = null;
+    return JsonResponse(kind, [row], 1);
+}, ZonalOptions());
+Check(explicitNulls.Report.OperationSucceeded && Data(explicitNulls.Report).GetProperty("resources").EnumerateArray().Skip(2).All(resource => resource.GetProperty("properties").EnumerateObject().Select(property => property.Name).SequenceEqual(new[] { "zone" })), "Explicit null optional values remain unknown without synthetic lifecycle, booleans or counts");
+var legacyGateway = await Read((request, number) =>
+{
+    if (CollectionName(request) != "gateways") return ZonalNormal(request, number);
+    var row = Gateway(); row["is_legacy"] = true; row["status"] = "unknown_status"; return JsonResponse("gateways", [row], 1);
+}, ZonalOptions());
+var legacyProperties = Data(legacyGateway.Report).GetProperty("resources")[2].GetProperty("properties");
+Check(legacyGateway.Report.OperationSucceeded && legacyProperties.GetProperty("isLegacy").GetBoolean() && legacyProperties.GetProperty("state").GetString() == "unknown_status", "Explicit legacy inclusion retains a legacy gateway and its documented unknown lifecycle state without a health conclusion");
+
+foreach (var (kind, field, value) in new (string Kind, string Field, JsonNode? Value)[]
+{
+    ("gateways", "status", JsonValue.Create("PRIVATE-STATE")), ("gateways", "bastion_enabled", JsonValue.Create("false")),
+    ("gateways", "smtp_enabled", JsonValue.Create(0)), ("gateways", "is_legacy", new JsonObject()),
+    ("lbs", "status", JsonValue.Create("PRIVATE-STATE")), ("lbs", "frontend_count", JsonValue.Create(-1)),
+    ("lbs", "backend_count", JsonValue.Create("0")), ("lbs", "private_network_count", JsonValue.Create(1.5)),
+    ("lbs", "route_count", JsonValue.Create((long)int.MaxValue + 1))
+})
+{
+    var malformed = await Read((request, number) =>
+    {
+        if (CollectionName(request) != kind) return ZonalNormal(request, number);
+        var row = kind == "gateways" ? Gateway() : LoadBalancer(); row[field] = value?.DeepClone(); return JsonResponse(kind, [row], 1);
+    }, ZonalOptions());
+    var check = ProductCheck(malformed.Report, kind == "gateways" ? "gateways" : "load-balancers");
+    Check(State(malformed.Report) == "partial" && Data(malformed.Report).GetProperty("resources").GetArrayLength() == 4 && check.GetProperty("state").GetString() == "partial" && !JsonSerializer.Serialize(malformed.Report).Contains("PRIVATE-STATE", StringComparison.Ordinal), "Malformed optional zonal values remain unknown and make only their selected source incomplete");
+}
+
+foreach (var kind in new[] { "gateways", "lbs" })
+{
+    var checkName = kind == "gateways" ? "gateways" : "load-balancers";
+    var deniedProduct = await Read((request, number) => CollectionName(request) == kind ? new(HttpStatusCode.Forbidden) { Content = new StringContent(Secret) } : ZonalNormal(request, number), ZonalOptions());
+    Check(State(deniedProduct.Report) == "partial" && Data(deniedProduct.Report).GetProperty("resources").GetArrayLength() == 3 && ProductCheck(deniedProduct.Report, checkName).GetProperty("state").GetString() == "permission_denied" && !ProductCheck(deniedProduct.Report, checkName).TryGetProperty("observations", out _), "Independent denied zonal products do not erase regional observations or invent zero counts");
+}
+foreach (var interrupted in new[] { "quota", "timeout", "bytes" })
+{
+    var stopped = await Read((request, number) =>
+    {
+        if (CollectionName(request) == "lbs") throw new InvalidOperationException("An interrupted gateway read cannot request load balancers");
+        if (CollectionName(request) != "gateways") return ZonalNormal(request, number);
+        return interrupted switch
+        {
+            "quota" => new(HttpStatusCode.TooManyRequests),
+            "timeout" => throw new OperationCanceledException(),
+            _ => Response(new string('x', 4 * 1024 * 1024 + 1))
+        };
+    }, ZonalOptions());
+    Check(State(stopped.Report) == "partial" && stopped.Handler.Requests.Count == 3 && Data(stopped.Report).GetProperty("resources").GetArrayLength() == 2, "Quota, deadline and response-byte failures stop later zonal reads while retaining completed regional evidence");
+    Check(ProductCheck(stopped.Report, "load-balancers").GetProperty("state").GetString() != "complete" && !ProductCheck(stopped.Report, "load-balancers").TryGetProperty("observations", out _), "An unrequested load-balancer collection remains unknown after a safety stop");
+}
+foreach (var status in new[] { HttpStatusCode.Created, HttpStatusCode.NoContent, HttpStatusCode.PartialContent })
+{
+    var unusualSuccess = await Read((request, number) =>
+    {
+        var response = ZonalNormal(request, number); response.StatusCode = status; return response;
+    }, ZonalOptions());
+    Check(!unusualSuccess.Report.OperationSucceeded && Data(unusualSuccess.Report).GetProperty("resources").GetArrayLength() == 0, "Only HTTP200 list responses can establish complete observations");
+}
+
+foreach (var body in new[]
+{
+    "{\"gateways\":[],\"total_count\":0,\"gateways\":[{}]}",
+    "{\"gateways\":[{\"id\":\"" + Id(3) + "\",\"id\":\"" + Id(4) + "\",\"project_id\":\"" + Project + "\",\"zone\":\"fr-par-1\"}],\"total_count\":1}"
+})
+{
+    var ambiguous = await Read((request, number) => CollectionName(request) == "gateways" ? Response(body) : ZonalNormal(request, number), ZonalOptions());
+    Check(State(ambiguous.Report) == "partial" && Data(ambiguous.Report).GetProperty("resources").GetArrayLength() == 3 && ProductCheck(ambiguous.Report, "gateways").GetProperty("state").GetString() != "complete", "Duplicate zonal collection or identity keys cannot establish an accepted observation");
+}
+var gatewayPaged = await Read((request, number) =>
+{
+    if (CollectionName(request) != "gateways") return ZonalNormal(request, number);
+    return request.RequestUri!.Query.Contains("page=1&", StringComparison.Ordinal)
+        ? JsonResponse("gateways", Enumerable.Range(10, 100).Select(id => Gateway(id)), 101)
+        : JsonResponse("gateways", [Gateway(110)], 101);
+}, ZonalOptions());
+Check(gatewayPaged.Report.OperationSucceeded && Data(gatewayPaged.Report).GetProperty("resources").GetArrayLength() == 104 && gatewayPaged.Handler.Requests.Count == 5 && gatewayPaged.Handler.Requests[3].Path == "/vpc-gw/v2/zones/fr-par-1/gateways" && gatewayPaged.Handler.Requests[3].Query.Contains("page=2&", StringComparison.Ordinal), "Gateway pagination advances only the approved path and zone before continuing to load balancers");
+var zonalDuplicate = await Read((request, number) => CollectionName(request) == "lbs" ? JsonResponse("lbs", [LoadBalancer(), LoadBalancer()], 2) : ZonalNormal(request, number), ZonalOptions());
+Check(State(zonalDuplicate.Report) == "partial" && Data(zonalDuplicate.Report).GetProperty("resources").GetArrayLength() == 4 && ProductCheck(zonalDuplicate.Report, "load-balancers").GetProperty("observations").GetProperty("observedResources").GetInt32() == 1, "Duplicate zonal resource identities are not counted twice");
+
+var rejectedRowsBudget = await Read((request, _) =>
+{
+    if (CollectionName(request) != "vpcs") throw new InvalidOperationException("Rejected source rows must still exhaust the global source budget");
+    return JsonResponse("vpcs", Enumerable.Range(1, 100).Select(_ => (JsonNode?)new JsonObject { ["id"] = "bad" }), 1001);
+}, ZonalOptions());
+Check(State(rejectedRowsBudget.Report) == "partial" && rejectedRowsBudget.Handler.Requests.Count == 10 && Data(rejectedRowsBudget.Report).GetProperty("resources").GetArrayLength() == 0, "Invalid source rows count toward the shared1000-row budget instead of enabling unlimited reads");
+Check(Data(rejectedRowsBudget.Report).GetProperty("configurationEvidence").GetProperty("checks").EnumerateArray().Skip(1).All(check => check.GetProperty("state").GetString() != "complete" && !check.TryGetProperty("observations", out _)), "Products skipped after rejected-row exhaustion do not manufacture successful empty reads");
+
+Console.WriteLine($"PASS: {assertions} Scaleway regional and zonal network checks.");
 
 static string Id(int value) => value.ToString("x8", System.Globalization.CultureInfo.InvariantCulture) + "-2222-3333-4444-555555555555";
 static HttpResponseMessage Response(string value) => new(HttpStatusCode.OK) { Content = new StringContent(value, Encoding.UTF8, "application/json") };

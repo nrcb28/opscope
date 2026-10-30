@@ -154,6 +154,8 @@ Esta fase parte de `544293459e38f1f52b0e2d0617be9ed2a3e9006e`, después de la [P
 
 La verificación local del 30 de octubre de 2026 corresponde a Linux x64. Las cifras anteriores conservan su carácter histórico; los resultados siguientes pertenecen a la ampliación de la novena fase.
 
+Los workflows usan ahora `macos-15` para las regresiones y el paquete ARM64, y `macos-15-intel` para generar y ejecutar el paquete x64 en su arquitectura nativa. La migración evita las interrupciones programadas y la retirada de macOS 14 anunciadas por [GitHub](https://github.com/actions/runner-images/issues/13518); no modifica los resultados históricos ejecutados en macOS 14.
+
 | Comprobación | Resultado local de la novena fase |
 | --- | --- |
 | Compilación CLI y módulos, Release, y fixture Debug | Ambas aprobadas, cero errores y cero advertencias. |

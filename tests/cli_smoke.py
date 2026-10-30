@@ -119,6 +119,17 @@ class CliTests(unittest.TestCase):
                 self.run_cli("serve", "--history", history, *args, expected=2)
                 self.assertFalse(history.exists(), "Invalid hosting setup must fail before collecting or saving host evidence")
 
+    def test_scaleway_zonal_network_catalog_and_invalid_selections_stay_offline(self):
+        catalog = json.loads(self.run_cli("cloud", "catalog", "--provider", "scaleway"))
+        capabilities = catalog["data"]["providers"][0]["capabilities"]
+        networks = next(item for item in capabilities if item["operation"] == "networks")
+        self.assertEqual(set(networks["resourceTypes"]), {"network.vpc", "network.privateNetwork", "network.gateway", "network.load-balancer"})
+        scope = ("--project", "11111111-1111-1111-1111-111111111111", "--region", "fr-par")
+        for args in [(*scope, "--zone", "nl-ams-1"), (*scope, "--zone", "fr-par-3"),
+                     (*scope, "--zone", "https://untrusted.invalid"), (*scope, "--zone", "fr-par-1", "--endpoint", "https://untrusted.invalid")]:
+            with self.subTest(args=args):
+                self.run_cli("scaleway", "networks", *args, expected=2)
+
     def test_digitalocean_project_capabilities_and_invalid_scopes_stay_offline(self):
         catalog = json.loads(self.run_cli("cloud", "catalog", "--provider", "digitalocean"))
         capabilities = catalog["data"]["providers"][0]["capabilities"]

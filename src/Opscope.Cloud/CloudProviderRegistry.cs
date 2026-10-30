@@ -130,8 +130,8 @@ public static class CloudProviderRegistry
         }
         else if (operation == CloudOperation.Networks && id == "scaleway")
         {
-            resourceTypes = ["network.vpc", "network.privateNetwork"];
-            permissions = ["VPC and Private Network list permissions in the explicit Scaleway project and region"];
+            resourceTypes = ["network.vpc", "network.privateNetwork", "network.gateway", "network.load-balancer"];
+            permissions = ["VPC and Private Network list permissions in the explicit Scaleway project and region", "Public Gateway and Load Balancer list permissions when an explicit compatible zone is selected"];
         }
         else if (operation == CloudOperation.Networks && id == "ibm")
         {

@@ -34,7 +34,7 @@ Extended commands:
   gcp inventory|posture|health|metrics|scc|cost|services|patches|drift|vm|bundle --project <project-id>
   kubernetes inventory|health|metrics --context <name> --namespaces <names>
   oci|digitalocean|hetzner|cloudflare|openstack|alibaba|ibm|scaleway <operation>
-  scaleway networks --project <uuid> --region <region>
+  scaleway networks --project <uuid> --region <region> [--zone <compatible-zone>]
   ibm networks --account <id> --resource-group <id> --region <region>
   cloud catalog                         Describe providers and actual capabilities
   cloud <operation> --provider <id>      Query a configured read-only provider

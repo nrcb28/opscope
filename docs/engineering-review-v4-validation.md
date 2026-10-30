@@ -132,6 +132,8 @@ Esta fase parte de `909b55d`, después de la [PR #19](https://github.com/nrcb28/
 
 La verificación local del 29 de octubre de 2026 corresponde a Linux x64. Las cifras de la séptima fase conservan su carácter histórico; los resultados siguientes pertenecen a la ampliación de la octava fase.
 
+Antes de integrar la [PR #20](https://github.com/nrcb28/opscope/pull/20), aprobaron los quince trabajos de [CI remoto #162](https://github.com/nrcb28/opscope/actions/runs/40914189878): treinta proyectos de regresión .NET en Linux, Windows y macOS, navegador en Linux/Windows y generación/verificación de los paquetes candidatos. Ambos trabajos de navegador aprobaron 255 comprobaciones. El runner macOS ARM64 aprobó 187 comprobaciones Darwin, incluidas las nueve nativas. Los resúmenes de API fueron 357 en Linux, 351 en Windows y 358 en macOS; estos resultados por plataforma no sustituyen las 357 comprobaciones locales Linux de la tabla.
+
 | Comprobación | Resultado local de la octava fase |
 | --- | --- |
 | Compilación CLI y módulos, Release, y fixture Debug | Ambas aprobadas, cero errores y cero advertencias. |
@@ -145,3 +147,24 @@ La verificación local del 29 de octubre de 2026 corresponde a Linux x64. Las ci
 | Humo Unix y distribución | Prueba de humo aprobada; 31 pruebas de herramientas de empaquetado aprobadas. |
 
 Las comprobaciones de DigitalOcean incluyen CIDRs válidos con prefijo cero, reglas no interpretables con recuento global desconocido y cobertura parcial heredada desde la membresía del proyecto. La proyección de interfaz conserva como desconocidos los resúmenes inválidos o negativos. Las cuentas cloud reales y el despliegue remoto permanecen aplazados; los fixtures no prueban IAM efectivo, conectividad ni un login real.
+
+## Novena fase: redes regionales y productos zonales Scaleway
+
+Esta fase parte de `544293459e38f1f52b0e2d0617be9ed2a3e9006e`, después de la [PR #20](https://github.com/nrcb28/opscope/pull/20). La operación `scaleway networks` conserva la lectura regional de VPC/redes privadas y añade metadatos de gateways y balanceadores únicamente con una zona explícita compatible. Las filas retenidas deben coincidir con el proyecto y la ubicación seleccionados; la procedencia de la selección no se presenta como verificación de IAM, cuenta o existencia independiente del proyecto. Los límites y el contrato se describen en [cloud.md](cloud.md).
+
+La verificación local del 30 de octubre de 2026 corresponde a Linux x64. Las cifras anteriores conservan su carácter histórico; los resultados siguientes pertenecen a la ampliación de la novena fase.
+
+Los workflows usan ahora `macos-15` para las regresiones y el paquete ARM64, y `macos-15-intel` para generar y ejecutar el paquete x64 en su arquitectura nativa. La migración evita las interrupciones programadas y la retirada de macOS 14 anunciadas por [GitHub](https://github.com/actions/runner-images/issues/13518); no modifica los resultados históricos ejecutados en macOS 14.
+
+| Comprobación | Resultado local de la novena fase |
+| --- | --- |
+| Compilación CLI y módulos, Release, y fixture Debug | Ambas aprobadas, cero errores y cero advertencias. |
+| Proyectos de regresión .NET | Los treinta proyectos aprobados en la ejecución integral. |
+| API, SQLite y MCP | 365 comprobaciones aprobadas con el fixture Scaleway actualizado; incluyen selección zonal explícita, datos útiles con cobertura parcial, recuentos cero, indicadores falsos y privacidad. |
+| Scaleway networks | 162 comprobaciones aprobadas de selección región/zona, lecturas regionales y zonales, generaciones de gateways, identidad, paginación, cobertura independiente, límites y privacidad. |
+| Regresiones cloud | GCP avanzado conserva sus 84 comprobaciones, GKE sus 97, IBM sus 102, DigitalOcean sus 140 y fiabilidad cloud sus 2.105; todas aprobadas. |
+| Navegador Chromium | 283 comprobaciones aprobadas, incluidas 28 nuevas sobre selección, cobertura y proyección Scaleway, valores desconocidos, privacidad y accesibilidad en temas claro/oscuro. Gráficas y capturas de escritorio/móvil aprobadas. |
+| CLI real, pruebas Python | 24 pruebas aprobadas, incluido catálogo Scaleway y rechazo de zonas incompatibles o inválidas sin acceso remoto. |
+| Humo Unix y distribución | Prueba de humo aprobada; 31 pruebas de herramientas de empaquetado aprobadas. |
+
+Las comprobaciones Scaleway conservan las observaciones regionales cuando un producto zonal queda denegado, y mantienen desconocidos los recuentos de productos no solicitados tras una cuota, timeout o límite de respuesta. Las filas inválidas y duplicadas consumen el presupuesto compartido de origen. Las pruebas con transportes simulados no acreditan una cuenta Scaleway real, permisos efectivos, conectividad o un despliegue remoto activo; esas comprobaciones siguen aplazadas.

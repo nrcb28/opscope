@@ -151,6 +151,48 @@ Check(serviceData.GetProperty("resources").EnumerateArray().Single(resource => r
 var runOptions = new Dictionary<string, string>(options) { ["gcp-services"] = "run", ["region"] = "europe-west1" };
 var runReport = await serviceProvider.CollectAsync("services", runOptions);
 Check(runReport.OperationSucceeded && servicesRunner.Calls.Last().Contains("--region"), "Cloud Run metadata uses only the explicitly configured region");
+var runProperties = RunProperties(runReport);
+Check(runProperties.GetProperty("ingress").GetString() == "internal" && runProperties.GetProperty("lastUpdatedAtUtc").ValueKind == JsonValueKind.Null,
+    "Cloud Run reports its selected ingress setting while the unavailable v1 service update time remains unknown");
+const string runProjection = "json(metadata.name,metadata.namespace,metadata.annotations.'run.googleapis.com/ingress',status.conditions.type,status.conditions.status,status.latestReadyRevisionName,status.observedGeneration)";
+Check(AdditionalCloudCommandRunner.GcpProjection("run services list") == runProjection,
+    "Cloud Run source projection selects only the quoted ingress annotation key instead of its enclosing map");
+foreach (var ingress in new[] { "all", "internal", "internal-and-cloud-load-balancing" })
+{
+    var report = await RunWithAnnotations(new Dictionary<string, object?> { ["run.googleapis.com/ingress"] = ingress, ["secret.example.com/token"] = "RAW-SECRET-ANNOTATION" });
+    var properties = RunProperties(report);
+    Check(report.OperationSucceeded && properties.GetProperty("ingress").GetString() == ingress,
+        "Cloud Run preserves the known observed ingress configuration: " + ingress);
+    Check(properties.GetProperty("lastUpdatedAtUtc").ValueKind == JsonValueKind.Null && !ReportSecurity.Serialize(report).Contains("RAW-SECRET", StringComparison.Ordinal),
+        "Cloud Run ignores creation/transition/update lookalikes and private annotations: " + ingress);
+}
+foreach (var annotations in new object?[] { null, new Dictionary<string, object?>(), new Dictionary<string, object?> { ["run.googleapis.com/ingress-status"] = "all" } })
+{
+    var report = await RunWithAnnotations(annotations);
+    Check(report.OperationSucceeded && RunProperties(report).GetProperty("ingress").ValueKind == JsonValueKind.Null,
+        "An absent Cloud Run ingress setting remains unknown without inventing a default or failing the read");
+}
+foreach (var annotations in new object?[] { "RAW-SECRET-ANNOTATION", new object[0], new Dictionary<string, object?> { ["run.googleapis.com/ingress"] = "RAW-SECRET-INGRESS" }, new Dictionary<string, object?> { ["run.googleapis.com/ingress"] = 1 }, new Dictionary<string, object?> { ["run.googleapis.com/ingress"] = false }, new Dictionary<string, object?> { ["run.googleapis.com/ingress"] = null }, new Dictionary<string, object?> { ["run.googleapis.com/ingress"] = " internal " } })
+{
+    var report = await RunWithAnnotations(annotations);
+    var data = JsonSerializer.SerializeToElement(report.Data, ReportSecurity.JsonOptions);
+    Check(!report.OperationSucceeded && data.GetProperty("coverage").GetProperty("completedScopes").GetInt32() == 0 && data.GetProperty("resources").GetArrayLength() == 1 &&
+        RunProperties(report).GetProperty("ingress").ValueKind == JsonValueKind.Null,
+        "Malformed supplied Cloud Run ingress metadata preserves its parent but cannot complete the scope");
+    Check(!ReportSecurity.Serialize(report).Contains("RAW-SECRET", StringComparison.Ordinal),
+        "Malformed supplied Cloud Run ingress values do not leak into report evidence");
+}
+foreach (var json in new[]
+{
+    "[{\"metadata\":{\"name\":\"private-service\",\"namespace\":\"123456789012\",\"annotations\":{\"run.googleapis.com/ingress\":\"all\",\"run.googleapis.com/ingress\":\"internal\"}},\"status\":{\"conditions\":[{\"type\":\"Ready\",\"status\":\"True\"}]}}]",
+    "[{\"metadata\":{\"name\":\"private-service\",\"namespace\":\"123456789012\",\"annotations\":{\"run.googleapis.com/ingress\":\"all\"},\"annotations\":{\"run.googleapis.com/ingress\":\"internal\"}},\"status\":{\"conditions\":[{\"type\":\"Ready\",\"status\":\"True\"}]}}]"
+})
+{
+    var duplicateIngress = new ServicesRunner { RunRows = JsonSerializer.Deserialize<JsonElement>(json) };
+    var duplicateIngressReport = await new GcpProvider(duplicateIngress).CollectAsync("services", runOptions);
+    Check(!duplicateIngressReport.OperationSucceeded && RunProperties(duplicateIngressReport).GetProperty("ingress").ValueKind == JsonValueKind.Null,
+        "Conflicting duplicate ingress fields cannot support complete Cloud Run configuration evidence");
+}
 var priorCalls = servicesRunner.Calls.Count;
 try { await serviceProvider.CollectAsync("services", new Dictionary<string, string>(options) { ["gcp-services"] = "run" }); throw new Exception("Unscoped Cloud Run accepted"); }
 catch (ArgumentException) { Check(servicesRunner.Calls.Count == priorCalls, "Missing Run region is rejected before any project or service query"); }
@@ -159,7 +201,7 @@ var partialServices = await new GcpProvider(wrongServices).CollectAsync("service
 Check(!partialServices.OperationSucceeded && JsonSerializer.SerializeToElement(partialServices.Data, ReportSecurity.JsonOptions).GetProperty("resources").GetArrayLength() == 2, "Foreign service project rows are omitted with partial coverage");
 AdditionalCloudCommandRunner.ValidateArguments("gcloud", ["projects", "describe", Project, "--format", AdditionalCloudCommandRunner.GcpProjection("projects describe")!]);
 AdditionalCloudCommandRunner.ValidateArguments("gcloud", ["run", "services", "list", "--project", Project, "--region", "europe-west1", "--format", AdditionalCloudCommandRunner.GcpProjection("run services list")!]);
-foreach (var (command, format) in new[] { ("run services list", "json"), ("run services list", "json(spec.template.spec.containers.env)"), ("container clusters list", "json(masterAuth)"), ("container clusters list", "json(nodePools)"), ("container clusters list", "json(nodePools.config)"), ("container clusters list", "json(nodePools.config.serviceAccount)"), ("sql instances list", "json(rootPassword)"), ("storage buckets list", "json(labels)") })
+foreach (var (command, format) in new[] { ("run services list", "json"), ("run services list", "json(spec.template.spec.containers.env)"), ("run services list", "json(metadata.annotations)"), ("run services list", "json(metadata.annotations.'run.googleapis.com/ingress-status')"), ("run services list", "json(metadata.creationTimestamp)"), ("container clusters list", "json(masterAuth)"), ("container clusters list", "json(nodePools)"), ("container clusters list", "json(nodePools.config)"), ("container clusters list", "json(nodePools.config.serviceAccount)"), ("sql instances list", "json(rootPassword)"), ("storage buckets list", "json(labels)") })
 {
     try { AdditionalCloudCommandRunner.ValidateArguments("gcloud", command.Split(' ').Concat(new[] { "--project", Project, "--format", format }).ToArray()); throw new Exception("Unprojected or secret-bearing service format accepted"); }
     catch (InvalidOperationException) { Check(true, "The runner rejects arbitrary full/specification/credential projection fields"); }
@@ -169,6 +211,20 @@ catch (InvalidOperationException) { Check(true, "Project identity command gramma
 Console.WriteLine($"PASS: {checks} advanced Google Cloud scope, SCC, billing, service projection and transport assertions.");
 
 void Check(bool value, string message) { if (!value) throw new InvalidOperationException(message); checks++; }
+JsonElement RunProperties(AnalysisReport report) => JsonSerializer.SerializeToElement(report.Data,
+    new JsonSerializerOptions(ReportSecurity.JsonOptions) { DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.Never })
+    .GetProperty("resources").EnumerateArray().Single(resource => resource.GetProperty("type").GetString() == "run.service").GetProperty("properties");
+Task<AnalysisReport> RunWithAnnotations(object? annotations)
+{
+    var row = new
+    {
+        metadata = new { name = "private-service", @namespace = Number, annotations, creationTimestamp = "2026-01-01T00:00:00Z", updateTime = "RAW-SECRET-UPDATE" },
+        updateTime = "RAW-SECRET-UPDATE",
+        status = new { latestReadyRevisionName = "private-revision", conditions = new[] { new { type = "Ready", status = "True", lastTransitionTime = "2026-01-02T00:00:00Z" } } },
+        spec = new { env = "RAW-SECRET-SPEC" }
+    };
+    return new GcpProvider(new ServicesRunner { RunRows = JsonSerializer.SerializeToElement(new[] { row }) }).CollectAsync("services", runOptions);
+}
 GcpAdvancedReader Reader(HttpClient client) => new(client, (_, ct) => { ct.ThrowIfCancellationRequested(); return Task.FromResult("fixture-access-token"); });
 object ProjectDescriptor() => new { projectId = Project, name = "projects/" + Number };
 object SecurityFinding(string id, string boundProject) => new
@@ -191,6 +247,7 @@ sealed class ServicesRunner : ICloudCommandRunner
 {
     public List<IReadOnlyList<string>> Calls { get; } = [];
     public bool ForeignSql { get; init; }
+    public JsonElement? RunRows { get; init; }
     public Task<JsonElement> RunAsync(string tool, IReadOnlyList<string> args, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested(); Calls.Add(args.ToArray());
@@ -199,7 +256,7 @@ sealed class ServicesRunner : ICloudCommandRunner
             "projects" => new { projectId = "example-project", projectNumber = "123456789012" },
             "container" => new object[] { new { name = "private-cluster", location = "europe-west1-b", selfLink = "https://container.googleapis.com/v1/projects/example-project/locations/europe-west1-b/clusters/private-cluster", status = "RUNNING", currentMasterVersion = "1.33.1", currentNodeCount = 2, nodePools = new object[] { new { name = "private-pool", status = "RUNNING", version = "1.33.1-gke.1234000", initialNodeCount = 2, config = new { env = "RAW-SECRET" } } } } },
             "sql" => new object[] { new { name = "private-sql", project = ForeignSql ? "other-project" : "example-project", region = "europe-west1", selfLink = "https://sqladmin.googleapis.com/sql/v1beta4/projects/example-project/instances/private-sql", state = "RUNNABLE", settings = new { tier = "db-custom-2", availabilityType = "REGIONAL", backupConfiguration = new { enabled = true }, userLabels = new { secret = "RAW-SECRET" } } } },
-            "run" => new object[] { new { metadata = new { name = "private-service", @namespace = "123456789012", annotations = new Dictionary<string, string> { ["run.googleapis.com/ingress"] = "internal" } }, status = new { latestReadyRevisionName = "private-revision", conditions = new[] { new { type = "Ready", status = "True" } }, url = "https://private.invalid/" }, spec = new { env = "RAW-SECRET" } } },
+            "run" => RunRows is { } rows ? rows : new object[] { new { metadata = new { name = "private-service", @namespace = "123456789012", annotations = new Dictionary<string, string> { ["run.googleapis.com/ingress"] = "internal" } }, status = new { latestReadyRevisionName = "private-revision", conditions = new[] { new { type = "Ready", status = "True" } }, url = "https://private.invalid/" }, spec = new { env = "RAW-SECRET" } } },
             _ => new object[] { new { name = "private-bucket", project_number = "123456789012", location = "EUROPE-WEST1", uniform_bucket_level_access = true, public_access_prevention = "enforced", secret = "RAW-SECRET" } }
         };
         return Task.FromResult(JsonSerializer.SerializeToElement(result));

@@ -113,6 +113,14 @@ networks:'Redes regionales', configurationEvidence:'Configuración observada', c
 });
 const knownProviders = new Set(['azure','aws','gcp','oci','digitalocean','hetzner','cloudflare','openstack','alibaba','ibm','scaleway','kubernetes']);
 Object.assign(words.en, {
+configurationProjectResources:'Project membership observations', configurationDroplets:'Project droplet observations', configurationVolumes:'Project volume observations', configurationLoadBalancers:'Project load-balancer observations', configurationFirewalls:'Related firewall observations', configurationObservedResources:'Observed resources', digitalOceanEvidence:'Project resource relationships', digitalOceanScope:'Selected project scope', digitalOceanScopeVerified:'Verified by the Projects API read', digitalOceanScopeNote:'The read covers visible resources in the selected project. Project verification does not establish a team or account identity.', digitalOceanVpcNote:'VPC observations describe references from selected project resources. They do not prove exclusive project ownership, isolation or reachability.', digitalOceanFirewallNote:'Direct or tag membership links the observed firewall to selected droplets. Tags and rule contents are omitted; configured ingress does not prove an effective network path.', runEvidence:'Cloud Run service configuration', runNote:'Ingress and Ready state are observed configuration and status, not proof of application availability. This Cloud Run v1 source does not provide the service last-update time; it remains unknown.', runState:'Observed Ready state', runIngress:'Ingress configuration', runLastUpdated:'Last update', runReadyRevision:'Ready revision observed', runRevisionPresent:'Observed', runRevisionMissing:'Not observed'
+});
+Object.assign(words.es, {
+configurationProjectResources:'Observaciones de pertenencia al proyecto', configurationDroplets:'Observaciones de droplets del proyecto', configurationVolumes:'Observaciones de volúmenes del proyecto', configurationLoadBalancers:'Observaciones de balanceadores del proyecto', configurationFirewalls:'Observaciones de firewalls relacionados', configurationObservedResources:'Recursos observados', digitalOceanEvidence:'Relaciones de recursos del proyecto', digitalOceanScope:'Ámbito del proyecto seleccionado', digitalOceanScopeVerified:'Verificado por la lectura de la API de Projects', digitalOceanScopeNote:'La lectura abarca los recursos visibles del proyecto seleccionado. Verificar el proyecto no establece la identidad de un equipo o cuenta.', digitalOceanVpcNote:'Las observaciones VPC describen referencias desde recursos del proyecto seleccionado. No demuestran propiedad exclusiva del proyecto, aislamiento ni accesibilidad.', digitalOceanFirewallNote:'La pertenencia directa o mediante tags vincula el firewall observado con los droplets seleccionados. Los tags y el contenido de las reglas se omiten; la configuración de entrada no demuestra una ruta de red efectiva.', runEvidence:'Configuración de servicios Cloud Run', runNote:'Ingress y Ready son configuración y estado observados, no una prueba de disponibilidad de aplicación. Esta fuente Cloud Run v1 no proporciona la fecha de última actualización del servicio; permanece desconocida.', runState:'Estado Ready observado', runIngress:'Configuración de ingress', runLastUpdated:'Última actualización', runReadyRevision:'Revisión Ready observada', runRevisionPresent:'Observada', runRevisionMissing:'No observada'
+});
+Object.assign(words.en, {configurationExpectedResources:'Expected resources',digitalOceanCountsNote:'Expected counts follow visible project membership or selected resource references. Missing totals remain unknown; an account-wide firewall count does not establish a project total.'});
+Object.assign(words.es, {configurationExpectedResources:'Recursos esperados',digitalOceanCountsNote:'Los recuentos esperados siguen la pertenencia visible al proyecto o las referencias de recursos seleccionados. Los totales ausentes siguen siendo desconocidos; un recuento de firewalls de la cuenta no establece un total del proyecto.'});
+Object.assign(words.en, {
 configurationSubnets:'Regional subnet observations', configurationScopeVerification:'Account and resource-group scope', configurationScopeVerified:'Verified by the resource-manager read', configurationScopeUnknown:'Unknown / unverified', nodePoolEvidence:'GKE node-pool configuration', nodePoolNote:'Each observation belongs to the cluster shown. Initial counts and autoscaling bounds describe configuration, not current or desired node counts. Management flags do not establish node health. This metadata does not verify Kubernetes cluster or control-plane identity.', nodePoolCluster:'Parent cluster', nodePoolObserved:'Observed node pools', nodePoolReturned:'Provider-returned node-pool rows', nodePoolUnavailable:'Node-pool configuration is unavailable. Its values remain unknown.', nodePoolEmpty:'No node pools were observed in this complete cluster read.', nodePoolState:'Observed pool state', nodePoolVersion:'Configured node version', nodePoolInitial:'Configured initial node count', nodePoolAutoscaling:'Autoscaling enabled', nodePoolMin:'Configured minimum nodes per zone', nodePoolMax:'Configured maximum nodes per zone', nodePoolTotalMin:'Configured total minimum nodes', nodePoolTotalMax:'Configured total maximum nodes', nodePoolPolicy:'Configured location policy', nodePoolRepair:'Automatic repair configured', nodePoolUpgrade:'Automatic upgrade configured', nodePoolProjection:'Allowed service metadata', nodePoolProjectionNote:'Only supported service metadata fields are shown. Missing or invalid values remain unknown.'
 });
 Object.assign(words.es, {
@@ -742,9 +750,9 @@ function resourceState(resource) {
     }return t('unknown');
 }
 
-const configurationSources={cloudflare:'cloudflare-fixed-configuration-get',alibaba:'aliyun-fixed-projections',scaleway:'scaleway-vpc-v2',ibm:'ibm-vpc-fixed-read'};
-const configurationChecks={cloudflare:['tls','dns','waf','routes'],alibaba:['disks','security-groups'],scaleway:['vpcs','private-networks'],ibm:['vpcs','subnets','security-groups']};
-const configurationTitles={tls:'configurationTls',dns:'configurationDns',waf:'configurationWaf',routes:'configurationRoutes',disks:'configurationDisks','security-groups':'configurationGroups',vpcs:'configurationVpcs',subnets:'configurationSubnets','private-networks':'configurationPrivateNetworks'};
+const configurationSources={cloudflare:'cloudflare-fixed-configuration-get',alibaba:'aliyun-fixed-projections',scaleway:'scaleway-vpc-v2',ibm:'ibm-vpc-fixed-read',digitalocean:'digitalocean-project-fixed-read'};
+const configurationChecks={cloudflare:['tls','dns','waf','routes'],alibaba:['disks','security-groups'],scaleway:['vpcs','private-networks'],ibm:['vpcs','subnets','security-groups'],digitalocean:['project-resources','droplets','volumes','load-balancers','vpcs','firewalls']};
+const configurationTitles={tls:'configurationTls',dns:'configurationDns',waf:'configurationWaf',routes:'configurationRoutes',disks:'configurationDisks','security-groups':'configurationGroups',vpcs:'configurationVpcs',subnets:'configurationSubnets','private-networks':'configurationPrivateNetworks','project-resources':'configurationProjectResources',droplets:'configurationDroplets',volumes:'configurationVolumes','load-balancers':'configurationLoadBalancers',firewalls:'configurationFirewalls'};
 const configurationFields={
     tls:[['sslMode','configurationSsl','ssl'],['minimumTlsVersion','configurationMinimumTls','tls'],['alwaysUseHttps','configurationHttps','boolean']],
     dns:[['observedRecords','configurationRecords'],['observedProxiedRecords','configurationProxied'],['observedUnproxiedRecords','configurationUnproxied'],['unknownProxyRecords','configurationProxyUnknown']],
@@ -756,11 +764,16 @@ const configurationFields={
     'private-networks':[['observedResources','configurationResources'],['expectedResources','configurationExpected']]
 };
 const regionalConfigurationFields=[['observedResources','configurationResources'],['expectedResources','configurationExpected']];
-const configurationFieldsFor=(provider,check)=>provider==='ibm'?regionalConfigurationFields:configurationFields[check];
+const projectConfigurationFields=[['observedResources','configurationObservedResources'],['expectedResources','configurationExpectedResources']];
+const configurationFieldsFor=(provider,check)=>provider==='digitalocean'?projectConfigurationFields:provider==='ibm'?regionalConfigurationFields:configurationFields[check];
 const configurationRecordTypes=new Set(['A','AAAA','CNAME','MX','NS','TXT','SOA','SRV','PTR','CAA','DNSKEY','DS','RRSIG','NAPTR','TLSA','HTTPS','SVCB','URI','CERT','LOC','SSHFP','SMIMEA']);
 function ibmScopeVerification(evidence){
     const scope=evidence?.scopeVerification,source=scope?.source==='ibm-resource-manager-v2'?scope.source:'unknown',failure=normalizedCoverage(scope?.state);
     return {source,state:evidence?.source==='ibm-vpc-fixed-read'&&source!=='unknown'?(scope.state==='verified'?'verified':['denied','failed','notConfigured','notRequested','rateLimited','timed-out','unsupported'].includes(failure)?failure:'unknown'):'unknown'};
+}
+function digitalOceanScopeVerification(evidence){
+    const scope=evidence?.scopeVerification,source=scope?.source==='digitalocean-project-v2'?scope.source:'unknown',failure=normalizedCoverage(scope?.state);
+    return {source,state:evidence?.source==='digitalocean-project-fixed-read'&&source!=='unknown'?(scope.state==='verified'?'verified':['denied','failed','notConfigured','notRequested','rateLimited','timed-out','unsupported'].includes(failure)?failure:'unknown'):'unknown'};
 }
 function configurationValue(value,type) {
     if(type==='boolean')return typeof value==='boolean'?value:null;
@@ -768,9 +781,9 @@ function configurationValue(value,type) {
     if(type==='tls')return ['1.0','1.1','1.2','1.3'].includes(value)?value:null;
     return Number.isSafeInteger(value)&&value>=0?value:null;
 }
-function projectConfigurationEvidence(evidence,provider,state) {
-    const scopeVerification=provider==='ibm'?ibmScopeVerification(evidence):null;
-    const supported=configurationChecks[provider]||[], observed=['complete','partial','noDataCoverage'].includes(state)&&(!scopeVerification||scopeVerification.state==='verified');
+function projectConfigurationEvidence(evidence,provider,state,operation) {
+    const scopeVerification=provider==='ibm'?ibmScopeVerification(evidence):provider==='digitalocean'?digitalOceanScopeVerification(evidence):null;
+    const supported=provider==='digitalocean'?(operation==='inventory'?['project-resources','droplets','volumes','load-balancers','vpcs']:operation==='posture'?['project-resources','droplets','firewalls']:[]):configurationChecks[provider]||[], observed=['complete','partial','noDataCoverage'].includes(state)&&(!scopeVerification||scopeVerification.state==='verified');
     const checks=Array.isArray(evidence?.checks)?evidence.checks.filter(check=>check&&typeof check==='object'&&supported.includes(check.check)).slice(0,100).map(check=>{
         const declaredState=normalizedCoverage(check.state)||'unknown';
         const timestamp=typeof check.observedAtUtc==='string'?Date.parse(check.observedAtUtc):NaN;
@@ -788,7 +801,7 @@ function cloudConfigurationEvidence(evidence,provider) {
     const section=el('section',null,'report-group ops-configuration-evidence');
     append(section,el('h3',t('configurationEvidence')),el('p',t('configurationNote'),'coverage-note muted'));
     section.append(facts([['source',evidence.source]]));
-    if(evidence.scopeVerification)section.append(facts([['configurationScopeVerification',t(evidence.scopeVerification.state==='verified'?'configurationScopeVerified':'configurationScopeUnknown')]]));
+    if(evidence.scopeVerification)section.append(facts([[provider==='digitalocean'?'digitalOceanScope':'configurationScopeVerification',t(evidence.scopeVerification.state==='verified'?(provider==='digitalocean'?'digitalOceanScopeVerified':'configurationScopeVerified'):'configurationScopeUnknown')]]));
     evidence.checks.forEach((check,index)=>{
         const item=el('article',null,'ops-configuration-check');item.dataset.check=check.check;
         append(item,el('h4',`${t(configurationTitles[check.check])} · ${index+1}`));
@@ -840,7 +853,8 @@ function projectNodePools(value,state,budget) {
     if(observedCount===null||returnedCount===null||returnedCount!==pools.length)complete=false;
     return {state:!observed?state:complete?'complete':'partial',observedCount,returnedCount,pools};
 }
-function projectMetadataResources(resources,provider,state) {
+function projectMetadataResources(resources,provider,state,operation,configuration) {
+    if(provider==='digitalocean')return projectDigitalOceanResources(resources,state,operation,configuration);
     const budget={remaining:1000},observed=['complete','partial'].includes(state);
     return resources.slice(0,10000).map(resource=>{
         if(!resource||typeof resource!=='object')return null;
@@ -855,7 +869,7 @@ function projectMetadataResources(resources,provider,state) {
         }
         else if(type==='run.service'){
             const numeric=typeof properties.observedGeneration==='string'&&/^[0-9]{1,15}$/.test(properties.observedGeneration)?Number(properties.observedGeneration):properties.observedGeneration;
-            projected={state:gkeEnum(properties.state,['True','False','Unknown']),ingress:gkeEnum(properties.ingress,['all','internal','internal-and-cloud-load-balancing','unavailable']),observedGeneration:Number.isSafeInteger(numeric)&&numeric>=0?numeric:null,readyRevisionObserved:cloudBoolean(properties.readyRevisionObserved)};
+            projected={state:gkeEnum(properties.state,['True','False','Unknown']),ingress:gkeEnum(properties.ingress,['all','internal','internal-and-cloud-load-balancing']),lastUpdatedAtUtc:null,observedGeneration:Number.isSafeInteger(numeric)&&numeric>=0?numeric:null,readyRevisionObserved:cloudBoolean(properties.readyRevisionObserved)};
         }
         else if(type==='storage.bucket')projected={state:gkeEnum(properties.state,['configuration-observed']),storageClass:gkeEnum(properties.storageClass,['STANDARD','NEARLINE','COLDLINE','ARCHIVE','MULTI_REGIONAL','REGIONAL','DURABLE_REDUCED_AVAILABILITY']),uniformBucketLevelAccess:cloudBoolean(properties.uniformBucketLevelAccess),publicAccessPrevention:gkeEnum(properties.publicAccessPrevention,['enforced','inherited','unspecified'])};
         else if(type==='network.vpc')projected={status:observed?gkeEnum(properties.status,['available','deleting','failed','pending']):null,classicAccess:observed?cloudBoolean(properties.classicAccess):null};
@@ -864,6 +878,37 @@ function projectMetadataResources(resources,provider,state) {
         if(!observed&&!gke)projected=Object.fromEntries(Object.keys(projected).map(key=>[key,null]));
         return {provider,id:cloudIdentifier(resource.id),type,name:cloudIdentifier(resource.name),properties:projected};
     }).filter(Boolean);
+}
+function projectDigitalOceanResources(resources,state,operation,configuration){
+    const checks={'compute.vm':'droplets','storage.volume':'volumes','network.load-balancer':'load-balancers','network.vpc':'vpcs','network.firewall':'firewalls'};
+    return resources.slice(0,1000).map(resource=>{
+        if(!resource||typeof resource!=='object')return null;
+        const type=resource.type,properties=cloudObject(resource.properties);
+        if(operation==='inventory'&&type==='network.firewall'||operation==='posture'&&!['compute.vm','network.firewall'].includes(type))return null;
+        const check=configuration?.checks.find(check=>check.check===checks[type]);
+        const observed=['complete','partial'].includes(state)&&['complete','partial'].includes(check?.state)&&check?.observations!==null;
+        let projected;
+        if(type==='compute.vm')projected={state:gkeEnum(properties.state,['new','active','off','archive']),vcpus:cloudCount(properties.vcpus),memoryMb:cloudCount(properties.memoryMb),diskGb:cloudCount(properties.diskGb),vpc:cloudIdentifier(properties.vpc)};
+        else if(type==='storage.volume')projected={sizeGigabytes:cloudCount(properties.sizeGigabytes)};
+        else if(type==='network.load-balancer')projected={state:gkeEnum(properties.state,['new','active','errored']),type:gkeEnum(properties.type,['REGIONAL','REGIONAL_NETWORK','GLOBAL']),network:gkeEnum(properties.network,['EXTERNAL','INTERNAL']),sizeUnit:cloudCount(properties.sizeUnit),redirectHttpToHttps:cloudBoolean(properties.redirectHttpToHttps),proxyProtocol:cloudBoolean(properties.proxyProtocol),vpc:cloudIdentifier(properties.vpc)};
+        else if(type==='network.vpc')projected={defaultNetwork:cloudBoolean(properties.defaultNetwork),relation:properties.relation==='referenced-by-project-resource'?properties.relation:null,referringResourceCount:cloudCount(properties.referringResourceCount)};
+        else if(type==='network.firewall')projected={state:gkeEnum(properties.state,['waiting','succeeded','failed']),directDropletCount:cloudCount(properties.directDropletCount),tagDropletCount:cloudCount(properties.tagDropletCount),observedDropletCount:cloudCount(properties.observedDropletCount),inboundRuleCount:cloudCount(properties.inboundRuleCount),observedGlobalIngressRuleCount:cloudCount(properties.observedGlobalIngressRuleCount)};
+        else return null;
+        if(!observed)projected=Object.fromEntries(Object.keys(projected).map(key=>[key,null]));
+        return {provider:'digitalocean',id:cloudIdentifier(resource.id),type,name:cloudIdentifier(resource.name),properties:projected};
+    }).filter(Boolean);
+}
+function cloudDigitalOceanEvidence(operation){
+    const section=el('section',null,'report-group ops-digitalocean-evidence');
+    append(section,el('h3',t('digitalOceanEvidence')),el('p',t('digitalOceanScopeNote'),'coverage-note muted'),el('p',t('digitalOceanCountsNote'),'coverage-note muted'),el('p',t(operation==='posture'?'digitalOceanFirewallNote':'digitalOceanVpcNote'),'coverage-note muted'));
+    return section;
+}
+function cloudRunServiceEvidence(resources){
+    const section=el('section',null,'report-group ops-run-evidence');
+    append(section,el('h3',t('runEvidence')),el('p',t('runNote'),'coverage-note muted'));
+    const known=value=>value===null?t('unknown'):value;
+    section.append(table(['identity','runState','runIngress','runLastUpdated','runReadyRevision'],resources.filter(resource=>resource.type==='run.service').map(resource=>[resource.id||t('unknown'),known(resource.properties.state),known(resource.properties.ingress),t('unknown'),resource.properties.readyRevisionObserved===null?t('unknown'):t(resource.properties.readyRevisionObserved?'runRevisionPresent':'runRevisionMissing')]),'cloud:run-services'));
+    return section;
 }
 function cloudNodePoolEvidence(resources) {
     const section=el('section',null,'report-group ops-node-pool-evidence');
@@ -1014,9 +1059,11 @@ function showCloud() {
         const declaredState=normalizedCoverage(data?.coverage?.state);
         let state=!success&&['complete','noDataCoverage'].includes(declaredState)?'failed':declaredState||(!success?'failed':cloudResult.warnings?.length?'partial':'complete');
         const provider=validatedCloudActions().find(action=>action.actionKey===cloudAction)?.providerId;
-        const metadataProjection=provider==='ibm'&&cloudAction?.endsWith('/networks')||provider==='gcp'&&cloudAction?.endsWith('/services');
+        const digitalOceanProjection=provider==='digitalocean'&&['inventory','posture'].includes(cloudAction?.split('/')[1]);
+        const metadataProjection=provider==='ibm'&&cloudAction?.endsWith('/networks')||provider==='gcp'&&cloudAction?.endsWith('/services')||digitalOceanProjection;
         if(metadataProjection&&provider==='ibm'&&ibmScopeVerification(data?.configurationEvidence).state!=='verified')state=normalizedCoverage(ibmScopeVerification(data?.configurationEvidence).state)||'failed';
-        const count=Number.isInteger(data?.coverage?.enumeratedResources)?data.coverage.enumeratedResources:Number.isInteger(data?.resourceCount)?data.resourceCount:Array.isArray(data?.resources)?data.resources.length:null;
+        if(digitalOceanProjection&&digitalOceanScopeVerification(data?.configurationEvidence).state!=='verified')state=normalizedCoverage(digitalOceanScopeVerification(data?.configurationEvidence).state)||'failed';
+        const count=Object.hasOwn(cloudObject(data?.coverage),'enumeratedResources')?cloudCount(data.coverage.enumeratedResources):Object.hasOwn(cloudObject(data),'resourceCount')?cloudCount(data.resourceCount):Array.isArray(data?.resources)?cloudCount(data.resources.length):null;
         const visibleCount=['complete','partial'].includes(state)&&count!==null?state==='partial'?`${count} · ${t('observedOnly')}`:count:t('unknown');
         const summary=el('section',null,'ops-cloud-result-summary');summary.append(el('h3',t('cloudResult')));
         const badge=el('span',cloudStatus(state),'ops-cloud-status');badge.dataset.state=state;summary.append(badge);
@@ -1041,12 +1088,14 @@ function showCloud() {
             if(data?.patches&&typeof data.patches==='object')summary.append(cloudPatchEvidence(data.patches,state));
             if(data?.drift&&typeof data.drift==='object')summary.append(cloudDriftEvidence(data.drift,state));
         }
-        const configuration=(!metadataProjection||provider==='ibm')&&data&&typeof data==='object'&&Object.hasOwn(data,'configurationEvidence')?projectConfigurationEvidence(data.configurationEvidence,provider,state):null;
+        const configuration=(!metadataProjection||provider==='ibm'||digitalOceanProjection)&&data&&typeof data==='object'&&Object.hasOwn(data,'configurationEvidence')?projectConfigurationEvidence(data.configurationEvidence,provider,state,cloudAction?.split('/')[1]):null;
         if(configuration)summary.append(cloudConfigurationEvidence(configuration,provider));
+        if(digitalOceanProjection)summary.append(cloudDigitalOceanEvidence(cloudAction?.split('/')[1]));
         if(cloudResult.findings?.length)summary.append(findingsList(cloudResult.findings,'cloud:findings'));
         if(!metadataProjection&&Array.isArray(data?.metrics))summary.append(cloudMetricSeries(data.metrics));
-        const resources=metadataProjection?projectMetadataResources(Array.isArray(data?.resources)?data.resources:[],provider,state):Array.isArray(data?.resources)?data.resources:[];
+        const resources=metadataProjection?projectMetadataResources(Array.isArray(data?.resources)?data.resources:[],provider,state,cloudAction?.split('/')[1],configuration):Array.isArray(data?.resources)?data.resources:[];
         if(metadataProjection&&provider==='gcp'&&resources.some(resource=>resource.type==='gke.cluster'))summary.append(cloudNodePoolEvidence(resources));
+        if(metadataProjection&&provider==='gcp'&&resources.some(resource=>resource.type==='run.service'))summary.append(cloudRunServiceEvidence(resources));
         if(resources.length)summary.append(table(['provider','name','category','state'],resources.map(item=>[item.provider || cloudAction?.split('/')[0],item.name || item.id,item.type,resourceState(item)]),'cloud:resources'));
         const projectedData=metadataProjection?{provider,coverage:{state,enumeratedResources:['complete','partial'].includes(state)?cloudCount(count):null,observedAtUtc:typeof data?.coverage?.observedAtUtc==='string'&&Number.isFinite(Date.parse(data.coverage.observedAtUtc))?new Date(data.coverage.observedAtUtc).toISOString():null},resources,...(configuration?{configurationEvidence:configuration}:{})}:configuration?{...data,configurationEvidence:configuration}:data;
         const projectedReport=metadataProjection?{kind:cloudResult.kind,collectedAtUtc:cloudResult.collectedAtUtc,operationSucceeded:cloudResult.operationSucceeded,findings:Array.isArray(cloudResult.findings)?cloudResult.findings.map(item=>Object.fromEntries(['severity','code','title','detail','recommendation'].filter(key=>Object.hasOwn(cloudObject(item),key)&&['string','number'].includes(typeof item[key])).map(key=>[key,item[key]]))):[],warnings:Array.isArray(cloudResult.warnings)?cloudResult.warnings.filter(item=>typeof item==='string'):[],data:projectedData}:configuration?{...cloudResult,data:projectedData}:cloudResult;

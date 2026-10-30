@@ -267,7 +267,16 @@ public sealed class GcpProvider(ICloudCommandRunner runner, IGcpMonitoringReader
                     var status = Property(row, "status");
                     id = $"//run.googleapis.com/projects/{project}/locations/{location}/services/{name}";
                     var ready = Array(status, "conditions").FirstOrDefault(condition => Text(condition, "type") == "Ready");
-                    properties = new { state = Text(ready, "status"), ingress = "unavailable", observedGeneration = Numeric(status, "observedGeneration"), readyRevisionObserved = Text(status, "latestReadyRevisionName").Length > 0 };
+                    var incomplete = false;
+                    var ingress = CloudRunIngress(metadata, ref incomplete);
+                    if (incomplete)
+                    {
+                        context.IncompleteServiceMetadata();
+                        context.Warnings.Add("A supplied Cloud Run ingress setting was malformed and remains unknown; its service metadata read is incomplete.");
+                    }
+                    // The v1 list response has no service last-modified timestamp. Creation
+                    // and condition-transition timestamps must not be labeled as an update.
+                    properties = new { state = Text(ready, "status"), ingress, lastUpdatedAtUtc = (DateTimeOffset?)null, observedGeneration = Numeric(status, "observedGeneration"), readyRevisionObserved = Text(status, "latestReadyRevisionName").Length > 0 };
                 }
                 else
                 {
@@ -281,8 +290,24 @@ public sealed class GcpProvider(ICloudCommandRunner runner, IGcpMonitoringReader
                 }
                 context.Add(new("gcp", project, location, id, service switch { "gke" => "gke.cluster", "sql" => "sql.instance", "run" => "run.service", _ => "storage.bucket" }, name, properties));
             }
+            if (service == "run") context.Warnings.Add("Cloud Run v1 service metadata does not report a last-modified timestamp; lastUpdatedAtUtc remains unknown. Observed ingress configuration does not establish invocation permissions or effective reachability.");
         }
         void Invalid() { context.IncompleteServiceMetadata(); context.Warnings.Add("A service metadata row lacked a verified project identity or valid resource name and was omitted."); }
+    }
+
+    private static string? CloudRunIngress(JsonElement metadata, ref bool incomplete)
+    {
+        if (metadata.EnumerateObject().Count(property => property.NameEquals("annotations")) > 1) { incomplete = true; return null; }
+        var annotations = Property(metadata, "annotations");
+        if (annotations.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null) return null;
+        if (annotations.ValueKind != JsonValueKind.Object) { incomplete = true; return null; }
+        var values = annotations.EnumerateObject().Where(property => property.NameEquals("run.googleapis.com/ingress")).ToArray();
+        if (values.Length == 0) return null;
+        if (values.Length == 1 && values[0].Value.ValueKind == JsonValueKind.String &&
+            values[0].Value.GetString() is "all" or "internal" or "internal-and-cloud-load-balancing")
+            return values[0].Value.GetString();
+        incomplete = true;
+        return null;
     }
 
     private static bool ServiceName(string value, int limit = 63) => value.Length <= limit && Regex.IsMatch(value, @"\A[a-z][a-z0-9-]*\z", RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));

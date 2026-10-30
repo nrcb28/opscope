@@ -109,7 +109,9 @@ public static class ReportSecurity
                 "minNodeCount", "maxNodeCount", "totalMinNodeCount", "totalMaxNodeCount", "locationPolicy", "management", "autoRepair", "autoUpgrade",
                 "masterVersion", "nodeVersion", "nodeCount", "databaseVersion", "tier", "availabilityType", "backupsEnabled", "storageAutoResize", "diskSizeGb",
                 "ingress", "observedGeneration", "readyRevisionObserved", "storageClass", "uniformBucketLevelAccess", "publicAccessPrevention",
-                "configurationEvidence", "checks", "check", "scopeVerification", "observedAtUtc", "observedResources", "expectedResources", "classicAccess", "ipVersion", "ruleCount", "targetCount" }),
+                "configurationEvidence", "checks", "check", "scopeVerification", "observedAtUtc", "observedResources", "expectedResources", "classicAccess", "ipVersion", "ruleCount", "targetCount",
+                "lastUpdatedAtUtc", "vcpus", "memoryMb", "diskGb", "sizeGigabytes", "network", "sizeUnit", "redirectHttpToHttps", "proxyProtocol",
+                "defaultNetwork", "relation", "referringResourceCount", "directDropletCount", "tagDropletCount", "observedDropletCount", "inboundRuleCount", "observedGlobalIngressRuleCount" }),
         StringComparer.OrdinalIgnoreCase);
 
     private static bool SensitiveKey(string key, string[] identifiers)

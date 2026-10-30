@@ -108,6 +108,16 @@ public static class CloudProviderRegistry
             };
             (resourceTypes, permissions) = metricMetadata;
         }
+        else if (id == "digitalocean" && operation == CloudOperation.Inventory)
+        {
+            resourceTypes = ["compute.vm", "storage.volume", "network.load-balancer", "network.vpc"];
+            permissions = ["project:read", "droplet:read", "block_storage:read", "load_balancer:read", "vpc:read; VPCs are verified references from selected project resources"];
+        }
+        else if (id == "digitalocean" && operation == CloudOperation.Posture)
+        {
+            resourceTypes = ["compute.vm", "network.firewall"];
+            permissions = ["project:read", "droplet:read", "firewall:read", "tag:read; only observed direct or tag membership in selected droplets"];
+        }
         else if (operation == CloudOperation.Posture && id == "cloudflare")
         {
             resourceTypes = ["edge.zone.paused", "edge.tls.settings", "edge.dns.metadata", "edge.waf.metadata", "edge.worker-route.metadata"];

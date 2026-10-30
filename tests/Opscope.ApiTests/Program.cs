@@ -51,6 +51,8 @@ internal static class Program
                         ["alibaba-scope-1/posture"] = _ => Task.FromResult(ConfigurationFixture("alibaba")),
                         ["scaleway-scope-1/networks"] = _ => Task.FromResult(ConfigurationFixture("scaleway")),
                         ["ibm-scope-1/networks"] = _ => Task.FromResult(IbmNetworkFixture()),
+                        ["digitalocean-scope-1/inventory"] = _ => Task.FromResult(DigitalOceanProjectFixture("inventory")),
+                        ["digitalocean-scope-1/posture"] = _ => Task.FromResult(DigitalOceanProjectFixture("posture")),
                         ["kubernetes-scope-1/inventory"] = _ => Task.FromResult(AdvancedCloudFixture("kubernetes-inventory")),
                         ["kubernetes-scope-1/metrics"] = _ => Task.FromResult(AdvancedCloudFixture("kubernetes-metrics"))
                     }
@@ -196,10 +198,14 @@ internal static class Program
             new CloudResource("gcp", project, location, parent + "-unknown", "gke.cluster", "private-cluster-unknown", new
             {
                 state = "RUNNING", nodePools = new { state = "partial", observedCount = (int?)null, returnedCount = (int?)null, pools = Array.Empty<object>() }
+            }),
+            new CloudResource("gcp", project, "europe-west1", "//run.googleapis.com/projects/browser-private-project/locations/europe-west1/services/private-run", "run.service", "private-run", new
+            {
+                state = "True", ingress = "internal", observedGeneration = 0, readyRevisionObserved = false, lastUpdatedAtUtc = (DateTimeOffset?)null
             })
         };
         return new("cloud/gcp/services", now, [], new { provider = "gcp", resources,
-            coverage = new CloudCoverage(CoverageState.Partial, now, 2, 1, 0, []) },
+            coverage = new CloudCoverage(CoverageState.Partial, now, resources.Length, 1, 0, []) },
             ["Selected service configuration only. Initial node counts and management flags do not establish current scale, availability or verified cluster ownership."])
         { OperationSucceeded = false };
     }
@@ -219,6 +225,47 @@ internal static class Program
             configurationEvidence = new { source = "ibm-vpc-fixed-read", scopeVerification = new { source = "ibm-resource-manager-v2", state = "verified" },
                 checks = new[] { "vpcs", "subnets", "security-groups" }.Select(check => new { check, state = "complete", observedAtUtc = now, observations = new { observedResources = 1, expectedResources = 1 } }).ToArray() }
         }, ["Selected VPC metadata only; counts and lifecycle configuration do not prove effective access or application health."])
+        { OperationSucceeded = false };
+    }
+
+    private static AnalysisReport DigitalOceanProjectFixture(string operation)
+    {
+        var now = DateTimeOffset.UtcNow;
+        const string project = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+        const string vpc = "do:vpc:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        var droplet = new CloudResource("digitalocean", project, "ams3", "do:droplet:987654321", "compute.vm", "", new
+        {
+            state = "active", vcpus = 1, memoryMb = 512, diskGb = 10, vpc
+        });
+        CloudResource[] resources = operation == "inventory"
+            ? [droplet,
+                new("digitalocean", project, "ams3", "do:volume:cccccccc-cccc-4ccc-8ccc-cccccccccccc", "storage.volume", "", new { sizeGigabytes = 10 }),
+                new("digitalocean", project, "ams3", "do:loadbalancer:dddddddd-dddd-4ddd-8ddd-dddddddddddd", "network.load-balancer", "", new
+                {
+                    state = "active", type = "REGIONAL", network = "EXTERNAL", sizeUnit = 1, redirectHttpToHttps = false, proxyProtocol = false, vpc
+                }),
+                new("digitalocean", project, "ams3", vpc, "network.vpc", "", new
+                {
+                    defaultNetwork = false, relation = "referenced-by-project-resource", referringResourceCount = 2
+                })]
+            : [droplet, new("digitalocean", project, "", "do:firewall:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "network.firewall", "", new
+                {
+                    state = "succeeded", directDropletCount = 0, tagDropletCount = 1, observedDropletCount = 1, inboundRuleCount = 0, observedGlobalIngressRuleCount = 0
+                })];
+        var checks = operation == "inventory"
+            ? new[] { "project-resources", "droplets", "volumes", "load-balancers", "vpcs" }
+            : new[] { "project-resources", "droplets", "firewalls" };
+        return new("cloud/digitalocean/" + operation, now, [], new
+        {
+            provider = "digitalocean", operation, resources, scope = new { schemaVersion = 1, projects = new[] { project } },
+            coverage = new CloudCoverage(CoverageState.Partial, now, resources.Length, 1, 0, []),
+            configurationEvidence = new
+            {
+                source = "digitalocean-project-fixed-read",
+                scopeVerification = new { source = "digitalocean-project-v2", state = "verified" },
+                checks = checks.Select(check => new { check, state = "complete", observedAtUtc = now, observations = new { observedResources = check == "project-resources" ? 3 : 1, expectedResources = check == "project-resources" ? 3 : 1 } }).ToArray()
+            }
+        }, ["Selected project-visible metadata only. VPC references do not establish exclusive project ownership, and firewall configuration does not prove reachability."])
         { OperationSucceeded = false };
     }
 
@@ -419,6 +466,8 @@ internal static class Program
                 ["alibaba-scope-4/posture"] = _ => Task.FromResult(ConfigurationFixture("alibaba")),
                 ["scaleway-scope-4/networks"] = _ => Task.FromResult(ConfigurationFixture("scaleway")),
                 ["ibm-scope-4/networks"] = _ => Task.FromResult(IbmNetworkFixture()),
+                ["digitalocean-scope-4/inventory"] = _ => Task.FromResult(DigitalOceanProjectFixture("inventory")),
+                ["digitalocean-scope-4/posture"] = _ => Task.FromResult(DigitalOceanProjectFixture("posture")),
                 ["kubernetes-scope-2/inventory"] = _ => Task.FromResult(AdvancedCloudFixture("kubernetes-inventory")),
                 ["kubernetes-scope-2/metrics"] = _ => Task.FromResult(AdvancedCloudFixture("kubernetes-metrics")),
                 ["kubernetes-scope-2/health"] = _ => Task.FromResult(new AnalysisReport("cloud/kubernetes/health", DateTimeOffset.UtcNow, [], new { coverage = new { state = "no_data" } }))
@@ -721,7 +770,7 @@ internal static class Program
         Assert(unconfigured.GetProperty("scopes").GetArrayLength() == 0 && unconfigured.GetProperty("operations").EnumerateArray().Any(operation => operation.GetProperty("name").GetString() == "inventory" && operation.GetProperty("availability").GetString() == "not-configured"), "Known unconfigured providers expose their missing scope instead of an empty successful inventory");
         var actions = catalog.RootElement.GetProperty("actions").EnumerateArray().ToArray();
         Assert(actions.Any(action => action.GetProperty("actionKey").GetString() == "azure-scope-2/inventory") && actions.All(action => action.GetProperty("readOnly").GetBoolean()), "Catalog preserves explicitly configured action aliases as read-only actions");
-        foreach (var action in new[] { "gcp-scope-3/scc", "gcp-scope-3/cost", "gcp-scope-3/patches", "gcp-scope-3/drift", "gcp-scope-3/services", "cloudflare-scope-4/posture", "alibaba-scope-4/posture", "scaleway-scope-4/networks", "ibm-scope-4/networks", "kubernetes-scope-2/inventory", "kubernetes-scope-2/metrics" })
+        foreach (var action in new[] { "gcp-scope-3/scc", "gcp-scope-3/cost", "gcp-scope-3/patches", "gcp-scope-3/drift", "gcp-scope-3/services", "cloudflare-scope-4/posture", "alibaba-scope-4/posture", "scaleway-scope-4/networks", "ibm-scope-4/networks", "digitalocean-scope-4/inventory", "digitalocean-scope-4/posture", "kubernetes-scope-2/inventory", "kubernetes-scope-2/metrics" })
             Assert(actions.Any(item => item.GetProperty("actionKey").GetString() == action), "Catalog exposes only the explicitly configured advanced action: " + action);
         Assert(!text.Contains(token, StringComparison.Ordinal) && !text.Contains("api-private-host", StringComparison.Ordinal), "Cloud discovery reveals no host evidence or session secret");
         foreach (var (path, status) in new[]
@@ -749,6 +798,7 @@ internal static class Program
             ("gcp-scope-3/scc", "cloud/gcp/scc"), ("gcp-scope-3/cost", "cloud/gcp/cost"),
             ("gcp-scope-3/patches", "cloud/gcp/patches"), ("gcp-scope-3/drift", "cloud/gcp/drift"),
             ("gcp-scope-3/services", "cloud/gcp/services"), ("ibm-scope-4/networks", "cloud/ibm/networks"),
+            ("digitalocean-scope-4/inventory", "cloud/digitalocean/inventory"), ("digitalocean-scope-4/posture", "cloud/digitalocean/posture"),
             ("cloudflare-scope-4/posture", "cloud/cloudflare/posture"), ("alibaba-scope-4/posture", "cloud/alibaba/posture"), ("scaleway-scope-4/networks", "cloud/scaleway/networks"),
             ("kubernetes-scope-2/inventory", "cloud/kubernetes/inventory"), ("kubernetes-scope-2/metrics", "cloud/kubernetes/metrics")
         })
@@ -773,6 +823,26 @@ internal static class Program
                 var pool = data.GetProperty("resources")[0].GetProperty("properties").GetProperty("nodePools").GetProperty("pools")[0];
                 Assert(pool.GetProperty("initialNodeCount").GetInt32() == 0 && !pool.GetProperty("autoscaling").GetProperty("enabled").GetBoolean() && !pool.GetProperty("management").GetProperty("autoUpgrade").GetBoolean(), "Partial GKE service evidence preserves observed zero and false configuration values");
                 Assert(!text.Contains("private-pool", StringComparison.Ordinal) && !text.Contains("browser-private-project", StringComparison.Ordinal), "GKE parent and child identifiers remain redacted in authenticated API responses");
+                var run = data.GetProperty("resources").EnumerateArray().Single(resource => resource.GetProperty("type").GetString() == "run.service").GetProperty("properties");
+                Assert(run.GetProperty("ingress").GetString() == "internal" && !run.TryGetProperty("lastUpdatedAtUtc", out _), "Cloud Run preserves selected ingress configuration while its unavailable v1 update time remains absent rather than fabricated");
+            }
+            if (action.StartsWith("digitalocean", StringComparison.Ordinal))
+            {
+                Assert(data.GetProperty("configurationEvidence").GetProperty("scopeVerification").GetProperty("source").GetString() == "digitalocean-project-v2" && data.GetProperty("configurationEvidence").GetProperty("scopeVerification").GetProperty("state").GetString() == "verified", "DigitalOcean metadata preserves its project proof independently of useful partial overall coverage");
+                Assert(!text.Contains("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", StringComparison.Ordinal) && !text.Contains("do:droplet:987654321", StringComparison.Ordinal), "DigitalOcean project and typed resource identities remain redacted in authenticated API responses");
+                var rows = data.GetProperty("resources").EnumerateArray().ToArray();
+                if (action.EndsWith("/inventory", StringComparison.Ordinal))
+                {
+                    var vpc = rows.Single(resource => resource.GetProperty("type").GetString() == "network.vpc").GetProperty("properties");
+                    var loadBalancer = rows.Single(resource => resource.GetProperty("type").GetString() == "network.load-balancer").GetProperty("properties");
+                    Assert(!vpc.GetProperty("defaultNetwork").GetBoolean() && vpc.GetProperty("relation").GetString() == "referenced-by-project-resource" && vpc.GetProperty("referringResourceCount").GetInt32() == 2, "DigitalOcean VPC observations preserve explicit false configuration and their limited reference relationship");
+                    Assert(!loadBalancer.GetProperty("redirectHttpToHttps").GetBoolean() && !loadBalancer.GetProperty("proxyProtocol").GetBoolean(), "DigitalOcean load-balancer observations preserve explicit false settings within partial evidence");
+                }
+                else
+                {
+                    var firewall = rows.Single(resource => resource.GetProperty("type").GetString() == "network.firewall").GetProperty("properties");
+                    Assert(firewall.GetProperty("directDropletCount").GetInt32() == 0 && firewall.GetProperty("tagDropletCount").GetInt32() == 1 && firewall.GetProperty("observedGlobalIngressRuleCount").GetInt32() == 0, "DigitalOcean firewall observations distinguish zero direct membership and zero observed global rules from one verified tag relation");
+                }
             }
             if (action.StartsWith("ibm", StringComparison.Ordinal))
                 Assert(data.GetProperty("configurationEvidence").GetProperty("scopeVerification").GetProperty("state").GetString() == "verified", "IBM network evidence preserves its resource-group/account scope verification independently of partial product coverage");

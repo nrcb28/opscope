@@ -10,7 +10,15 @@ if ([string]::IsNullOrWhiteSpace($json.host.platform)) { throw 'host.platform mi
 if ($json.processes.Count -gt 3) { throw "expected at most 3 processes, got $($json.processes.Count)" }
 if ($null -eq $json.memory.usedPercent) { throw 'memory.usedPercent missing' }
 if ($json.cpuUsedPercent -lt 0 -or $json.cpuUsedPercent -gt 100) { throw 'cpuUsedPercent outside 0..100' }
-if ($json.host.platform -eq 'windows' -and $json.security.firewallStatusKnown -ne $true) { throw 'Windows firewall state was not parsed' }
+if ($json.host.platform -eq 'windows' -and $json.security.firewallStatusKnown -ne $true) {
+    $firewallDiagnostics = @{
+        warnings = @($json.collectionWarnings | Where-Object { $_ -match 'netsh' } | Select-Object -First 5)
+        profiles = @($json.security.firewalls | Select-Object -First 4 | Select-Object state, source, rulesPresent, filteringVerified)
+        netsh = @($json.tooling.tools | Where-Object { $_.name -eq 'netsh' } | Select-Object name, available, security)
+    }
+    Write-Host ('Firewall diagnostics: ' + ($firewallDiagnostics | ConvertTo-Json -Depth 5 -Compress))
+    throw 'Windows firewall state was not parsed'
+}
 
 $tools = dotnet run --project $project -c Release --no-build -- tools --json | ConvertFrom-Json
 if ($tools.tools.Count -lt 1) { throw 'tool inventory is empty' }

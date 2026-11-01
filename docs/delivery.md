@@ -68,7 +68,7 @@ python3 packaging/release_assets.py candidate-version --project src/Opscope/Opsc
 python3 packaging/release_assets.py verify --input ./packages --version <downloaded-version> --repository nrcb28/opscope
 ```
 
-`verify` requires all six archives and their SBOMs, the `Opscope.<version>.nupkg` tool package and its SBOM, generated package-manager manifests and their archive, and a complete `SHA256SUMS`. It checks actual hashes, archive paths and entries, executable headers for the claimed RID, SBOM file hashes, tool package identity/version/command, and manifest contents. Limits are 1 GiB per file, 2 GiB of expanded content and 10,000 archive entries overall, and 16 MiB per metadata document. The project XML used for candidate versions is limited to 256 KiB and read without evaluating MSBuild.
+`verify` requires all six archives and their SBOMs, the `Opscope.<version>.nupkg` tool package and its SBOM, generated package-manager manifests and their archive, and a complete `SHA256SUMS`. It checks actual hashes, archive paths and entries, executable headers for the claimed RID, SBOM file hashes, tool package identity/version/command, and manifest contents. New checksum manifests use UTF-8, LF records and GNU binary markers so native tools verify raw bytes consistently; the verifier also accepts legacy text-marker records. Limits are 1 GiB per file, 2 GiB of expanded content and 10,000 archive entries overall, and 16 MiB per metadata document. The project XML used for candidate versions is limited to 256 KiB and read without evaluating MSBuild.
 
 An individual platform archive can also be checked before extraction from a source checkout:
 

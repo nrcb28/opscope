@@ -156,6 +156,8 @@ La verificación local del 30 de octubre de 2026 corresponde a Linux x64. Las ci
 
 Los workflows usan ahora `macos-15` para las regresiones y el paquete ARM64, y `macos-15-intel` para generar y ejecutar el paquete x64 en su arquitectura nativa. La migración evita las interrupciones programadas y la retirada de macOS 14 anunciadas por [GitHub](https://github.com/actions/runner-images/issues/13518); no modifica los resultados históricos ejecutados en macOS 14.
 
+La ampliación local del empaquetado del 1 de noviembre de 2026 distingue las capacidades de los verificadores Apple y GNU: comprueba hashes y registros escapados exactos, usa verificación nativa estricta con nombres portables y rechaza la alteración individual de cada archivo. La interoperabilidad de nombres escapados solo se prueba con una implementación GNU identificada. El generador de checksums conserva su formato y sus entradas admitidas.
+
 | Comprobación | Resultado local de la novena fase |
 | --- | --- |
 | Compilación CLI y módulos, Release, y fixture Debug | Ambas aprobadas, cero errores y cero advertencias. |
@@ -165,6 +167,6 @@ Los workflows usan ahora `macos-15` para las regresiones y el paquete ARM64, y `
 | Regresiones cloud | GCP avanzado conserva sus 84 comprobaciones, GKE sus 97, IBM sus 102, DigitalOcean sus 140 y fiabilidad cloud sus 2.105; todas aprobadas. |
 | Navegador Chromium | 283 comprobaciones aprobadas, incluidas 28 nuevas sobre selección, cobertura y proyección Scaleway, valores desconocidos, privacidad y accesibilidad en temas claro/oscuro. Gráficas y capturas de escritorio/móvil aprobadas. |
 | CLI real, pruebas Python | 24 pruebas aprobadas, incluido catálogo Scaleway y rechazo de zonas incompatibles o inválidas sin acceso remoto. |
-| Humo Unix y distribución | Prueba de humo aprobada; 31 pruebas de herramientas de empaquetado aprobadas. |
+| Humo Unix y distribución | Prueba de humo aprobada; 33 pruebas de herramientas de empaquetado aprobadas, sin omisiones locales con GNU. |
 
 Las comprobaciones Scaleway conservan las observaciones regionales cuando un producto zonal queda denegado, y mantienen desconocidos los recuentos de productos no solicitados tras una cuota, timeout o límite de respuesta. Las filas inválidas y duplicadas consumen el presupuesto compartido de origen. Las pruebas con transportes simulados no acreditan una cuenta Scaleway real, permisos efectivos, conectividad o un despliegue remoto activo; esas comprobaciones siguen aplazadas.

@@ -68,17 +68,77 @@ class ReleaseAssetsTests(unittest.TestCase):
                 with self.subTest(operation=operation), self.assertRaises(ValueError):
                     operation()
 
-    @unittest.skipUnless(os.name != "nt" and shutil.which("sha256sum"), "GNU checksum verification requires Unix filenames and sha256sum.")
-    def test_checksum_special_filenames_verify_with_sha256sum(self):
+    @unittest.skipUnless(os.name != "nt" and shutil.which("sha256sum"), "Special checksum filenames require Unix filenames and sha256sum.")
+    def test_checksum_special_filenames_use_exact_gnu_records_and_native_hashes(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            for name in ("normal", "back\\slash", "line\nbreak", "carriage\rreturn"):
+            expected = []
+            for name, encoded in (("back\\slash", "back\\\\slash"), ("carriage\rreturn", "carriage\\rreturn"), ("line\nbreak", "line\\nbreak")):
+                content = name.encode()
+                (root / name).write_bytes(content)
+                # Hash stdin so the native tool need not parse GNU filename escapes.
+                result = subprocess.run(["sha256sum"], input=content, check=True, capture_output=True)
+                sha = result.stdout.split()[0]
+                self.assertRegex(sha, rb"^[0-9a-f]{64}$")
+                expected.append(b"\\" + sha + b"  " + encoded.encode() + b"\n")
+            release.checksums(root, root / "SHA256SUMS")
+            self.assertEqual((root / "SHA256SUMS").read_bytes(), b"".join(expected))
+
+    @unittest.skipUnless(shutil.which("sha256sum"), "Native checksum verification requires sha256sum.")
+    def test_checksum_portable_filenames_verify_with_native_sha256sum(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            names = ("normal", "with space", "nested/file.txt")
+            for name in names:
+                path = root / name
+                path.parent.mkdir(exist_ok=True)
+                path.write_bytes(name.encode())
+            release.checksums(root, root / "SHA256SUMS")
+            command = ["sha256sum", "--check", "--strict", "SHA256SUMS"]
+            subprocess.run(command, cwd=root, check=True, capture_output=True)
+            for name in names:
+                with self.subTest(name=name):
+                    path = root / name
+                    original = path.read_bytes()
+                    path.write_bytes(b"tampered")
+                    try:
+                        result = subprocess.run(command, cwd=root, capture_output=True)
+                        self.assertNotEqual(result.returncode, 0)
+                    finally:
+                        path.write_bytes(original)
+            subprocess.run(command, cwd=root, check=True, capture_output=True)
+
+    @unittest.skipIf(os.name == "nt", "GNU escaped checksum filenames require Unix filenames.")
+    def test_checksum_special_filenames_verify_with_gnu_sha256sum(self):
+        # Apple's sha256sum skips GNU escaped records unless --strict rejects them:
+        # https://github.com/apple-oss-distributions/text_cmds/blob/text_cmds-190.0.1/md5/md5.c#L339
+        for candidate in ("gsha256sum", "sha256sum"):
+            tool = shutil.which(candidate)
+            if tool:
+                version = subprocess.run([tool, "--version"], capture_output=True)
+                if version.returncode == 0 and b"GNU coreutils" in version.stdout:
+                    break
+        else:
+            self.skipTest("GNU escaped-record interoperability requires GNU coreutils sha256sum.")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            names = ("normal", "back\\slash", "line\nbreak", "carriage\rreturn")
+            for name in names:
                 (root / name).write_bytes(name.encode())
             release.checksums(root, root / "SHA256SUMS")
-            subprocess.run(["sha256sum", "--check", "SHA256SUMS"], cwd=root, check=True, capture_output=True)
-            (root / "line\nbreak").write_bytes(b"tampered")
-            result = subprocess.run(["sha256sum", "--check", "SHA256SUMS"], cwd=root, capture_output=True)
-            self.assertNotEqual(result.returncode, 0)
+            command = [tool, "--check", "--strict", "SHA256SUMS"]
+            subprocess.run(command, cwd=root, check=True, capture_output=True)
+            for name in names:
+                with self.subTest(name=name):
+                    path = root / name
+                    original = path.read_bytes()
+                    path.write_bytes(b"tampered")
+                    try:
+                        result = subprocess.run(command, cwd=root, capture_output=True)
+                        self.assertNotEqual(result.returncode, 0)
+                    finally:
+                        path.write_bytes(original)
+            subprocess.run(command, cwd=root, check=True, capture_output=True)
 
     def test_real_artifact_hashes_and_required_rids(self):
         with tempfile.TemporaryDirectory() as temporary:

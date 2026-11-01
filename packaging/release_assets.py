@@ -234,9 +234,10 @@ def checksums(directory, output):
             if escaped:
                 name = name.replace("\\", "\\\\").replace("\r", "\\r").replace("\n", "\\n")
             # GNU checksum tools prefix escaped records with a backslash.
-            lines.append(("\\" if escaped else "") + f"{digest(path)}  {name}")
+            lines.append(("\\" if escaped else "") + f"{digest(path)} *{name}")
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # Preserve LF records and declare raw-byte hashes on platforms with text-mode translation.
+    output.write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
 
 
 def _bounded_bytes(path, limit=MAX_METADATA_BYTES):
@@ -506,7 +507,7 @@ def verify_assets(directory, version, repository=None):
     listed = {}
     try:
         for line in _bounded_bytes(root / "SHA256SUMS").decode("utf-8").splitlines():
-            match = re.fullmatch(r"([0-9a-f]{64})  (.+)", line)
+            match = re.fullmatch(r"([0-9a-f]{64}) [ *](.+)", line)
             if not match:
                 raise ValueError("Checksum manifest contains unsupported or invalid records.")
             name = _safe_name(match.group(2))

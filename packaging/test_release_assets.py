@@ -19,6 +19,19 @@ import release_assets as release
 
 
 class ReleaseAssetsTests(unittest.TestCase):
+    def assert_native_checksum_check(self, command, root):
+        result = subprocess.run(command, cwd=root, capture_output=True, timeout=15)
+        if result.returncode != 0:
+            try:
+                version = subprocess.run([command[0], "--version"], capture_output=True, timeout=15)
+                version_info = (f"returncode={version.returncode}; stdout={version.stdout[:2048]!r}; "
+                                f"stderr={version.stderr[:2048]!r}")
+            except (OSError, subprocess.TimeoutExpired) as error:
+                version_info = f"version probe failed: {str(error)[:2048]}"
+            self.fail(f"Native checksum verification failed: path={command[0]!r}; "
+                      f"returncode={result.returncode}; stdout={result.stdout[:2048]!r}; "
+                      f"stderr={result.stderr[:2048]!r}; version={version_info}")
+
     def test_versions_follow_semver_component_rules(self):
         for version in ("0.0.0", "1.2.3", "1.2.3-rc.1", "1.2.3-0", "1.2.3-01a", "1.2.3-alpha-beta"):
             with self.subTest(version=version):
@@ -68,17 +81,96 @@ class ReleaseAssetsTests(unittest.TestCase):
                 with self.subTest(operation=operation), self.assertRaises(ValueError):
                     operation()
 
-    @unittest.skipUnless(os.name != "nt" and shutil.which("sha256sum"), "GNU checksum verification requires Unix filenames and sha256sum.")
-    def test_checksum_special_filenames_verify_with_sha256sum(self):
+    def test_checksum_records_use_canonical_utf8_lf_and_binary_markers(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            for name in ("normal", "back\\slash", "line\nbreak", "carriage\rreturn"):
+            payloads = (("nested/file.txt", b"first\r\nsecond\r\n"),
+                        ("normal", b"\0\xff\x1a\r\nbinary"),
+                        ("utf8-\u00e9", b"UTF-8 filename"))
+            expected = []
+            for name, content in payloads:
+                path = root / name
+                path.parent.mkdir(exist_ok=True)
+                path.write_bytes(content)
+                expected.append(hashlib.sha256(content).hexdigest().encode("ascii") + b" *" + name.encode("utf-8") + b"\n")
+            release.checksums(root, root / "SHA256SUMS")
+            self.assertEqual((root / "SHA256SUMS").read_bytes(), b"".join(expected))
+
+    @unittest.skipUnless(os.name != "nt" and shutil.which("sha256sum"), "Special checksum filenames require Unix filenames and sha256sum.")
+    def test_checksum_special_filenames_use_exact_gnu_records_and_native_hashes(self):
+        tool = os.path.abspath(shutil.which("sha256sum"))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected = []
+            for name, encoded in (("back\\slash", "back\\\\slash"), ("carriage\rreturn", "carriage\\rreturn"), ("line\nbreak", "line\\nbreak")):
+                content = name.encode()
+                (root / name).write_bytes(content)
+                # Hash stdin so the native tool need not parse GNU filename escapes.
+                result = subprocess.run([tool], input=content, check=True, capture_output=True, timeout=15)
+                sha = result.stdout.split()[0]
+                self.assertRegex(sha, rb"^[0-9a-f]{64}$")
+                expected.append(b"\\" + sha + b" *" + encoded.encode() + b"\n")
+            release.checksums(root, root / "SHA256SUMS")
+            self.assertEqual((root / "SHA256SUMS").read_bytes(), b"".join(expected))
+
+    @unittest.skipUnless(shutil.which("sha256sum"), "Native checksum verification requires sha256sum.")
+    def test_checksum_portable_filenames_verify_with_native_sha256sum(self):
+        tool = os.path.abspath(shutil.which("sha256sum"))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            payloads = {"normal": b"normal", "with space": b"first\r\nsecond\r\n",
+                        "nested/file.txt": b"\0\xff\x1a\r\nbinary\r\n"}
+            for name, content in payloads.items():
+                path = root / name
+                path.parent.mkdir(exist_ok=True)
+                path.write_bytes(content)
+            release.checksums(root, root / "SHA256SUMS")
+            command = [tool, "--check", "--strict", "SHA256SUMS"]
+            self.assert_native_checksum_check(command, root)
+            for name in payloads:
+                with self.subTest(name=name):
+                    path = root / name
+                    original = path.read_bytes()
+                    path.write_bytes(b"tampered")
+                    try:
+                        result = subprocess.run(command, cwd=root, capture_output=True, timeout=15)
+                        self.assertNotEqual(result.returncode, 0)
+                    finally:
+                        path.write_bytes(original)
+            self.assert_native_checksum_check(command, root)
+
+    @unittest.skipIf(os.name == "nt", "GNU escaped checksum filenames require Unix filenames.")
+    def test_checksum_special_filenames_verify_with_gnu_sha256sum(self):
+        # Apple's sha256sum skips GNU escaped records unless --strict rejects them:
+        # https://github.com/apple-oss-distributions/text_cmds/blob/text_cmds-190.0.1/md5/md5.c#L339
+        for candidate in ("gsha256sum", "sha256sum"):
+            tool = shutil.which(candidate)
+            if tool:
+                tool = os.path.abspath(tool)
+                version = subprocess.run([tool, "--version"], capture_output=True, timeout=15)
+                if version.returncode == 0 and b"GNU coreutils" in version.stdout:
+                    break
+        else:
+            self.skipTest("GNU escaped-record interoperability requires GNU coreutils sha256sum.")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            names = ("normal", "back\\slash", "line\nbreak", "carriage\rreturn")
+            for name in names:
                 (root / name).write_bytes(name.encode())
             release.checksums(root, root / "SHA256SUMS")
-            subprocess.run(["sha256sum", "--check", "SHA256SUMS"], cwd=root, check=True, capture_output=True)
-            (root / "line\nbreak").write_bytes(b"tampered")
-            result = subprocess.run(["sha256sum", "--check", "SHA256SUMS"], cwd=root, capture_output=True)
-            self.assertNotEqual(result.returncode, 0)
+            command = [tool, "--check", "--strict", "SHA256SUMS"]
+            self.assert_native_checksum_check(command, root)
+            for name in names:
+                with self.subTest(name=name):
+                    path = root / name
+                    original = path.read_bytes()
+                    path.write_bytes(b"tampered")
+                    try:
+                        result = subprocess.run(command, cwd=root, capture_output=True, timeout=15)
+                        self.assertNotEqual(result.returncode, 0)
+                    finally:
+                        path.write_bytes(original)
+            self.assert_native_checksum_check(command, root)
 
     def test_real_artifact_hashes_and_required_rids(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -113,7 +205,7 @@ class ReleaseAssetsTests(unittest.TestCase):
             self.assertEqual(document["files"][0]["checksums"][0]["checksumValue"], hashlib.sha256(b"real-published-bytes").hexdigest())
             release.checksums(root, root / "SHA256SUMS")
             expected = hashlib.sha256((root / "opscope.zip").read_bytes()).hexdigest()
-            self.assertIn(expected + "  opscope.zip", (root / "SHA256SUMS").read_text())
+            self.assertIn(expected + " *opscope.zip", (root / "SHA256SUMS").read_text())
 
 
 class DistributionIntegrityTests(unittest.TestCase):
@@ -326,6 +418,40 @@ class DistributionIntegrityTests(unittest.TestCase):
         manifest.write_text(original, encoding="utf-8")
         self.assertTrue(self.verify())
 
+    def test_legacy_text_and_mixed_checksum_records_verify_raw_bytes(self):
+        payload = self.dist / "legacy-payload.bin"
+        content = b"first\r\nsecond\r\n\0\xff\x1a"
+        payload.write_bytes(content)
+        paths = sorted(path for path in self.dist.rglob("*") if path.is_file()
+                       and path.relative_to(self.dist).as_posix() not in ("SHA256SUMS", "SHA256SUMS.sig"))
+        for label, newline, mixed in (("legacy-lf", b"\n", False), ("legacy-crlf", b"\r\n", False),
+                                      ("mixed", b"\n", True)):
+            with self.subTest(format=label):
+                records = []
+                for index, path in enumerate(paths):
+                    marker = b" *" if mixed and index % 2 else b"  "
+                    records.append(hashlib.sha256(path.read_bytes()).hexdigest().encode("ascii") + marker
+                                   + path.relative_to(self.dist).as_posix().encode("utf-8") + newline)
+                (self.dist / "SHA256SUMS").write_bytes(b"".join(records))
+                self.assertTrue(self.verify())
+                payload.write_bytes(content + b"tampered")
+                try:
+                    self.assert_rejected()
+                finally:
+                    payload.write_bytes(content)
+
+    def test_checksum_manifest_requires_full_hashes_and_standard_markers(self):
+        manifest = self.dist / "SHA256SUMS"
+        first, remaining = manifest.read_text(encoding="utf-8").split("\n", 1)
+        sha, name = first[:64], first[66:]
+        invalid = [sha + marker + name for marker in ("", " ", "\t ", " \t", "**", "* ")]
+        invalid += [sha[:-1] + " *" + name, sha + "0 *" + name, sha.upper() + " *" + name]
+        for record in invalid:
+            with self.subTest(record=record):
+                manifest.write_bytes((record + "\n" + remaining).encode("utf-8"))
+                with self.assertRaisesRegex(ValueError, "unsupported or invalid records"):
+                    self.verify()
+
     def test_sbom_must_match_payload_bytes_even_with_fresh_outer_checksums(self):
         path = self.sbom_path("linux-x64")
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -404,7 +530,7 @@ class DistributionIntegrityTests(unittest.TestCase):
                 path.write_bytes(b"unsigned and unlisted data")
                 self.assert_rejected()
                 self.refresh_checksums()
-                self.assertIn("  " + relative + "\n", (self.dist / "SHA256SUMS").read_text(encoding="utf-8"))
+                self.assertIn(" *" + relative + "\n", (self.dist / "SHA256SUMS").read_text(encoding="utf-8"))
                 self.assertTrue(self.verify())
                 path.unlink()
                 self.refresh_checksums()
@@ -416,8 +542,8 @@ class DistributionIntegrityTests(unittest.TestCase):
         signature.write_bytes(b"opaque detached-signature artifact")
         self.refresh_checksums()
         manifest = (self.dist / "SHA256SUMS").read_text(encoding="utf-8")
-        self.assertIn("  release-signing-public.pem\n", manifest)
-        self.assertNotIn("  SHA256SUMS.sig\n", manifest)
+        self.assertIn(" *release-signing-public.pem\n", manifest)
+        self.assertNotIn(" *SHA256SUMS.sig\n", manifest)
         self.assertFalse(self.verify()["publisherSignatureVerified"])
 
     def test_zip_paths_links_and_duplicate_members_are_rejected(self):

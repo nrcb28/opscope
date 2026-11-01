@@ -26,3 +26,4 @@ if (data.GetProperty("metric").GetProperty("value").GetDouble() != 0 || data.Get
     data.GetProperty("coverage").GetProperty("enumeratedResources").GetInt32() != 2 || data.GetProperty("coverage").GetProperty("state").GetString() != "partial")
     throw new InvalidOperationException("Privacy must preserve operational counts, zero measurements, units and coverage states.");
 Console.WriteLine("PASS: multicloud scope, numeric identity, boot data and cross-field finding redaction; real zero and coverage preserved.");
+await SnapshotIOTests.RunAsync();

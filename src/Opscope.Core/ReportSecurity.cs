@@ -111,7 +111,9 @@ public static class ReportSecurity
                 "ingress", "observedGeneration", "readyRevisionObserved", "storageClass", "uniformBucketLevelAccess", "publicAccessPrevention",
                 "configurationEvidence", "checks", "check", "scopeVerification", "observedAtUtc", "observedResources", "expectedResources", "classicAccess", "ipVersion", "ruleCount", "targetCount",
                 "lastUpdatedAtUtc", "vcpus", "memoryMb", "diskGb", "sizeGigabytes", "network", "sizeUnit", "redirectHttpToHttps", "proxyProtocol",
-                "defaultNetwork", "relation", "referringResourceCount", "directDropletCount", "tagDropletCount", "observedDropletCount", "inboundRuleCount", "observedGlobalIngressRuleCount" }),
+                "defaultNetwork", "relation", "referringResourceCount", "directDropletCount", "tagDropletCount", "observedDropletCount", "inboundRuleCount", "observedGlobalIngressRuleCount",
+                "selection", "zone", "zonalProductsRequested", "isDefault", "routingEnabled", "customRoutesPropagationEnabled", "dhcpEnabled", "defaultRoutePropagationEnabled",
+                "bastionEnabled", "smtpEnabled", "isLegacy", "frontendCount", "backendCount", "privateNetworkCount", "routeCount" }),
         StringComparer.OrdinalIgnoreCase);
 
     private static bool SensitiveKey(string key, string[] identifiers)

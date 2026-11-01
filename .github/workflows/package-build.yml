@@ -55,8 +55,8 @@ jobs:
           - { rid: linux-arm64, os: ubuntu-latest }
           - { rid: win-x64, os: windows-latest }
           - { rid: win-arm64, os: windows-latest }
-          - { rid: osx-x64, os: macos-14 }
-          - { rid: osx-arm64, os: macos-14 }
+          - { rid: osx-x64, os: macos-15-intel }
+          - { rid: osx-arm64, os: macos-15 }
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -163,6 +163,11 @@ jobs:
           python tests/cli_smoke.py --executable $executable
           if ($LASTEXITCODE -ne 0) { throw 'Installed archive regression failed.' }
           "- $($env:RELEASE_RID): archive integrity and extracted executable CLI regressions passed on $hostArchitecture." >> $env:GITHUB_STEP_SUMMARY
+      - name: Verify regular-file guards on native macOS Intel
+        if: matrix.rid == 'osx-x64' && runner.arch == 'X64'
+        run: |
+          dotnet run --project tests/Opscope.SecurityTests/Opscope.SecurityTests.csproj -c Release --nologo
+          if ($LASTEXITCODE -ne 0) { throw 'Native macOS Intel file guard regressions failed.' }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: binary-${{ matrix.rid }}

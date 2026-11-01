@@ -94,13 +94,16 @@ public static class SnapshotIO
                 }
                 else
                 {
-                    var buffer = Marshal.AllocHGlobal(256);
-                    try
+                    var status = new DarwinStat64();
+                    // Apple's headers alias fstat to fstat$INODE64 on Intel; Arm64 only has the modern ABI.
+                    var result = RuntimeInformation.ProcessArchitecture switch
                     {
-                        if (Fstat(descriptor, buffer) != 0) throw new IOException("Unable to inspect input file.");
-                        mode = unchecked((ushort)Marshal.ReadInt16(buffer, 4));
-                    }
-                    finally { Marshal.FreeHGlobal(buffer); }
+                        Architecture.X64 => FstatInode64(descriptor, ref status),
+                        Architecture.Arm64 => Fstat(descriptor, ref status),
+                        _ => throw new PlatformNotSupportedException("Unsupported macOS process architecture.")
+                    };
+                    if (result != 0) throw new IOException("Unable to inspect input file.");
+                    mode = status.Mode;
                 }
                 if ((mode & 0xF000) != 0x8000) throw new InvalidDataException("Only regular input files are supported.");
                 return new FileStream(handle, FileAccess.Read, 8192, false);
@@ -116,12 +119,18 @@ public static class SnapshotIO
     [StructLayout(LayoutKind.Explicit, Size = 256)]
     private struct FileStatus { [FieldOffset(28)] public ushort Mode; }
 
+    // Darwin's inode64 stat layout is shared by X64 and Arm64: dev_t, mode_t, nlink_t, ino64_t.
+    [StructLayout(LayoutKind.Explicit, Size = 144)]
+    internal struct DarwinStat64 { [FieldOffset(4)] public ushort Mode; }
+
     [SuppressMessage("Globalization", "CA2101", Justification = "libc uses UTF-8 file paths.")]
     [DllImport("libc", EntryPoint = "open", SetLastError = true)]
     private static extern int Open([MarshalAs(UnmanagedType.LPUTF8Str)] string path, int flags);
     [SuppressMessage("Globalization", "CA2101", Justification = "libc uses UTF-8 file paths.")]
     [DllImport("libc", EntryPoint = "statx", SetLastError = true)]
     private static extern int Statx(int descriptor, [MarshalAs(UnmanagedType.LPUTF8Str)] string path, int flags, uint mask, ref FileStatus status);
+    [DllImport("libc", EntryPoint = "fstat$INODE64", SetLastError = true)]
+    private static extern int FstatInode64(int descriptor, ref DarwinStat64 status);
     [DllImport("libc", EntryPoint = "fstat", SetLastError = true)]
-    private static extern int Fstat(int descriptor, IntPtr buffer);
+    private static extern int Fstat(int descriptor, ref DarwinStat64 status);
 }
